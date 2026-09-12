@@ -4,8 +4,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN npm install --global @openai/codex@0.154.0 @anthropic-ai/claude-code@2.1.269 \
     && npm cache clean --force \
-    && mkdir -p /profile /empty \
-    && chmod 755 /profile /empty
-COPY runner/containers/codex-mcp.mjs runner/containers/codex-result.schema.json /usr/local/lib/shipmunk/
+    && mkdir -p /profile /empty /usr/local/lib/shipmunk \
+    && chmod 755 /profile /empty /usr/local/lib/shipmunk
+COPY --chmod=0644 runner/containers/codex-mcp.mjs runner/containers/codex-result.schema.json /usr/local/lib/shipmunk/
 WORKDIR /empty
 ENTRYPOINT ["/usr/bin/env"]

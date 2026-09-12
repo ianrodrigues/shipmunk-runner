@@ -17,10 +17,14 @@ async function clean() {
 }
 
 function session() {
-    const child = spawn('/usr/local/bin/node', ['/fixture/codex-mcp.mjs'], {
-        env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
-        stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const child = spawn(
+        '/usr/local/bin/node',
+        ['/usr/local/lib/shipmunk/codex-mcp.mjs'],
+        {
+            env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+        },
+    );
     const messages = [];
     createInterface({ input: child.stdout }).on('line', (line) =>
         messages.push(JSON.parse(line)),
