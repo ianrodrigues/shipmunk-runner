@@ -25,6 +25,9 @@ try {
     $release = \Shipmunk\Runner\Setup\PackageInstaller::install($archive, $argv[2], $argv[3], $manifest);
     fwrite(STDOUT, $release."\n");
 } catch (\Throwable $exception) {
-    fwrite(STDERR, $exception->getMessage()."\n");
+    $message = $exception::class === \RuntimeException::class
+        ? $exception->getMessage()
+        : 'Runner installation failed. Check the setup download and private installation directory.';
+    fwrite(STDERR, $message."\n");
     exit(1);
 }
