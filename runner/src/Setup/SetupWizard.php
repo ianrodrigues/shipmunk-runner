@@ -188,9 +188,11 @@ final readonly class SetupWizard
     {
         $identity = hash_init('sha256');
         foreach (['Dockerfile', 'codex-mcp.mjs', 'codex-result.schema.json'] as $asset) {
-            if (! hash_update_file($identity, $this->checkout.'/runner/containers/'.$asset)) {
+            $hash = hash_file('sha256', $this->checkout.'/runner/containers/'.$asset);
+            if ($hash === false) {
                 throw new SetupException('Runtime image inputs are missing. Download the runner again.');
             }
+            hash_update($identity, $asset."\0".$hash);
         }
         $tag = 'shipmunk-profile-native:'.hash_final($identity);
         $iid = $files->root.'/image-'.bin2hex(random_bytes(8)).'.tmp';
