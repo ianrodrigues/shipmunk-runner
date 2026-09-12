@@ -23,7 +23,7 @@ final readonly class Claim
         }
 
         foreach ([$runId, $attemptId] as $id) {
-            if (preg_match('/^[0-7][0-9a-hjkmnp-tv-z]{25}$/', $id) !== 1) {
+            if (preg_match('/\A[0-7][0-9a-hjkmnp-tv-z]{25}\z/', $id) !== 1) {
                 throw new InvalidArgumentException('Claim identifiers must be lowercase ULIDs.');
             }
         }

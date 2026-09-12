@@ -60,8 +60,8 @@ final class CommandRunner
                 throw new RuntimeException('Subprocess exceeded its time limit.');
             }
 
-            $this->writeInput($pipes[0], $stdin, $written);
-            $this->readOutput($pipes, $stdout, $stderr);
+            $progress = $this->writeInput($pipes[0], $stdin, $written);
+            $progress += $this->readOutput($pipes, $stdout, $stderr);
 
             if (strlen($stdout) + strlen($stderr) > 256 * 1024 * 1024) {
                 $this->terminate($process, $pipes, graceMilliseconds: 0);
@@ -69,7 +69,9 @@ final class CommandRunner
                 throw new RuntimeException('Subprocess output exceeded its byte limit.');
             }
 
-            usleep(10_000);
+            if ($progress === 0) {
+                usleep(10_000);
+            }
             $status = proc_get_status($process);
         }
 
@@ -83,27 +85,33 @@ final class CommandRunner
     }
 
     /** @param resource $pipe */
-    private function writeInput(mixed $pipe, string $stdin, int &$written): void
+    private function writeInput(mixed $pipe, string $stdin, int &$written): int
     {
         if (! is_resource($pipe)) {
-            return;
+            return 0;
         }
 
         if ($written >= strlen($stdin)) {
             fclose($pipe);
 
-            return;
+            return 1;
         }
 
         $chunk = fwrite($pipe, substr($stdin, $written, 65_536));
         $written += $chunk === false ? 0 : $chunk;
+
+        return $chunk === false ? 0 : $chunk;
     }
 
     /** @param array<int, resource> $pipes */
-    private function readOutput(array $pipes, string &$stdout, string &$stderr): void
+    private function readOutput(array $pipes, string &$stdout, string &$stderr): int
     {
-        $stdout .= (string) fread($pipes[1], 65_536);
-        $stderr .= (string) fread($pipes[2], 65_536);
+        $stdoutChunk = (string) fread($pipes[1], 65_536);
+        $stderrChunk = (string) fread($pipes[2], 65_536);
+        $stdout .= $stdoutChunk;
+        $stderr .= $stderrChunk;
+
+        return strlen($stdoutChunk) + strlen($stderrChunk);
     }
 
     /**

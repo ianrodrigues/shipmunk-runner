@@ -101,8 +101,7 @@ final readonly class HttpControlPlaneClient implements ControlPlaneClient
         $headerHash = strtolower($response->headers['x-artifact-sha256'] ?? '');
         $contentLength = $response->headers['content-length'] ?? '';
 
-        if (! ctype_digit($contentLength)
-            || (int) $contentLength !== strlen($response->body)
+        if (($contentLength !== '' && (! ctype_digit($contentLength) || (int) $contentLength !== strlen($response->body)))
             || ! hash_equals($sha256, $headerHash)
             || ! hash_equals($sha256, hash('sha256', $response->body))) {
             throw new RuntimeException('Downloaded artifact hash did not match the claim.');

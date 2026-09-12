@@ -26,7 +26,11 @@ final readonly class CodexWatchdog implements Watchdog
             }
         } catch (\Throwable $exception) {
             foreach ($leases as $armed) {
-                $armed->disarm();
+                try {
+                    $armed->disarm();
+                } catch (\Throwable) {
+                    // Continue rolling back every sibling and preserve the arm failure.
+                }
             }
 
             throw $exception;

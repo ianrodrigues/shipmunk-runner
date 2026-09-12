@@ -36,7 +36,14 @@ final readonly class DockerSandboxProcess implements SandboxProcess
             ]);
             $checkpoint?->__invoke(0);
         } catch (\Throwable $exception) {
-            $this->stop();
+            try {
+                $this->stop();
+            } catch (\Throwable) {
+                throw new RuntimeException(
+                    'Sandbox startup failed, and its cleanup also failed.',
+                    previous: $exception,
+                );
+            }
 
             throw $exception;
         }
@@ -105,10 +112,14 @@ final readonly class DockerSandboxProcess implements SandboxProcess
             '--directory',
             $this->workspace,
             '.',
-        ])->stdout;
+        ], timeoutSeconds: 30)->stdout;
 
         $checkpoint?->__invoke(0);
-        $this->commands->mustRun(['docker', 'exec', '--interactive', $this->containerId, 'tar', '-xf', '-', '-C', '/workspace'], $archive);
+        $this->commands->mustRun(
+            ['docker', 'exec', '--interactive', $this->containerId, 'tar', '-xf', '-', '-C', '/workspace'],
+            $archive,
+            timeoutSeconds: 30,
+        );
     }
 
     private function copyAgentInput(): void
