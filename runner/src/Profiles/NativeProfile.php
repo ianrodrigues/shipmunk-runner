@@ -107,7 +107,11 @@ final class NativeProfile
         }
 
         try {
-            $reason = (new CodexEventParser)->preflightFailureReason($result->stdout, $result->stderr);
+            $reason = (new CodexEventParser)->preflightFailureReason(
+                $result->exitCode,
+                $result->stdout,
+                $result->stderr,
+            );
         } catch (DriverFailure) {
             return $failed;
         }
@@ -115,29 +119,8 @@ final class NativeProfile
         if ($reason === 'rate_limited') {
             return ['health' => 'rate_limited', 'reason' => 'rate_limited'];
         }
-        if ($result->exitCode !== 0) {
-            return $failed;
-        }
 
-        $message = false;
-        $completed = false;
-        foreach (explode("\n", trim($result->stdout)) as $line) {
-            $event = json_decode($line, true);
-            if (! is_array($event) || in_array($event['type'] ?? null, ['error', 'turn.failed'], true)) {
-                return $failed;
-            }
-            if (isset($event['item']['type']) && ! in_array($event['item']['type'], ['agent_message', 'reasoning'], true)) {
-                return $failed;
-            }
-            if (($event['type'] ?? null) === 'item.completed' && ($event['item']['type'] ?? null) === 'agent_message') {
-                $message = ($event['item']['text'] ?? null) === 'SHIPMUNK_AUTH_OK';
-            }
-            if (($event['type'] ?? null) === 'turn.completed') {
-                $completed = true;
-            }
-        }
-
-        return $message && $completed ? ['health' => 'ready', 'reason' => null] : $failed;
+        return $reason === null ? ['health' => 'ready', 'reason' => null] : $failed;
     }
 
     public static function initializeHome(string $home): void

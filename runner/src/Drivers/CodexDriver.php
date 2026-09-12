@@ -38,9 +38,14 @@ final class CodexDriver implements AgentDriver
     ): void {
         $this->assertAccountMode($transport, $checkpoint);
         $result = $transport->run(NativeProfile::command('codex', 'preflight'), '', $checkpoint);
+        $reason = (new CodexEventParser)->preflightFailureReason(
+            $result->exitCode,
+            $result->stdout,
+            $result->stderr,
+        );
 
-        if (NativeProfile::authenticatedHealth('codex', $result)['health'] !== 'ready') {
-            throw new DriverFailure((new CodexEventParser)->preflightFailureReason($result->stdout, $result->stderr));
+        if ($reason !== null) {
+            throw new DriverFailure($reason);
         }
 
         $this->assertAccountMode($transport, $checkpoint);
