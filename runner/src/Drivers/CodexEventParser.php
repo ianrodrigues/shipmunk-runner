@@ -499,18 +499,48 @@ final class CodexEventParser
         if (! $error instanceof stdClass) {
             return NativeFailureReason::ProcessError;
         }
-        $code = $error->code ?? null;
 
+        $reason = $this->failureCode($error->code ?? null);
+
+        if ($reason !== null) {
+            return $reason;
+        }
+
+        $message = is_string($error->message ?? null) ? trim($error->message) : '';
+
+        // The pinned CLI places a backend JSON error body inside its message field.
+        if (str_starts_with($message, '{')) {
+            try {
+                $body = $this->decode($message, NativeFailureReason::ProcessError);
+            } catch (DriverFailure) {
+                return NativeFailureReason::ProcessError;
+            }
+
+            if (! ($body->error ?? null) instanceof stdClass) {
+                return NativeFailureReason::ProcessError;
+            }
+
+            return $this->failureCode($body->error->code ?? null)
+                ?? NativeFailureReason::ProcessError;
+        }
+
+        return match (strtolower($message)) {
+            'authentication expired', 'not logged in', 'unauthorized' => NativeFailureReason::AuthExpired,
+            'rate limit exceeded', 'usage limit reached' => NativeFailureReason::RateLimited,
+            'approval required' => NativeFailureReason::ApprovalRequired,
+            default => NativeFailureReason::ProcessError,
+        };
+    }
+
+    private function failureCode(mixed $code): ?NativeFailureReason
+    {
         return match ($code) {
             'token_expired', 'auth_expired', 'unauthorized', 'refresh_token_expired' => NativeFailureReason::AuthExpired,
             'rate_limit_exceeded', 'usage_limit_reached' => NativeFailureReason::RateLimited,
             'approval_required', 'approval_request' => NativeFailureReason::ApprovalRequired,
-            default => match (is_string($error->message ?? null) ? strtolower(trim($error->message)) : '') {
-                'authentication expired', 'not logged in', 'unauthorized' => NativeFailureReason::AuthExpired,
-                'rate limit exceeded', 'usage limit reached' => NativeFailureReason::RateLimited,
-                'approval required' => NativeFailureReason::ApprovalRequired,
-                default => NativeFailureReason::ProcessError,
-            },
+            'model_not_found' => NativeFailureReason::ModelUnavailable,
+            'invalid_json_schema' => NativeFailureReason::InvalidOutputSchema,
+            default => null,
         };
     }
 

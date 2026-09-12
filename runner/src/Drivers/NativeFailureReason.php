@@ -13,6 +13,8 @@ enum NativeFailureReason: string
     case AuthExpired = 'auth_expired';
     case RateLimited = 'rate_limited';
     case ApprovalRequired = 'approval_required';
+    case ModelUnavailable = 'model_unavailable';
+    case InvalidOutputSchema = 'invalid_output_schema';
 
     public function message(): string
     {
@@ -24,6 +26,8 @@ enum NativeFailureReason: string
             self::AuthExpired => 'Native runtime authentication must be renewed.',
             self::RateLimited => 'Native runtime account limit prevented execution.',
             self::ApprovalRequired => 'Native runtime requires approval unavailable in unattended execution.',
+            self::ModelUnavailable => 'Native backend rejected the configured model. Select a supported model for this profile.',
+            self::InvalidOutputSchema => 'Native backend rejected the structured output schema. Update the runner before retrying.',
         };
     }
 }

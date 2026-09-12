@@ -7,6 +7,9 @@ use Shipmunk\Runner\CommandResult;
 use Shipmunk\Runner\CommandRunner;
 use Shipmunk\Runner\Drivers\AgentTransport;
 use Shipmunk\Runner\Drivers\CodexDriver;
+use Shipmunk\Runner\Drivers\CodexEventParser;
+use Shipmunk\Runner\Drivers\DriverFailure;
+use Shipmunk\Runner\Drivers\NativeFailureReason;
 
 require dirname(__DIR__).'/bootstrap.php';
 
@@ -86,7 +89,48 @@ $command = [
 
 try {
     $result = $commands->mustRun($command, timeoutSeconds: 210);
-    fwrite(STDOUT, $result->stdout);
+    $rejections = [];
+
+    foreach (explode("\n", rtrim($result->stdout, "\n")) as $line) {
+        if (! str_starts_with($line, 'NATIVE_REJECTION_FIXTURE ')) {
+            fwrite(STDOUT, $line."\n");
+
+            continue;
+        }
+
+        $fixture = json_decode(substr($line, 25), true, 32, JSON_THROW_ON_ERROR);
+        $expected = match ($fixture['backend_code']) {
+            'model_not_found' => NativeFailureReason::ModelUnavailable,
+            'invalid_json_schema' => NativeFailureReason::InvalidOutputSchema,
+            'unknown' => NativeFailureReason::ProcessError,
+        };
+
+        try {
+            (new CodexEventParser)->parse(
+                $claim,
+                $fixture['exit_code'],
+                $fixture['stdout'],
+                $fixture['stderr'],
+            );
+
+            throw new LogicException('Native backend rejection was accepted.');
+        } catch (DriverFailure $failure) {
+            if ($failure->reason !== $expected) {
+                throw new LogicException('Native backend rejection lost its known reason.');
+            }
+
+            if (str_contains($failure->summary(), 'SYNTHETIC_SECRET')) {
+                throw new LogicException('Native backend rejection leaked provider text.');
+            }
+        }
+
+        $rejections[] = $fixture['backend_code'];
+        fwrite(STDOUT, 'PASS pinned native backend rejection '.$expected->value."\n");
+    }
+
+    if ($rejections !== ['model_not_found', 'invalid_json_schema', 'unknown']) {
+        throw new LogicException('Native backend rejection fixtures were not all exercised.');
+    }
 } finally {
     $commands->run(['docker', 'rm', '--force', $container]);
 }

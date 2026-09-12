@@ -172,6 +172,65 @@ foreach (['authentication expired' => 'auth_expired', 'rate limit exceeded' => '
     parser_rejects('safe error matching '.$reason, $reason, json_encode(['type' => 'error', 'message' => $message])."\n", 1);
 }
 
+foreach ([
+    'model_not_found' => 'model_unavailable',
+    'invalid_json_schema' => 'invalid_output_schema',
+    'token_expired' => 'auth_expired',
+    'rate_limit_exceeded' => 'rate_limited',
+    'approval_required' => 'approval_required',
+    'unknown' => 'process_error',
+] as $code => $reason) {
+    foreach (['error', 'turn.failed'] as $type) {
+        $error = ['code' => $code, 'message' => 'SYNTHETIC_SECRET'];
+        $message = json_encode(['error' => $error], JSON_THROW_ON_ERROR);
+        $event = $type === 'error'
+            ? ['type' => $type, 'message' => $message]
+            : ['type' => $type, 'error' => ['message' => $message]];
+
+        parser_rejects(
+            'nested backend '.$type.' '.$reason,
+            $reason,
+            json_encode($event, JSON_THROW_ON_ERROR)."\n",
+            1,
+        );
+    }
+}
+
+foreach ([
+    'truncated JSON' => '{"error":{"code":"model_not_found"',
+    'duplicate code' => '{"error":{"code":"model_not_found","code":"invalid_json_schema"}}',
+    'escaped duplicate code' => '{"error":{"code":"model_not_found","c\\u006fde":"invalid_json_schema"}}',
+    'duplicate envelope' => '{"error":{"code":"model_not_found"},"error":{}}',
+    'array body' => '[{"error":{"code":"model_not_found"}}]',
+    'array error' => '{"error":[{"code":"model_not_found"}]}',
+    'scalar error' => '{"error":"model_not_found"}',
+    'array code' => '{"error":{"code":["model_not_found"]}}',
+    'missing envelope' => '{"code":"model_not_found"}',
+    'recursive envelope' => '{"error":{"error":{"code":"model_not_found"}}}',
+    'unknown request code' => '{"error":{"type":"invalid_request_error","code":"new_backend_error"}}',
+    'nested message' => '{"error":{"message":"model_not_found"}}',
+    'unstructured mention' => 'SYNTHETIC_SECRET model_not_found invalid_json_schema',
+    'JSON depth bound' => str_repeat('{"error":', 33).'{}'.str_repeat('}', 33),
+] as $name => $message) {
+    parser_rejects(
+        'backend diagnostic rejects '.$name,
+        'process_error',
+        json_encode(['type' => 'error', 'message' => $message], JSON_THROW_ON_ERROR)."\n",
+        1,
+    );
+}
+
+parser_rejects(
+    'known native code takes precedence over malformed backend message',
+    'auth_expired',
+    json_encode([
+        'type' => 'error',
+        'code' => 'token_expired',
+        'message' => '{SYNTHETIC_SECRET',
+    ], JSON_THROW_ON_ERROR)."\n",
+    1,
+);
+
 $changes = parser_stream([...$result, 'outcome' => 'changes_proposed']);
 parser_rejects('changes require trusted patch', 'invalid_result', $changes);
 parser_rejects('review cannot emit patch', 'invalid_result', $valid, patch: 'diff');

@@ -487,17 +487,20 @@ $tests['simulated cached login cannot become ready when authenticated preflight 
     profile_assert(! str_contains(json_encode($api->requests), 'PRIVATE_REVOKED_TOKEN'));
 };
 $tests['validated Codex preflight rate limit reaches profile completion without native output'] = function (): void {
-    foreach ([0, 1] as $exitCode) {
+    foreach ([[0, false], [1, false], [1, true]] as [$exitCode, $nested]) {
         [$root, $store] = profile_fixture();
         $api = new SimulatedProfileControlPlane;
         $runtime = new SimulatedProfileRuntime;
+        $error = [
+            'code' => 'rate_limit_exceeded',
+            'message' => 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT',
+        ];
         $nativeOutput = json_encode([
             'type' => 'turn.failed',
-            'error' => [
-                'code' => 'rate_limit_exceeded',
-                'message' => 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT',
-            ],
-        ])."\n";
+            'error' => $nested
+                ? ['message' => json_encode(['error' => $error], JSON_THROW_ON_ERROR)]
+                : $error,
+        ], JSON_THROW_ON_ERROR)."\n";
         $runtime->preflight = new CommandResult($exitCode, $nativeOutput, 'SYNTHETIC_PRIVATE_STDERR');
 
         $result = profile_lifecycle($api, $runtime)->operate($store, PROFILE, 'login', OPERATION);

@@ -241,6 +241,46 @@ $tests['successful processes with malformed output identify result validation'] 
         0,
     );
 };
+$tests['backend model rejection preserves safe execution diagnostics'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->exitCode = 1;
+    $transport->stdout = json_encode([
+        'type' => 'error',
+        'message' => json_encode([
+            'error' => [
+                'code' => 'model_not_found',
+                'message' => 'SYNTHETIC_SECRET',
+            ],
+        ], JSON_THROW_ON_ERROR),
+    ], JSON_THROW_ON_ERROR)."\n";
+
+    driver_rejects(
+        fn () => (new CodexDriver)->start(driver_claim(), $transport, static function (): void {}),
+        'model_unavailable',
+        'execution',
+        1,
+    );
+    driver_assert(count($transport->commands) === 1);
+};
+$tests['preflight keeps the first backend rejection after full stream validation'] = function (): void {
+    $message = json_encode([
+        'error' => [
+            'code' => 'model_not_found',
+            'message' => 'SYNTHETIC_SECRET',
+        ],
+    ], JSON_THROW_ON_ERROR);
+    $stdout = json_encode(['type' => 'error', 'message' => $message], JSON_THROW_ON_ERROR)."\n";
+    $stdout .= "{\"type\":\"turn.failed\",\"error\":{\"message\":\"{malformed\"}}\n";
+    $transport = new SimulatedAgentTransport;
+    $transport->preflightResult = new CommandResult(1, $stdout, 'SYNTHETIC_SECRET');
+
+    driver_rejects(
+        fn () => (new CodexDriver)->probe($transport, static function (): void {}),
+        'model_unavailable',
+        'preflight',
+        1,
+    );
+};
 foreach ([
     'rate_limit_exceeded' => 'rate_limited',
     'token_expired' => 'auth_expired',
