@@ -1,4 +1,4 @@
-name: Runner checks
+name: checks
 on:
   push:
     branches: [main]

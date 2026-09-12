@@ -1,4 +1,4 @@
-name: Release runner
+name: release
 on:
   release:
     types: [published]
