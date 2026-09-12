@@ -54,7 +54,7 @@ final class SimulatedAgentTransport implements AgentTransport
         }
 
         if (in_array('--ephemeral', $argv, true)) {
-            return $this->preflightResult ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
+            return $this->preflightResult ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"id\":\"auth-message\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
         }
 
         return new CommandResult($this->exitCode, $this->stdout, 'SYNTHETIC_SECRET');
@@ -187,7 +187,7 @@ foreach ([
             $event = match ($type) {
                 'error' => ['type' => $type, ...$error],
                 'turn.failed' => ['type' => $type, 'error' => $error],
-                'item.completed' => ['type' => $type, 'item' => ['type' => 'error', ...$error]],
+                'item.completed' => ['type' => $type, 'item' => ['id' => 'error-item', 'type' => 'error', ...$error]],
             };
             $stdout = json_encode($event)."\n";
 
@@ -217,7 +217,7 @@ foreach (['error', 'item.completed'] as $type) {
         'tool item' => "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\"}}\n",
         'successful turn' => "{\"type\":\"turn.completed\"}\n",
         'fresh thread' => "{\"type\":\"thread.started\",\"thread_id\":\"synthetic-thread\"}\n",
-        'fresh message' => "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n",
+        'fresh message' => "{\"type\":\"item.completed\",\"item\":{\"id\":\"auth-message\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n",
         'duplicate keys' => "{\"type\":\"error\",\"code\":\"token_expired\",\"code\":\"rate_limit_exceeded\"}\n",
     ] as $name => $trailing) {
         $tests['preflight '.$type.' cannot hide trailing '.$name] = function () use ($type, $trailing): void {
@@ -228,7 +228,7 @@ foreach (['error', 'item.completed'] as $type) {
             ];
             $event = $type === 'error' ? $error : [
                 'type' => $type,
-                'item' => $error,
+                'item' => ['id' => 'error-item', ...$error],
             ];
             $transport->preflightResult = new CommandResult(1, json_encode($event)."\n".$trailing, '');
 
@@ -238,6 +238,51 @@ foreach (['error', 'item.completed'] as $type) {
         };
     }
 }
+foreach ([
+    'orphaned update' => ['item.updated'],
+    'duplicate start' => ['item.started', 'item.started'],
+    'update after completion' => ['item.completed', 'item.updated'],
+    'duplicate completion' => ['item.completed', 'item.completed'],
+] as $name => $types) {
+    $tests['preflight rejects '.$name.' before retaining a rate limit'] = function () use ($types): void {
+        $transport = new SimulatedAgentTransport;
+        $stdout = '';
+
+        foreach ($types as $type) {
+            $stdout .= json_encode([
+                'type' => $type,
+                'item' => [
+                    'id' => 'error-item',
+                    'type' => 'error',
+                    'code' => 'rate_limit_exceeded',
+                ],
+            ])."\n";
+        }
+
+        $transport->preflightResult = new CommandResult(1, $stdout, '');
+
+        driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'malformed_output');
+    };
+}
+$tests['preflight preserves a rate limit through a valid item lifecycle'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $stdout = '';
+
+    foreach (['item.started', 'item.updated', 'item.completed'] as $type) {
+        $stdout .= json_encode([
+            'type' => $type,
+            'item' => [
+                'id' => 'error-item',
+                'type' => 'error',
+                'code' => 'rate_limit_exceeded',
+            ],
+        ])."\n";
+    }
+
+    $transport->preflightResult = new CommandResult(1, $stdout, '');
+
+    driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'rate_limited');
+};
 $tests['preflight permits an error followed by its failed turn'] = function (): void {
     $transport = new SimulatedAgentTransport;
     $transport->preflightResult = new CommandResult(

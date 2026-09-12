@@ -163,7 +163,7 @@ final class SimulatedProfileRuntime implements ProfileRuntime
             return new CommandResult(0, '', '');
         }
         if ($command === 'preflight') {
-            return $this->preflight ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
+            return $this->preflight ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"id\":\"auth-message\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
         }
         ($this->onProbe ?? static fn () => null)();
 
@@ -505,6 +505,37 @@ $tests['validated Codex preflight rate limit reaches profile completion without 
                 'stopped' => true,
                 'health' => 'rate_limited',
                 'reason' => 'rate_limited',
+                'runtime_version' => '0.154.0',
+            ],
+        ]);
+        profile_assert(! str_contains(json_encode($api->requests), 'SYNTHETIC_PRIVATE'));
+        profile_assert($store->read('active') === null && ! is_dir($store->home()));
+    }
+};
+$tests['orphaned Codex rate-limit item updates complete as generic failure'] = function (): void {
+    foreach ([0, 1] as $exitCode) {
+        [$root, $store] = profile_fixture();
+        $api = new SimulatedProfileControlPlane;
+        $runtime = new SimulatedProfileRuntime;
+        $runtime->preflight = new CommandResult($exitCode, json_encode([
+            'type' => 'item.updated',
+            'item' => [
+                'id' => 'orphaned-error',
+                'type' => 'error',
+                'code' => 'rate_limit_exceeded',
+                'message' => 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT',
+            ],
+        ])."\n", '');
+
+        $result = profile_lifecycle($api, $runtime)->operate($store, PROFILE, 'login', OPERATION);
+
+        profile_assert($result === ['health' => 'error', 'reason' => 'native_probe_failed']);
+        profile_assert(end($api->requests) === [
+            'operations/'.OPERATION.'/completion',
+            [
+                'stopped' => true,
+                'health' => 'error',
+                'reason' => 'native_probe_failed',
                 'runtime_version' => '0.154.0',
             ],
         ]);
