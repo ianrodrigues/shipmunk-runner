@@ -20,13 +20,20 @@ if (is_link($output) || realpath($output) === false) {
 }
 $package = (new PackageBuilder)->build($root);
 $name = 'shipmunk-runner-'.$version.'.tar';
+$entrypoint = file_get_contents($root.'/tools/installer-entrypoint.php');
+if (! str_starts_with($entrypoint, "<?php\n")) {
+    throw new RuntimeException('Invalid installer entrypoint template.');
+}
+$installer = file_get_contents($root.'/runner/src/Setup/PackageInstaller.php')."\n".substr($entrypoint, 6);
 $manifest = json_encode([
     'version' => $version,
     'url' => 'https://github.com/ianrodrigues/shipmunk-runner/releases/download/'.$version.'/'.$name,
     'sha256' => $package['hash'],
+    'installer_url' => 'https://github.com/ianrodrigues/shipmunk-runner/releases/download/'.$version.'/installer.php',
+    'installer_sha256' => hash('sha256', $installer),
     'files' => $package['files'],
 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
-$assets = [$name => $package['contents'], 'runner-release.json' => $manifest];
+$assets = [$name => $package['contents'], 'installer.php' => $installer, 'runner-release.json' => $manifest];
 $checksums = '';
 foreach ($assets as $path => $contents) {
     $checksums .= hash('sha256', $contents).'  '.$path."\n";
