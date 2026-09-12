@@ -16,13 +16,15 @@ foreach (['Dockerfile.dockerignore', 'codex-mcp.mjs', 'codex-result.schema.json'
     copy(dirname(__DIR__).'/containers/'.$name, $context.'/runner/containers/'.$name);
 }
 try {
-    $process = proc_open(['docker', 'build', '--file', $context.'/runner/containers/Dockerfile', '--output', 'type=local,dest='.$output, $context], [0 => ['pipe', 'r'], 1 => ['file', $root.'/build.log', 'w'], 2 => ['file', $root.'/build.log', 'a']], $pipes);
+    $process = proc_open(['env', 'DOCKER_BUILDKIT=1', 'docker', 'build', '--file', $context.'/runner/containers/Dockerfile', '--output', 'type=local,dest='.$output, $context], [0 => ['pipe', 'r'], 1 => ['file', $root.'/build.log', 'w'], 2 => ['file', $root.'/build.log', 'a']], $pipes);
     if (! is_resource($process)) {
         throw new RuntimeException('Cannot test Docker context isolation.');
     }
     fclose($pipes[0]);
     if (proc_close($process) !== 0) {
-        throw new RuntimeException('Docker context isolation build failed.');
+        $log = (string) file_get_contents($root.'/build.log');
+        $diagnostic = preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/', '?', substr($log, -8192));
+        throw new RuntimeException("Docker context isolation build failed. Synthetic fixture build log (last 8192 bytes):\n".$diagnostic);
     }
     $paths = [];
     foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($output, FilesystemIterator::SKIP_DOTS)) as $entry) {

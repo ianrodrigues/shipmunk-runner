@@ -28,7 +28,7 @@ For the shortest setup path, register a runner in **Connections → Runners & Co
 bash runner/bin/shipmunk-setup ~/Downloads/shipmunk-setup-RUNNER.json
 ```
 
-Run from a checkout as the designated non-root account with PHP 8.5+, `pcntl`, `posix`, and a Linux Docker engine. `PHP_BIN=/path/to/php` selects a non-default PHP executable. The script validates the download and server address, checks Docker and `/up` without credentials, creates private files under `~/.shipmunk/runners`, builds the pinned runtime image, and offers native terminal login. It prints short `connect`, `connect probe`, `run --once` and `run` commands; it never starts queued work automatically. The native image uses a Dockerfile-specific context allowlist so application `.env` files and setup tokens are excluded.
+Run from a checkout as the designated non-root account with PHP 8.5+, `pcntl`, `posix`, and a Linux Docker engine. `PHP_BIN=/path/to/php` selects a non-default PHP executable. The script validates the download and server address, checks Docker and `/up` without credentials, creates private files under `~/.shipmunk/runners`, builds the pinned runtime image, and offers native terminal login. It prints short `connect`, `connect probe`, `run --once` and `run` commands; it never starts queued work automatically. The native image uses a Dockerfile-specific context allowlist so application `.env` files and setup tokens are excluded. Builds explicitly enable BuildKit, which is required to enforce this allowlist; an unavailable BuildKit builder fails the build.
 
 The download uses the dashboard origin. For a separate runner host, append `--server-url=https://your-runner-reachable-server`; loopback HTTP is only for same-host development. Confirm the displayed address before proceeding. The setup file and its separately scoped tokens expire in one hour. Delete the original download after setup; renew using the same runner card and effective server URL. Renewal preserves profile credentials and pending operation journals. The connection wrapper creates a fresh operation ID, while the existing lifecycle reconciles any original pending operation first. Detailed manual commands follow below.
 
@@ -37,7 +37,7 @@ The download uses the dashboard origin. For a separate runner host, append `--se
 Build the credential-only image explicitly (this downloads the pinned official packages):
 
 ```sh
-docker build --tag shipmunk-profile-native:local --file runner/containers/Dockerfile .
+DOCKER_BUILDKIT=1 docker build --tag shipmunk-profile-native:local --file runner/containers/Dockerfile .
 ```
 
 The image pins Codex **0.154.0** and Claude Code **2.1.269**. The runner resolves its immutable local image ID and verifies the executable version for every operation. The profile's server-side runtime version must match. Changing pins requires repeating the offline checks and designated-account runtime scenarios.

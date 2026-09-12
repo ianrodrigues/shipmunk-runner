@@ -55,7 +55,7 @@ final readonly class SetupWizard
         $files = new SetupFiles($home, $bundle->data['runner_id']);
         $files->install($bundle, $this->checkout, PHP_BINARY);
         fwrite(STDOUT, "Installed private configuration. The downloaded setup file is now mode 0600; delete it after setup.\nBuilding the pinned runtime image…\n");
-        $built = $this->execute(['docker', 'build', '--tag', self::IMAGE, '--file', $this->checkout.'/runner/containers/Dockerfile', $this->checkout]);
+        $built = $this->execute(['env', 'DOCKER_BUILDKIT=1', 'docker', 'build', '--tag', self::IMAGE, '--file', $this->checkout.'/runner/containers/Dockerfile', $this->checkout]);
         if ($built !== 0) {
             throw new SetupException('Runtime image build failed. Your private configuration is retained; rerun setup to retry.');
         }

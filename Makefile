@@ -26,7 +26,7 @@ runner-check:
 	@docker image inspect alpine:3.20 >/dev/null 2>&1 || { echo 'runner-check: alpine:3.20 is not present locally; load it explicitly before running this offline check.' >&2; exit 1; }
 	@find runner -type f \( -name '*.php' -o -path 'runner/bin/shipmunk-runner' -o -path 'runner/bin/shipmunk-profile' \) -exec php -l {} \; >/dev/null
 	@sh -n containers/runner/fake-native containers/runner/sandbox-entrypoint
-	docker build --pull=false --tag shipmunk-runner-test:local --file containers/runner/Dockerfile .
+	DOCKER_BUILDKIT=1 docker build --pull=false --tag shipmunk-runner-test:local --file containers/runner/Dockerfile .
 	SHIPMUNK_RUNNER_IMAGE=shipmunk-runner-test:local php runner/tests/run.php
 	php runner/tests/SourceArchiveTest.php
 	php runner/tests/ProfileTest.php
@@ -37,15 +37,15 @@ runner-check:
 	bash -n runner/bin/shipmunk-setup
 	php runner/tests/SetupTest.php
 	php runner/tests/PackageTest.php
-	php runner/tests/SetupContextTest.php
-	docker build --pull=false --tag shipmunk-profile-test:local --file runner/tests/fixtures/profile-Dockerfile .
+	DOCKER_BUILDKIT=0 php runner/tests/SetupContextTest.php
+	DOCKER_BUILDKIT=1 docker build --pull=false --tag shipmunk-profile-test:local --file runner/tests/fixtures/profile-Dockerfile .
 	php runner/tests/ProfileContainerTest.php
 
 native-image-check:
-	docker build --tag shipmunk-profile-native-test:local --file runner/containers/Dockerfile .
+	DOCKER_BUILDKIT=1 docker build --tag shipmunk-profile-native-test:local --file runner/containers/Dockerfile .
 	php runner/tests/NativeImageTest.php
 	php runner/tests/NativeHomeTest.php
 	SHIPMUNK_CODEX_TEST_IMAGE=shipmunk-profile-native-test:local php runner/tests/DockerAgentTransportTest.php
-	docker build --pull=false --build-arg CODEX_FIXTURE_BASE=shipmunk-profile-native-test:local --tag shipmunk-codex-supervisor-test:local --file runner/tests/fixtures/codex-supervisor/Dockerfile .
+	DOCKER_BUILDKIT=1 docker build --pull=false --build-arg CODEX_FIXTURE_BASE=shipmunk-profile-native-test:local --tag shipmunk-codex-supervisor-test:local --file runner/tests/fixtures/codex-supervisor/Dockerfile .
 	OPENAI_API_KEY=SYNTHETIC_CONFLICT SHIPMUNK_CODEX_SUPERVISOR_IMAGE=shipmunk-codex-supervisor-test:local php runner/tests/CodexSupervisorTest.php
 	SHIPMUNK_CODEX_BOUNDARY_IMAGE=shipmunk-profile-native-test:local php runner/tests/CodexBoundaryTest.php
