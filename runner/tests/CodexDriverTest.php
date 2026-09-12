@@ -279,6 +279,7 @@ $tests['preflight preserves a rate limit through a valid item lifecycle'] = func
         ])."\n";
     }
 
+    $stdout .= json_encode(['type' => 'turn.failed'])."\n";
     $transport->preflightResult = new CommandResult(1, $stdout, '');
 
     driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'rate_limited');

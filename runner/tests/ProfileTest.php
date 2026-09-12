@@ -543,6 +543,37 @@ $tests['orphaned Codex rate-limit item updates complete as generic failure'] = f
         profile_assert($store->read('active') === null && ! is_dir($store->home()));
     }
 };
+$tests['truncated Codex rate-limit item streams complete as generic failure'] = function (): void {
+    foreach ([0, 1] as $exitCode) {
+        [$root, $store] = profile_fixture();
+        $api = new SimulatedProfileControlPlane;
+        $runtime = new SimulatedProfileRuntime;
+        $runtime->preflight = new CommandResult($exitCode, json_encode([
+            'type' => 'item.completed',
+            'item' => [
+                'id' => 'truncated-error',
+                'type' => 'error',
+                'code' => 'rate_limit_exceeded',
+                'message' => 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT',
+            ],
+        ])."\n", '');
+
+        $result = profile_lifecycle($api, $runtime)->operate($store, PROFILE, 'login', OPERATION);
+
+        profile_assert($result === ['health' => 'error', 'reason' => 'native_probe_failed']);
+        profile_assert(end($api->requests) === [
+            'operations/'.OPERATION.'/completion',
+            [
+                'stopped' => true,
+                'health' => 'error',
+                'reason' => 'native_probe_failed',
+                'runtime_version' => '0.154.0',
+            ],
+        ]);
+        profile_assert(! str_contains(json_encode($api->requests), 'SYNTHETIC_PRIVATE'));
+        profile_assert($store->read('active') === null && ! is_dir($store->home()));
+    }
+};
 $tests['malformed Codex output after a rate limit fails closed'] = function (): void {
     $rateLimit = json_encode([
         'type' => 'error',
