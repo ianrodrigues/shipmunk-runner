@@ -120,12 +120,21 @@ function driver_assert(bool $value): void
 function driver_rejects(
     Closure $operation,
     ?string $reason = null,
+    ?string $stage = null,
+    ?int $exitCode = null,
 ): void {
     try {
         $operation();
     } catch (RuntimeException $exception) {
         if ($reason !== null) {
-            driver_assert($exception instanceof DriverFailure && $exception->reason === $reason);
+            driver_assert($exception instanceof DriverFailure && $exception->reason->value === $reason);
+        }
+
+        if ($stage !== null) {
+            driver_assert($exception instanceof DriverFailure);
+            driver_assert($exception->stage?->value === $stage);
+            driver_assert($exception->exitCode === $exitCode);
+            driver_assert(! str_contains($exception->summary(), 'SYNTHETIC_SECRET'));
         }
 
         return;
@@ -174,6 +183,63 @@ $tests['API account mode cannot pass native subscription preflight'] = function 
     $transport->mode = 'Logged in using an API key';
     driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'auth_expired');
     driver_assert(count($transport->commands) === 1);
+};
+$tests['version mismatch diagnostics retain the successful process exit and safe stage'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->version = 'SYNTHETIC_SECRET';
+
+    driver_rejects(
+        fn () => (new CodexDriver)->inspect($transport, static function (): void {}),
+        'process_error',
+        'version_inspection',
+        0,
+    );
+};
+$tests['account mismatch diagnostics identify the probe without exposing account output'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->mode = 'SYNTHETIC_SECRET';
+
+    driver_rejects(
+        fn () => (new CodexDriver)->probe($transport, static function (): void {}),
+        'auth_expired',
+        'account_probe',
+        0,
+    );
+};
+$tests['preflight diagnostics retain the native failure exit code'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->preflightResult = new CommandResult(17, '', 'SYNTHETIC_SECRET');
+
+    driver_rejects(
+        fn () => (new CodexDriver)->probe($transport, static function (): void {}),
+        'process_error',
+        'preflight',
+        17,
+    );
+};
+$tests['execution diagnostics preserve failure stage before any later account probe'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->exitCode = 23;
+    $transport->stdout = '';
+
+    driver_rejects(
+        fn () => (new CodexDriver)->start(driver_claim(), $transport, static function (): void {}),
+        'process_error',
+        'execution',
+        23,
+    );
+    driver_assert(count($transport->commands) === 1);
+};
+$tests['successful processes with malformed output identify result validation'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->stdout = "SYNTHETIC_SECRET\n";
+
+    driver_rejects(
+        fn () => (new CodexDriver)->start(driver_claim(), $transport, static function (): void {}),
+        'malformed_output',
+        'result_parsing',
+        0,
+    );
 };
 foreach ([
     'rate_limit_exceeded' => 'rate_limited',

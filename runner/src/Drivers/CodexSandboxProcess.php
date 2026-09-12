@@ -73,13 +73,24 @@ final class CodexSandboxProcess implements SandboxProcess
                 }
             }
         } catch (DriverFailure $failure) {
-            $this->execution = new NativeExecution([], [], [
+            $summary = $failure->summary();
+            $events = [[
+                'protocol_version' => '1.0',
+                'attempt_id' => $this->claim->attemptId,
+                'fence' => $this->claim->fence,
+                'sequence' => 1,
+                'type' => 'progress',
+                'timestamp' => gmdate('Y-m-d\TH:i:s\Z'),
+                'payload' => ['message' => $summary],
+            ]];
+
+            $this->execution = new NativeExecution($events, [], [
                 'protocol_version' => '1.0',
                 'run_id' => $this->claim->runId,
                 'attempt_id' => $this->claim->attemptId,
                 'fence' => $this->claim->fence,
-                'outcome' => $failure->reason === 'approval_required' ? 'needs_input' : 'incomplete',
-                'summary' => $failure->getMessage(),
+                'outcome' => $failure->reason === NativeFailureReason::ApprovalRequired ? 'needs_input' : 'incomplete',
+                'summary' => $summary,
                 'findings' => [],
                 'tests' => [],
                 'patch_artifact' => null,

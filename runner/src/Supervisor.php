@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Shipmunk\Runner;
 
+use Closure;
 use DateTimeImmutable;
 use RuntimeException;
 use Shipmunk\Runner\Profiles\ProfileStore;
@@ -56,7 +57,10 @@ final readonly class Supervisor
         $this->state->clear();
     }
 
-    public function runOnce(): bool
+    /**
+     * @param (Closure(Claim, string): void)|null $onCompleted
+     */
+    public function runOnce(?Closure $onCompleted = null): bool
     {
         $this->reconcileAfterRestart();
         $this->state->ensureWritable();
@@ -66,6 +70,8 @@ final readonly class Supervisor
         if ($claim === null) {
             return false;
         }
+
+        $outcome = null;
 
         if ($this->sandbox instanceof ProfiledSandbox) {
             $profileId = $claim->manifest['profile_id'] ?? null;
@@ -87,9 +93,9 @@ final readonly class Supervisor
                     if ($heartbeat->stop) {
                         throw new RuntimeException('Control plane requested execution stop.');
                     }
-                }, function () use ($claim, &$entered): void {
+                }, function () use ($claim, &$entered, &$outcome): void {
                     $entered = true;
-                    $this->runClaim($claim);
+                    $outcome = $this->runClaim($claim);
                 });
             } catch (\Throwable $exception) {
                 if (! $entered) {
@@ -101,13 +107,19 @@ final readonly class Supervisor
                 throw $exception;
             }
         } else {
-            $this->runClaim($claim);
+            $outcome = $this->runClaim($claim);
         }
+
+        if ($outcome === null) {
+            throw new RuntimeException('The sandbox did not execute the claimed run.');
+        }
+
+        $onCompleted?->__invoke($claim, $outcome);
 
         return true;
     }
 
-    private function runClaim(Claim $claim): void
+    private function runClaim(Claim $claim): string
     {
         $workspace = $this->workspaces->path($claim);
         $lease = $claim->leaseExpiresAt;
@@ -151,7 +163,7 @@ final readonly class Supervisor
             $process->start($checkpoint);
             $checkpoint(0);
 
-            $this->execute($claim, $process, $workspace, $watchdog);
+            $outcome = $this->execute($claim, $process, $workspace, $watchdog);
         } catch (\Throwable $exception) {
             try {
                 $this->cleanupAndAcknowledge($claim, $process, $workspace, $watchdog);
@@ -163,6 +175,8 @@ final readonly class Supervisor
         }
 
         $this->cleanupAndAcknowledge($claim, $process, $workspace, $watchdog);
+
+        return $outcome;
     }
 
     private function execute(
@@ -170,7 +184,7 @@ final readonly class Supervisor
         SandboxProcess $process,
         string $workspace,
         WatchdogLease $watchdog,
-    ): void {
+    ): string {
         $lease = new DateTimeImmutable($this->state->load()['lease_expires_at'] ?? throw new RuntimeException('Active lease state is missing.'));
         $startedAt = $this->clock->now();
         $nextHeartbeat = $startedAt + self::HEARTBEAT_SECONDS;
@@ -242,6 +256,8 @@ final readonly class Supervisor
 
         $this->renewLease($claim, $process, $workspace, $watchdog);
         $this->client->complete($claim, $result);
+
+        return $result['outcome'];
     }
 
     private function renewLease(

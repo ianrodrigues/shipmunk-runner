@@ -8,6 +8,7 @@ use RuntimeException;
 use Shipmunk\Runner\CommandResult;
 use Shipmunk\Runner\Drivers\CodexEventParser;
 use Shipmunk\Runner\Drivers\DriverFailure;
+use Shipmunk\Runner\Drivers\NativeFailureReason;
 
 final class NativeProfile
 {
@@ -116,7 +117,7 @@ final class NativeProfile
             return $failed;
         }
 
-        if ($reason === 'rate_limited') {
+        if ($reason === NativeFailureReason::RateLimited) {
             return ['health' => 'rate_limited', 'reason' => 'rate_limited'];
         }
 

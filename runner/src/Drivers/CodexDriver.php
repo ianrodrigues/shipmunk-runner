@@ -6,6 +6,7 @@ namespace Shipmunk\Runner\Drivers;
 
 use Closure;
 use Shipmunk\Runner\Claim;
+use Shipmunk\Runner\CommandResult;
 use Shipmunk\Runner\NativeExecution;
 use Shipmunk\Runner\Profiles\NativeProfile;
 
@@ -22,7 +23,11 @@ final class CodexDriver implements AgentDriver
         $result = $transport->run(NativeProfile::command('codex', 'version'), '', $checkpoint);
 
         if (! NativeProfile::versionMatches('codex', NativeProfile::VERSIONS['codex'], $result)) {
-            throw new DriverFailure('process_error');
+            throw new DriverFailure(
+                NativeFailureReason::ProcessError,
+                NativeFailureStage::VersionInspection,
+                $result->exitCode,
+            );
         }
 
         return [
@@ -38,14 +43,27 @@ final class CodexDriver implements AgentDriver
     ): void {
         $this->assertAccountMode($transport, $checkpoint);
         $result = $transport->run(NativeProfile::command('codex', 'preflight'), '', $checkpoint);
-        $reason = (new CodexEventParser)->preflightFailureReason(
-            $result->exitCode,
-            $result->stdout,
-            $result->stderr,
-        );
+
+        try {
+            $reason = (new CodexEventParser)->preflightFailureReason(
+                $result->exitCode,
+                $result->stdout,
+                $result->stderr,
+            );
+        } catch (DriverFailure $failure) {
+            throw new DriverFailure(
+                $failure->reason,
+                NativeFailureStage::Preflight,
+                $result->exitCode,
+            );
+        }
 
         if ($reason !== null) {
-            throw new DriverFailure($reason);
+            throw new DriverFailure(
+                $reason,
+                NativeFailureStage::Preflight,
+                $result->exitCode,
+            );
         }
 
         $this->assertAccountMode($transport, $checkpoint);
@@ -60,9 +78,14 @@ final class CodexDriver implements AgentDriver
         $this->lastSession = null;
         $manifest = $claim->manifest;
 
-        if (($manifest['agent'] ?? null) !== 'codex'
-            || ($manifest['runtime_version'] ?? null) !== NativeProfile::VERSIONS['codex']) {
-            throw new DriverFailure('process_error');
+        if (
+            ($manifest['agent'] ?? null) !== 'codex'
+            || ($manifest['runtime_version'] ?? null) !== NativeProfile::VERSIONS['codex']
+        ) {
+            throw new DriverFailure(
+                NativeFailureReason::ProcessError,
+                NativeFailureStage::Execution,
+            );
         }
 
         $configuration = $manifest['effective_config'] ?? [];
@@ -70,10 +93,19 @@ final class CodexDriver implements AgentDriver
         $instructions = $configuration['instructions'] ?? null;
         $context = $manifest['task_context'] ?? null;
 
-        if (! is_string($model) || preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/D', $model) !== 1
-            || ! is_string($instructions) || strlen($instructions) > 50_000
-            || ! is_string($context) || $context === '' || strlen($context) > 32_768) {
-            throw new DriverFailure('process_error');
+        if (
+            ! is_string($model)
+            || preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/D', $model) !== 1
+            || ! is_string($instructions)
+            || strlen($instructions) > 50_000
+            || ! is_string($context)
+            || $context === ''
+            || strlen($context) > 32_768
+        ) {
+            throw new DriverFailure(
+                NativeFailureReason::ProcessError,
+                NativeFailureStage::Execution,
+            );
         }
 
         $argv = [
@@ -123,21 +155,22 @@ final class CodexDriver implements AgentDriver
         $result = $transport->run($argv, $context, $checkpoint);
 
         if ($result->exitCode !== 0) {
-            return (new CodexEventParser)->parse($claim, $result->exitCode, $result->stdout, $result->stderr);
+            return $this->parseExecution($claim, $result);
         }
 
         $this->assertAccountMode($transport, $checkpoint);
-        $execution = (new CodexEventParser)->parse(
-            $claim, $result->exitCode, $result->stdout, $result->stderr,
-            $result->exitCode === 0 ? $transport->patch() : null,
-        );
+        $execution = $this->parseExecution($claim, $result, $transport->patch());
 
         $firstLine = strtok($result->stdout, "\n");
         $event = json_decode($firstLine === false ? '' : $firstLine, true);
         $candidate = new AgentSession((string) ($event['thread_id'] ?? ''), AgentSession::binding($claim));
 
         if ($session?->compatible($claim) && $candidate->id !== $session->id) {
-            throw new DriverFailure('invalid_result');
+            throw new DriverFailure(
+                NativeFailureReason::InvalidResult,
+                NativeFailureStage::ResultParsing,
+                $result->exitCode,
+            );
         }
 
         if ($candidate->compatible($claim)) {
@@ -152,6 +185,37 @@ final class CodexDriver implements AgentDriver
         $transport->stop();
     }
 
+    private function parseExecution(
+        Claim $claim,
+        CommandResult $result,
+        ?string $patch = null,
+    ): NativeExecution {
+        try {
+            return (new CodexEventParser)->parse(
+                $claim,
+                $result->exitCode,
+                $result->stdout,
+                $result->stderr,
+                $patch,
+            );
+        } catch (DriverFailure $failure) {
+            $invalidResponse = in_array($failure->reason, [
+                NativeFailureReason::MalformedOutput,
+                NativeFailureReason::MissingResult,
+                NativeFailureReason::InvalidResult,
+            ], true);
+            $stage = $result->exitCode === 0 && $invalidResponse
+                ? NativeFailureStage::ResultParsing
+                : NativeFailureStage::Execution;
+
+            throw new DriverFailure(
+                $failure->reason,
+                $stage,
+                $result->exitCode,
+            );
+        }
+    }
+
     private function withPatchArtifact(
         Claim $claim,
         AgentTransport $transport,
@@ -163,11 +227,17 @@ final class CodexDriver implements AgentDriver
 
         $base = $claim->manifest['base_sha'] ?? null;
 
-        if (($claim->manifest['kind'] ?? null) === 'review'
+        if (
+            ($claim->manifest['kind'] ?? null) === 'review'
             || ! is_string($base)
             || preg_match('/^[a-f0-9]{40}$/D', $base) !== 1
-            || $base !== ($claim->manifest['head_sha'] ?? null)) {
-            throw new DriverFailure('invalid_result');
+            || $base !== ($claim->manifest['head_sha'] ?? null)
+        ) {
+            throw new DriverFailure(
+                NativeFailureReason::InvalidResult,
+                NativeFailureStage::ResultParsing,
+                0,
+            );
         }
 
         $patch = $execution->artifacts[0]['bytes'];
@@ -181,7 +251,11 @@ final class CodexDriver implements AgentDriver
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
 
         if (strlen($bytes) > 2_097_152) {
-            throw new DriverFailure('invalid_result');
+            throw new DriverFailure(
+                NativeFailureReason::InvalidResult,
+                NativeFailureStage::ResultParsing,
+                0,
+            );
         }
 
         $hash = hash('sha256', $bytes);
@@ -205,7 +279,11 @@ final class CodexDriver implements AgentDriver
         $result = $transport->run(NativeProfile::command('codex', 'probe'), '', $checkpoint);
 
         if (NativeProfile::health('codex', $result)['health'] !== 'ready') {
-            throw new DriverFailure('auth_expired');
+            throw new DriverFailure(
+                NativeFailureReason::AuthExpired,
+                NativeFailureStage::AccountProbe,
+                $result->exitCode,
+            );
         }
     }
 }

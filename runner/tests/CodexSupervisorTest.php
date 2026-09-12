@@ -13,6 +13,7 @@ use Shipmunk\Runner\HttpTransport;
 use Shipmunk\Runner\NormalizedExecutionAdapter;
 use Shipmunk\Runner\Profiles\NativeProfile;
 use Shipmunk\Runner\Profiles\ProfileStore;
+use Shipmunk\Runner\RunCommand;
 use Shipmunk\Runner\Supervisor;
 use Shipmunk\Runner\WorkspacePreparer;
 
@@ -210,6 +211,7 @@ function codex_supervisor_scenario(
     string $image,
     bool $cancel,
     bool $failSessionWrite = false,
+    bool $failPreflight = false,
 ): void {
     $root = realpath(sys_get_temp_dir()).'/shipmunk-codex-supervisor-'.bin2hex(random_bytes(8));
     mkdir($root, 0700);
@@ -282,6 +284,10 @@ function codex_supervisor_scenario(
     NativeProfile::initializeHome($profile->createHome());
     file_put_contents($profile->home().'/synthetic-secret', 'SYNTHETIC_PROFILE_SECRET');
     chmod($profile->home().'/synthetic-secret', 0600);
+    if ($failPreflight) {
+        file_put_contents($profile->home().'/synthetic-preflight-failure', 'fixture');
+        chmod($profile->home().'/synthetic-preflight-failure', 0600);
+    }
     $profile->write('active', [
         'profile_id' => $profileId,
         'credential_reference' => 'credential:synthetic-profile',
@@ -308,9 +314,28 @@ function codex_supervisor_scenario(
 
     try {
         $failure = null;
+        $terminal = [];
+        $errors = [];
+        $commandExit = null;
 
         try {
-            $supervisor->runOnce();
+            if ($failPreflight) {
+                $commandExit = (new RunCommand(
+                    $supervisor,
+                    static function (string $message) use (&$terminal, $http, $state): void {
+                        codex_supervisor_assert(
+                            $http->stopped && $state->load() === null,
+                            'Terminal completion preceded acknowledged cleanup.',
+                        );
+                        $terminal[] = $message;
+                    },
+                    static function (string $message) use (&$errors): void {
+                        $errors[] = $message;
+                    },
+                ))->run(true);
+            } else {
+                $supervisor->runOnce();
+            }
         } catch (RuntimeException $exception) {
             $failure = $exception;
         }
@@ -328,6 +353,54 @@ function codex_supervisor_scenario(
             codex_supervisor_assert($failure?->getMessage() === 'Control plane requested execution stop.', 'Cancellation failed through an unexpected path: '.($failure?->getMessage() ?? 'no exception'));
             codex_supervisor_assert($http->cancelledRunningChildren, 'Cancellation did not reach running repository code.');
             codex_supervisor_assert($http->completions === [] && $http->uploads === [], 'Cancelled execution published a result or patch.');
+
+            return;
+        }
+
+        if ($failPreflight) {
+            $summary = 'Native runtime execution failed. Stage: authenticated preflight.'
+                .' Reason: process_error. Native exit code: 17.';
+            codex_supervisor_assert(
+                $failure === null && $commandExit === 1,
+                'Incomplete native work did not produce a failing terminal exit.',
+            );
+            codex_supervisor_assert($terminal === [
+                'Run '.$manifest['run_id'].', attempt '.$attempt.": incomplete.\n",
+            ], 'Terminal output omitted or duplicated the assigned run result.');
+            codex_supervisor_assert($errors === [], 'A reported native failure was replaced by a generic command failure.');
+            codex_supervisor_assert(
+                count($http->completions) === 1 && $http->uploads === [],
+                'Preflight failure published work or omitted completion.',
+            );
+            codex_supervisor_assert(
+                $http->completions[0]['summary'] === $summary,
+                'Native failure stage or exit code was lost.',
+            );
+            codex_supervisor_assert(
+                $http->completions[0]['outcome'] === 'incomplete',
+                'Native preflight failure became successful.',
+            );
+            codex_supervisor_assert(
+                array_column($http->events, 'type') === ['progress'],
+                'Sanitized failure diagnostic was not published as progress.',
+            );
+            codex_supervisor_assert(
+                $http->events[0]['payload'] === ['message' => $summary],
+                'Diagnostic event differs from the sanitized result.',
+            );
+            $outbound = json_encode([$http->events, $http->completions, $terminal, $errors], JSON_THROW_ON_ERROR);
+            codex_supervisor_assert(
+                ! str_contains($outbound, 'SYNTHETIC_PRIVATE'),
+                'Raw native diagnostics escaped the boundary.',
+            );
+            codex_supervisor_assert(
+                ! str_contains($outbound, 'SYNTHETIC_PROFILE_SECRET'),
+                'Profile credentials escaped the boundary.',
+            );
+            codex_supervisor_assert(
+                ! str_contains($outbound, 'SYNTHETIC_RUNNER_TOKEN'),
+                'Runner credentials escaped the boundary.',
+            );
 
             return;
         }
@@ -365,6 +438,9 @@ function codex_supervisor_scenario(
 }
 
 $image = getenv('SHIPMUNK_CODEX_SUPERVISOR_IMAGE') ?: 'shipmunk-codex-supervisor-test:local';
+
+codex_supervisor_scenario($image, false, failPreflight: true);
+fwrite(STDOUT, "PASS native preflight failure publishes sanitized stage and exit code before failing terminal feedback\n");
 
 foreach ([false, true] as $cancel) {
     codex_supervisor_scenario($image, $cancel);
@@ -441,4 +517,5 @@ try {
     codex_supervisor_remove($root);
 }
 
-fwrite(STDOUT, "4 Codex supervisor scenarios passed. Native CLI and HTTP responses are synthetic; Docker, MCP, filesystem and supervisor are real.\n");
+fwrite(STDOUT, "5 Codex supervisor scenarios passed. Native CLI and HTTP responses are synthetic; "
+    ."Docker, MCP, filesystem and supervisor are real.\n");

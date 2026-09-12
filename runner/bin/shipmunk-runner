@@ -12,6 +12,7 @@ use Shipmunk\Runner\FakeNativeExecutableAdapter;
 use Shipmunk\Runner\HostWatchdog;
 use Shipmunk\Runner\HttpControlPlaneClient;
 use Shipmunk\Runner\NormalizedExecutionAdapter;
+use Shipmunk\Runner\RunCommand;
 use Shipmunk\Runner\Supervisor;
 use Shipmunk\Runner\WorkspacePreparer;
 
@@ -70,15 +71,4 @@ $supervisor = new Supervisor(
     watchdog: $driver === 'codex' ? new CodexWatchdog : new HostWatchdog,
 );
 
-try {
-    do {
-        $worked = $supervisor->runOnce();
-
-        if (! $worked && ! isset($options['once'])) {
-            sleep(2);
-        }
-    } while (! isset($options['once']));
-} catch (Throwable $exception) {
-    fwrite(STDERR, $exception->getMessage()."\n");
-    exit(1);
-}
+exit((new RunCommand($supervisor))->run(isset($options['once'])));

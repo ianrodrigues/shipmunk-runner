@@ -46,7 +46,7 @@ function parser_rejects(string $name, string $reason, string $stdout, int $exit 
     try {
         (new CodexEventParser)->parse(parser_claim(), $exit, $stdout, $stderr, $patch);
     } catch (DriverFailure $failure) {
-        parser_assert($failure->reason === $reason, $name.': incorrect reason '.$failure->reason);
+        parser_assert($failure->reason->value === $reason, $name.': incorrect reason '.$failure->reason->value);
         parser_assert(! str_contains((string) $failure, 'SYNTHETIC_SECRET'), $name.': provider text leaked');
         fwrite(STDOUT, "PASS {$name}\n");
 
