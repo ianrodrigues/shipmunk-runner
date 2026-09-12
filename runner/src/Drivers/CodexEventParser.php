@@ -95,7 +95,7 @@ final class CodexEventParser
     }
 
     /**
-     * @param array<string, array{type: string, complete: bool}> $items
+     * @param array<array-key, array{type: string, complete: bool}> $items
      */
     private function recordItemLifecycle(
         stdClass $event,
@@ -103,15 +103,16 @@ final class CodexEventParser
     ): void
     {
         $item = $event->item;
-        $this->text($item->id ?? null, 128, 'malformed_output');
-        $previous = $items[$item->id] ?? null;
+        $id = $this->text($item->id ?? null, 128, 'malformed_output');
+        $kind = $this->text($item->type ?? null, 128, 'malformed_output');
+        $previous = $items[$id] ?? null;
 
         if ($previous !== null) {
             if ($previous['complete']) {
                 throw new DriverFailure('malformed_output');
             }
 
-            if ($previous['type'] !== $item->type) {
+            if ($previous['type'] !== $kind) {
                 throw new DriverFailure('malformed_output');
             }
 
@@ -120,12 +121,13 @@ final class CodexEventParser
             }
         }
 
+        // Codex emits messages, reasoning and warnings directly as completed items.
         if ($event->type === 'item.updated' && $previous === null) {
             throw new DriverFailure('malformed_output');
         }
 
-        $items[$item->id] = [
-            'type' => $item->type,
+        $items[$id] = [
+            'type' => $kind,
             'complete' => $event->type === 'item.completed',
         ];
     }
@@ -387,7 +389,7 @@ final class CodexEventParser
         mixed $value,
         int $max,
         string $reason = 'invalid_result',
-    ): void {
+    ): string {
         if (! is_string($value) || $value === '') {
             throw new DriverFailure($reason);
         }
@@ -397,6 +399,8 @@ final class CodexEventParser
         if ($length === false || $length > $max) {
             throw new DriverFailure($reason);
         }
+
+        return $value;
     }
 
     private function integer(
