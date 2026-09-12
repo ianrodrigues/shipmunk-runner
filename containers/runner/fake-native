@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+
+run_id="$1"
+attempt_id="$2"
+fence="$3"
+child=''
+
+terminate() {
+    if [ -n "$child" ]; then
+        kill -TERM "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+    fi
+
+    exit 143
+}
+
+trap terminate TERM INT
+
+while [ ! -f /run/shipmunk/agent-input.json ]; do
+    sleep 0.05
+done
+
+if grep -q '"fake_require_fixture":true' /run/shipmunk/agent-input.json; then
+    test "$(cat /workspace/fixture.txt)" = 'fixture'
+    grep -q '"safe_marker":"copied"' /run/shipmunk/agent-input.json
+    printf '%s' 'fixture:copied' > /run/shipmunk/observed
+fi
+
+if grep -q '"fake_mode":"sleep"' /run/shipmunk/agent-input.json; then
+    sleep 600 &
+    child="$!"
+    wait "$child"
+fi
+
+if grep -q '"fake_mode":"ignore_term"' /run/shipmunk/agent-input.json; then
+    trap '' TERM
+    sh -c 'trap "" TERM; sleep 600' &
+    child="$!"
+    wait "$child"
+fi
+
+if grep -q '"fake_mode":"malformed"' /run/shipmunk/agent-input.json; then
+    printf '%s\n' 'not-json'
+    exit 0
+fi
+
+printf '{"events":[],"artifacts":[],"result":{"protocol_version":"1.0","run_id":"%s","attempt_id":"%s","fence":%s,"summary":"Fake native execution completed.","outcome":"incomplete","findings":[],"patch_artifact":null,"tests":[],"usage":null}}\n' \
+    "$run_id" "$attempt_id" "$fence"

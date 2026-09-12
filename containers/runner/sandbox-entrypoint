@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+while [ ! -f /run/shipmunk/ready ]; do
+    sleep 0.05
+done
+
+exec /opt/shipmunk/fake-native "$@"

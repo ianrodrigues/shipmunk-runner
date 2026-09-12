@@ -1,0 +1,51 @@
+SHELL := /bin/bash
+.DEFAULT_GOAL := check
+
+.PHONY: check lint package-check runner-check native-image-check
+
+check: lint package-check runner-check native-image-check
+
+lint:
+	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'PHP 8.5 or newer is required.' >&2; exit 1; }
+	@find runner tools tests -type f \( -name '*.php' -o -name shipmunk-runner -o -name shipmunk-profile \) -exec php -l {} \; >/dev/null
+	@bash -n runner/bin/shipmunk-setup tools/publish-release.sh
+
+package-check:
+	php runner/tests/PackageTest.php
+	php tests/PackagingTest.php
+	bash tests/ReleaseUploadTest.sh
+
+runner-check:
+	@command -v php >/dev/null 2>&1 || { echo 'runner-check: php is missing. Install PHP 8.5.' >&2; exit 1; }
+	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo "runner-check: PHP 8.5 or newer is required, found $$(php -r 'echo PHP_VERSION;')." >&2; exit 1; }
+	@php -r 'exit(extension_loaded("pcntl") ? 0 : 1);' || { echo 'runner-check: the PHP pcntl extension is required for the independent host watchdog.' >&2; exit 1; }
+	@php -r 'exit(extension_loaded("posix") ? 0 : 1);' || { echo 'runner-check: the PHP posix extension is required for protected profile storage.' >&2; exit 1; }
+	@command -v docker >/dev/null 2>&1 || { echo 'runner-check: Docker is missing; a Linux Docker engine is required.' >&2; exit 1; }
+	@docker info >/dev/null 2>&1 || { echo 'runner-check: Docker is unavailable; start a Linux Docker engine.' >&2; exit 1; }
+	@test "$$(docker version --format '{{.Server.Os}}')" = linux || { echo 'runner-check: the Docker server is not Linux.' >&2; exit 1; }
+	@docker image inspect alpine:3.20 >/dev/null 2>&1 || { echo 'runner-check: alpine:3.20 is not present locally; load it explicitly before running this offline check.' >&2; exit 1; }
+	@find runner -type f \( -name '*.php' -o -path 'runner/bin/shipmunk-runner' -o -path 'runner/bin/shipmunk-profile' \) -exec php -l {} \; >/dev/null
+	@sh -n containers/runner/fake-native containers/runner/sandbox-entrypoint
+	docker build --pull=false --tag shipmunk-runner-test:local --file containers/runner/Dockerfile .
+	SHIPMUNK_RUNNER_IMAGE=shipmunk-runner-test:local php runner/tests/run.php
+	php runner/tests/SourceArchiveTest.php
+	php runner/tests/ProfileTest.php
+	php runner/tests/CodexEventParserTest.php
+	php runner/tests/CodexDriverTest.php
+	php runner/tests/CodexExclusionTest.php
+	php runner/tests/AgentSessionStoreTest.php
+	bash -n runner/bin/shipmunk-setup
+	php runner/tests/SetupTest.php
+	php runner/tests/PackageTest.php
+	php runner/tests/SetupContextTest.php
+	docker build --pull=false --tag shipmunk-profile-test:local --file runner/tests/fixtures/profile-Dockerfile .
+	php runner/tests/ProfileContainerTest.php
+
+native-image-check:
+	docker build --tag shipmunk-profile-native-test:local --file runner/containers/Dockerfile .
+	php runner/tests/NativeImageTest.php
+	php runner/tests/NativeHomeTest.php
+	SHIPMUNK_CODEX_TEST_IMAGE=shipmunk-profile-native-test:local php runner/tests/DockerAgentTransportTest.php
+	docker build --pull=false --build-arg CODEX_FIXTURE_BASE=shipmunk-profile-native-test:local --tag shipmunk-codex-supervisor-test:local --file runner/tests/fixtures/codex-supervisor/Dockerfile .
+	OPENAI_API_KEY=SYNTHETIC_CONFLICT SHIPMUNK_CODEX_SUPERVISOR_IMAGE=shipmunk-codex-supervisor-test:local php runner/tests/CodexSupervisorTest.php
+	SHIPMUNK_CODEX_BOUNDARY_IMAGE=shipmunk-profile-native-test:local php runner/tests/CodexBoundaryTest.php
