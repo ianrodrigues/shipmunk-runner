@@ -8,7 +8,8 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    # Fork code must never execute on the trusted private runner.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
