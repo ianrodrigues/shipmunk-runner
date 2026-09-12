@@ -31,6 +31,7 @@ final class CodexEventParser
         string $stderr = '',
     ): ?string {
         $reason = null;
+        $state = 'initial';
         $terminal = false;
         $completed = false;
         $message = null;
@@ -56,6 +57,21 @@ final class CodexEventParser
             // Codex can report an error before turn.failed, but cannot resume work afterward.
             if ($reason !== null && ! $failure) {
                 throw new DriverFailure('malformed_output');
+            }
+
+            // Failures may precede a turn; successful work requires both start events.
+            if (! $failure) {
+                if ($type === 'thread.started' && $state === 'initial') {
+                    $this->text($event->thread_id ?? null, 128, 'malformed_output');
+                    $state = 'thread';
+                } elseif ($type === 'turn.started' && $state === 'thread') {
+                    $state = 'turn';
+                } elseif (
+                    $state !== 'turn'
+                    || (! str_starts_with($type, 'item.') && $type !== 'turn.completed')
+                ) {
+                    throw new DriverFailure('malformed_output');
+                }
             }
 
             if ($type === 'item.completed' && $event->item->type === 'agent_message') {

@@ -54,7 +54,11 @@ final class SimulatedAgentTransport implements AgentTransport
         }
 
         if (in_array('--ephemeral', $argv, true)) {
-            return $this->preflightResult ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"id\":\"auth-message\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
+            return $this->preflightResult ?? new CommandResult(
+                0,
+                file_get_contents(__DIR__.'/fixtures/codex/preflight-success.jsonl'),
+                '',
+            );
         }
 
         return new CommandResult($this->exitCode, $this->stdout, 'SYNTHETIC_SECRET');
@@ -298,25 +302,63 @@ $tests['preflight permits an error followed by its failed turn'] = function (): 
 foreach (['turn.completed', 'turn.failed'] as $type) {
     $tests['preflight rejects events after terminal '.$type] = function () use ($type): void {
         $transport = new SimulatedAgentTransport;
+        $terminal = $type === 'turn.completed'
+            ? file_get_contents(__DIR__.'/fixtures/codex/preflight-success.jsonl')
+            : json_encode(['type' => $type])."\n";
         $transport->preflightResult = new CommandResult(
             1,
-            json_encode(['type' => $type])."\n"
-                ."{\"type\":\"error\",\"code\":\"rate_limit_exceeded\"}\n",
+            $terminal."{\"type\":\"error\",\"code\":\"rate_limit_exceeded\"}\n",
             '',
         );
 
         driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'malformed_output');
     };
 }
+$preflightSuccess = file_get_contents(__DIR__.'/fixtures/codex/preflight-success.jsonl');
+$preflightLines = explode("\n", $preflightSuccess);
+$preflightCompletion = implode("\n", array_slice($preflightLines, 2));
+
 foreach ([
     'empty process error' => ['', 'SYNTHETIC_SECRET', 1, 'process_error'],
+    'nonzero successful response' => [$preflightSuccess, '', 1, 'process_error'],
+    'missing start events' => [$preflightCompletion, '', 0, 'malformed_output'],
+    'missing thread start' => [
+        implode("\n", array_slice($preflightLines, 1)),
+        '',
+        0,
+        'malformed_output',
+    ],
+    'missing turn start' => [
+        $preflightLines[0]."\n".$preflightCompletion,
+        '',
+        0,
+        'malformed_output',
+    ],
+    'reordered start events' => [
+        $preflightLines[1]."\n".$preflightLines[0]."\n".$preflightCompletion,
+        '',
+        0,
+        'malformed_output',
+    ],
+    'duplicate thread start' => [
+        $preflightLines[0]."\n".$preflightSuccess,
+        '',
+        0,
+        'malformed_output',
+    ],
+    'missing thread identity' => [
+        str_replace(',"thread_id":"synthetic-preflight-thread"', '', $preflightSuccess),
+        '',
+        0,
+        'malformed_output',
+    ],
     'unfinished item with a successful auth message' => [
         file_get_contents(__DIR__.'/fixtures/codex/preflight-unfinished-item.jsonl'),
         '',
         0,
         'malformed_output',
     ],
-    'unrecognized successful response' => ["{\"type\":\"turn.completed\"}\n", '', 0, 'process_error'],
+    'unrecognized successful response' => ["{\"type\":\"turn.completed\"}\n", '', 0, 'malformed_output'],
     'truncated output' => ['{"type":"error","code":"token_expired"}', '', 1, 'malformed_output'],
     'duplicate error code' => ["{\"type\":\"error\",\"code\":\"token_expired\",\"code\":\"rate_limit_exceeded\"}\n", '', 1, 'malformed_output'],
     'oversized output' => ['', str_repeat('x', 2_097_153), 1, 'malformed_output'],
