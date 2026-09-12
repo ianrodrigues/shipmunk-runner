@@ -30,21 +30,63 @@ final class CodexEventParser
         string $stderr = '',
     ): string {
         $reason = null;
+        $terminal = false;
 
         foreach ($this->lines($stdout, $stderr) as $line) {
+            if ($terminal) {
+                throw new DriverFailure('malformed_output');
+            }
+
             $event = $this->decode($line, 'malformed_output');
-            $type = $event->type ?? null;
+            $this->assertPreflightEvent($event);
+            $type = $event->type;
+            $itemFailure = str_starts_with($type, 'item.') && $event->item->type === 'error';
+            $failure = $type === 'error' || $type === 'turn.failed' || $itemFailure;
+
+            // Codex can report an error before turn.failed, but cannot resume work afterward.
+            if ($reason !== null && ! $failure) {
+                throw new DriverFailure('malformed_output');
+            }
+
+            $terminal = $type === 'turn.completed' || $type === 'turn.failed';
 
             if ($type === 'error' || $type === 'turn.failed') {
                 $reason ??= $this->failureReason($type === 'error' ? $event : ($event->error ?? null));
             }
 
-            if (($event->item->type ?? null) === 'error') {
+            if ($itemFailure) {
                 $reason ??= $this->failureReason($event->item);
             }
         }
 
         return $reason ?? 'process_error';
+    }
+
+    private function assertPreflightEvent(stdClass $event): void
+    {
+        if (! in_array($event->type ?? null, [
+            'thread.started',
+            'turn.started',
+            'turn.completed',
+            'turn.failed',
+            'error',
+            'item.started',
+            'item.updated',
+            'item.completed',
+        ], true)) {
+            throw new DriverFailure('malformed_output');
+        }
+
+        if (in_array($event->type, ['item.started', 'item.updated', 'item.completed'], true)) {
+            if (! ($event->item ?? null) instanceof stdClass) {
+                throw new DriverFailure('malformed_output');
+            }
+
+            // Preflight disables tools; only messages, reasoning and failures are valid.
+            if (! in_array($event->item->type ?? null, ['agent_message', 'reasoning', 'error'], true)) {
+                throw new DriverFailure('malformed_output');
+            }
+        }
     }
 
     public function parse(

@@ -14,8 +14,8 @@ use Shipmunk\Runner\Profiles\ProfileExecutionGate;
 use Shipmunk\Runner\Profiles\ProfileLifecycle;
 use Shipmunk\Runner\Profiles\ProfileRuntime;
 use Shipmunk\Runner\Profiles\ProfileStore;
-use Shipmunk\Runner\Watchdog;
 use Shipmunk\Runner\Setup\SetupWizard;
+use Shipmunk\Runner\Watchdog;
 use Shipmunk\Runner\WatchdogLease;
 
 require dirname(__DIR__).'/bootstrap.php';
@@ -528,6 +528,44 @@ $tests['malformed Codex output after a rate limit fails closed'] = function (): 
             'health' => 'error',
             'reason' => 'native_probe_failed',
         ]);
+    }
+};
+$tests['invalid Codex events after a rate limit complete as generic failure'] = function (): void {
+    $suffixes = [
+        "{\"type\":\"future.failure\",\"message\":\"SYNTHETIC_PRIVATE_NATIVE_OUTPUT\"}\n",
+        "{\"type\":\"turn.completed\"}\n",
+        "{\"type\":\"turn.failed\"}\n{\"type\":\"error\",\"code\":\"rate_limit_exceeded\"}\n",
+    ];
+
+    foreach ([0, 1] as $exitCode) {
+        foreach ($suffixes as $suffix) {
+            [$root, $store] = profile_fixture();
+            $api = new SimulatedProfileControlPlane;
+            $runtime = new SimulatedProfileRuntime;
+            $runtime->preflight = new CommandResult(
+                $exitCode,
+                "{\"type\":\"error\",\"code\":\"rate_limit_exceeded\"}\n".$suffix,
+                '',
+            );
+
+            $result = profile_lifecycle($api, $runtime)->operate($store, PROFILE, 'login', OPERATION);
+
+            profile_assert($result === [
+                'health' => 'error',
+                'reason' => 'native_probe_failed',
+            ]);
+            profile_assert(end($api->requests) === [
+                'operations/'.OPERATION.'/completion',
+                [
+                    'stopped' => true,
+                    'health' => 'error',
+                    'reason' => 'native_probe_failed',
+                    'runtime_version' => '0.154.0',
+                ],
+            ]);
+            profile_assert(! str_contains(json_encode($api->requests), 'SYNTHETIC_PRIVATE'));
+            profile_assert($store->read('active') === null && ! is_dir($store->home()));
+        }
     }
 };
 $tests['simulated expired unfinished begin is acknowledged stopped rather than forgetting its lease'] = function (): void {
