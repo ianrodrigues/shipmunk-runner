@@ -3,7 +3,7 @@
 The runner is a standalone PHP supervisor. It does not load Laravel, Composer's application autoloader, `.env`, `APP_KEY`, database credentials, GitHub credentials, or application configuration. Configure it only with explicit command options and a mode-0600 runner-token file:
 
 ```sh
-runner/bin/shipmunk-runner \
+php runner/bin/shipmunk-runner \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/runner.token \
   --state-dir=/var/lib/shipmunk-runner \
@@ -40,7 +40,7 @@ Build the credential-only image explicitly (this downloads the pinned official p
 DOCKER_BUILDKIT=1 docker build --tag shipmunk-profile-native:local --file runner/containers/Dockerfile .
 ```
 
-The image pins Codex **0.154.0** and Claude Code **2.1.269**. The runner resolves its immutable local image ID and verifies the executable version for every operation. The profile's server-side runtime version must match. Changing pins requires repeating the offline checks and designated-account runtime scenarios.
+The image pins Codex **0.154.0** and Claude Code **2.1.269**. Guided setup persists the built immutable image ID for each installation; later builds cannot redirect another installation to a different image. Manual CLI commands resolve their selected image to an immutable local ID. Every operation verifies the executable version. The profile's server-side runtime version must match. Changing pins requires repeating the offline checks and designated-account runtime scenarios.
 
 The image includes the system CA bundle required for native HTTPS certificate verification. `make native-image-check` builds the actual pinned image, then checks its default certificate trust and CLI versions with networking disabled and no host mounts. It also exercises the Docker transport, synthetic supervisor lifecycle and the real pinned Codex tool boundary. Building downloads packages; the checks themselves do not access an account. CI runs both `make runner-check` and `make native-image-check`, each with a private temporary directory. The first target includes the bounded parser, driver, session-storage and execution-exclusion regressions; the second builds the exact image required by the container scenarios.
 
@@ -49,7 +49,7 @@ Native clients can explicitly create metadata with broader permissions than the 
 Create the profile through the application API with the assigned runner and exact runtime version, then use its lowercase ULID and a fresh lowercase ULID for the operation. From a terminal on the assigned runner:
 
 ```sh
-runner/bin/shipmunk-profile \
+php runner/bin/shipmunk-profile \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/profile-runner.token \
   --profiles-dir=/var/lib/shipmunk-profiles \
@@ -74,7 +74,7 @@ Each native command receives a clean allowlist environment inside a dedicated Li
 After connecting a designated Codex profile, select the native driver explicitly on its assigned dedicated Linux runner:
 
 ```sh
-runner/bin/shipmunk-runner \
+php runner/bin/shipmunk-runner \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/runner.token \
   --state-dir=/var/lib/shipmunk-runner \

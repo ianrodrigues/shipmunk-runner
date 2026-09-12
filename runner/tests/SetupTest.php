@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Shipmunk\Runner\Setup\SetupBundle;
 use Shipmunk\Runner\Setup\SetupFiles;
+use Shipmunk\Runner\Setup\SetupException;
 use Shipmunk\Runner\Setup\SetupWizard;
 
 require dirname(__DIR__).'/bootstrap.php';
@@ -19,7 +20,7 @@ function setup_rejects(Closure $operation): void
 {
     try {
         $operation();
-    } catch (Throwable) {
+    } catch (SetupException) {
         return;
     }
     throw new RuntimeException('Expected unsafe setup rejection.');
@@ -98,15 +99,15 @@ try {
     fwrite(STDOUT, "PASS downloaded files reject hard links, final/intermediate symlinks and traversal\n");
 
     $files = new SetupFiles($root, $data['runner_id']);
-    $files->install($bundle, dirname(__DIR__, 2), PHP_BINARY);
+    $files->install($bundle, dirname(__DIR__, 2), PHP_BINARY, 'sha256:'.str_repeat('a', 64));
     file_put_contents($root.'/untouched', 'unchanged');
     unlink($files->root.'/execution.token');
     symlink($root.'/untouched', $files->root.'/execution.token');
-    setup_rejects(fn () => $files->install($bundle, dirname(__DIR__, 2), PHP_BINARY));
+    setup_rejects(fn () => $files->install($bundle, dirname(__DIR__, 2), PHP_BINARY, 'sha256:'.str_repeat('a', 64)));
     setup_assert(file_get_contents($root.'/untouched') === 'unchanged');
     unlink($files->root.'/execution.token');
-    $files->install($bundle, dirname(__DIR__, 2), PHP_BINARY);
-    setup_rejects(fn () => $files->install(new SetupBundle([...$data, 'base_url' => 'https://other.example']), dirname(__DIR__, 2), PHP_BINARY));
+    $files->install($bundle, dirname(__DIR__, 2), PHP_BINARY, 'sha256:'.str_repeat('a', 64));
+    setup_rejects(fn () => $files->install(new SetupBundle([...$data, 'base_url' => 'https://other.example']), dirname(__DIR__, 2), PHP_BINARY, 'sha256:'.str_repeat('a', 64)));
     setup_assert(json_decode(file_get_contents($files->root.'/config.json'), true)['base_url'] === $data['base_url']);
     fwrite(STDOUT, "PASS renewal rejects redirected token files and changed server/profile identity\n");
 

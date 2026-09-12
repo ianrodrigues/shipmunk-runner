@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Shipmunk\Runner\Setup;
 
+use RuntimeException;
 use Shipmunk\Runner\Profiles\ProfileStore;
 
 final readonly class SetupFiles
@@ -14,7 +15,11 @@ final readonly class SetupFiles
         string $home,
         string $runner,
     ) {
-        ProfileStore::identifier($runner);
+        try {
+            ProfileStore::identifier($runner);
+        } catch (RuntimeException $exception) {
+            throw new SetupException('Unsafe setup identifier, ownership, type or permissions.', previous: $exception);
+        }
         if (realpath($home) !== $home || ! is_dir($home)) {
             throw new SetupException('The home directory must be an existing canonical directory.');
         }
@@ -46,7 +51,11 @@ final readonly class SetupFiles
         if (! file_exists($path) && ! is_link($path) && ! mkdir($path, 0700)) {
             throw new SetupException('Cannot create the private runner directory.');
         }
-        ProfileStore::protect($path, true);
+        try {
+            ProfileStore::protect($path, true);
+        } catch (RuntimeException $exception) {
+            throw new SetupException('Unsafe setup identifier, ownership, type or permissions.', previous: $exception);
+        }
     }
 
     public function write(
@@ -58,7 +67,11 @@ final readonly class SetupFiles
         }
         $path = $this->root.'/'.$name;
         if (file_exists($path) || is_link($path)) {
-            ProfileStore::protect($path);
+            try {
+                ProfileStore::protect($path);
+            } catch (RuntimeException $exception) {
+                throw new SetupException('Unsafe setup identifier, ownership, type or permissions.', previous: $exception);
+            }
         }
         $temporary = $path.'.'.bin2hex(random_bytes(8));
         $old = umask(0077);
@@ -86,8 +99,13 @@ final readonly class SetupFiles
         SetupBundle $bundle,
         string $checkout,
         string $php,
+        string $image,
     ): void {
+        if (preg_match('/\Asha256:[a-f0-9]{64}\z/', $image) !== 1) {
+            throw new SetupException('Setup requires an immutable runtime image identity.');
+        }
         $config = [
+            'image_id' => $image,
             'base_url' => $bundle->data['base_url'],
             'runner_id' => $bundle->data['runner_id'],
             'profile_id' => $bundle->data['profile_id'],
@@ -95,7 +113,11 @@ final readonly class SetupFiles
         ];
         $configFile = $this->root.'/config.json';
         if (file_exists($configFile) || is_link($configFile)) {
-            ProfileStore::protect($configFile);
+            try {
+                ProfileStore::protect($configFile);
+            } catch (RuntimeException $exception) {
+                throw new SetupException('Unsafe setup identifier, ownership, type or permissions.', previous: $exception);
+            }
             $previous = json_decode((string) file_get_contents($configFile), true, flags: JSON_THROW_ON_ERROR);
             foreach (['base_url', 'runner_id', 'profile_id'] as $key) {
                 if (($previous[$key] ?? null) !== $config[$key]) {
