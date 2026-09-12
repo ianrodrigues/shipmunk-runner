@@ -109,11 +109,12 @@ final class DockerAgentTransport implements AgentTransport
             $common = [
                 '--init', '--read-only', '--user', $uid.':'.$gid,
                 '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-                '--pids-limit', '64', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
+                '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
                 '--ulimit', 'nofile=1024:1024', '--log-driver', 'none', '--stop-timeout', '2',
             ];
             $this->mustRun([
                 'docker', 'create', '--name', $this->name, ...$common,
+                '--pids-limit', '128',
                 '--network', 'bridge', '--workdir', '/empty',
                 '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777',
                 '--mount', 'type=bind,src='.$this->home.',dst=/profile',
@@ -125,6 +126,7 @@ final class DockerAgentTransport implements AgentTransport
             ]);
             $this->mustRun([
                 'docker', 'create', '--name', $this->name.'-repo', ...$common,
+                '--pids-limit', '64',
                 '--network', 'none', '--workdir', '/workspace',
                 '--mount', 'type=volume,src='.$this->name.'-workspace,dst=/workspace',
                 '--tmpfs', '/baseline:rw,noexec,nosuid,nodev,size=128m,mode=0700,uid='.$uid.',gid='.$gid,

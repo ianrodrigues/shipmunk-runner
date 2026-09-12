@@ -71,8 +71,15 @@ function processResult(command, args, input = '') {
     });
 }
 
-async function runNative(item, extra = [], mediate = false, rejection = null) {
+async function runNative(
+    item,
+    extra = [],
+    mediate = false,
+    rejection = null,
+    model = 'gpt-5.4',
+) {
     const requests = [];
+    const directSearch = mediate === true;
     let failure;
     const server = createServer(async (request, response) => {
         try {
@@ -114,7 +121,7 @@ async function runNative(item, extra = [], mediate = false, rejection = null) {
             const send = (data) =>
                 response.write('data: ' + JSON.stringify(data) + '\n\n');
             const output =
-                requests.length === 1 && mediate
+                requests.length === 1 && directSearch
                     ? {
                           type: 'tool_search_call',
                           id: 'search_fixture',
@@ -122,7 +129,7 @@ async function runNative(item, extra = [], mediate = false, rejection = null) {
                           execution: 'client',
                           arguments: { query: 'repository_command', limit: 1 },
                       }
-                    : requests.length === (mediate ? 2 : 1)
+                    : requests.length === (directSearch ? 2 : 1)
                       ? item
                       : {
                             type: 'message',
@@ -132,7 +139,12 @@ async function runNative(item, extra = [], mediate = false, rejection = null) {
                             content: [
                                 {
                                     type: 'output_text',
-                                    text: 'Offline fixture complete.',
+                                    text: JSON.stringify({
+                                        summary: 'Offline fixture complete.',
+                                        outcome: 'no_findings',
+                                        findings: [],
+                                        tests: [],
+                                    }),
                                     annotations: [],
                                 },
                             ],
@@ -178,9 +190,9 @@ async function runNative(item, extra = [], mediate = false, rejection = null) {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const args = [
         'exec',
-        ...secureArguments,
-        '-c',
-        'model="gpt-5.4"',
+        ...secureArguments.map((argument, index) =>
+            secureArguments[index - 1] === '--model' ? model : argument,
+        ),
         '-c',
         'model_provider="fixture"',
         '-c',
@@ -407,5 +419,8 @@ console.log(
 );
 
 await rm('/tmp/work', { recursive: true, force: true });
+
+const { runCodeModeBoundary } = await import('./code-mode.mjs');
+await runCodeModeBoundary({ runNative, home, canary, patches });
 
 await import('./protocol.mjs');

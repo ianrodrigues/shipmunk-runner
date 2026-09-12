@@ -119,6 +119,7 @@ final class CodexDriver implements AgentDriver
             '-c', 'approval_policy="never"',
             '-c', 'project_doc_max_bytes=0',
             '-c', 'web_search="disabled"',
+            '-c', 'features.code_mode_host=true',
             '-c', 'default_permissions="shipmunk"',
             '-c', 'permissions={shipmunk={filesystem={"/"="read","/profile"="deny","/bridge"="deny"}}}',
             '-c', 'shell_environment_policy.inherit="none"',
@@ -134,7 +135,7 @@ final class CodexDriver implements AgentDriver
         ];
 
         foreach ([
-            'shell_tool', 'unified_exec', 'code_mode_host', 'view_image', 'hooks', 'plugins',
+            'shell_tool', 'unified_exec', 'view_image', 'hooks', 'plugins',
             'multi_agent', 'multi_agent_v2', 'apps', 'computer_use', 'browser_use', 'image_generation',
             'shell_snapshot', 'skill_search', 'memories', 'workspace_dependencies', 'tool_suggest', 'goals', 'code_mode',
         ] as $feature) {
