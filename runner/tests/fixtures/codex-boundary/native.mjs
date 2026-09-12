@@ -71,7 +71,7 @@ function processResult(command, args, input = '') {
     });
 }
 
-async function runNative(item, extra = [], mediate = false) {
+async function runNative(item, extra = [], mediate = false, rejection = null) {
     const requests = [];
     let failure;
     const server = createServer(async (request, response) => {
@@ -81,6 +81,12 @@ async function runNative(item, extra = [], mediate = false) {
             for await (const chunk of request) chunks.push(chunk);
             const body = JSON.parse(Buffer.concat(chunks));
             requests.push(body);
+
+            if (rejection !== null) {
+                response.writeHead(400, { 'Content-Type': 'application/json' });
+                response.end(JSON.stringify({ error: rejection }));
+                return;
+            }
 
             response.writeHead(200, { 'Content-Type': 'text/event-stream' });
             const send = (data) =>
@@ -318,6 +324,26 @@ assert.ok(
 console.log(
     'PASS pinned native MCP initialization and command use only the trusted host bridge',
 );
+
+// Pass the actual CLI wire output to the host parser; these errors are synthetic.
+for (const code of ['model_not_found', 'invalid_json_schema', 'unknown']) {
+    const result = await runNative(null, [], false, {
+        code,
+        type: 'invalid_request_error',
+        message: 'SYNTHETIC_SECRET_BACKEND_REJECTION',
+    });
+    assert.equal(result.code, 1);
+    assert.equal(result.requests.length, 1);
+    console.log(
+        'NATIVE_REJECTION_FIXTURE ' +
+            JSON.stringify({
+                backend_code: code,
+                exit_code: result.code,
+                stdout: result.stdout,
+                stderr: result.stderr,
+            }),
+    );
+}
 
 await rm('/tmp/work', { recursive: true, force: true });
 
