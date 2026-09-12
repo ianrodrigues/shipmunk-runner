@@ -31,6 +31,7 @@ final class CodexEventParser
     ): string {
         $reason = null;
         $terminal = false;
+        $fatalError = false;
         $items = [];
 
         foreach ($this->lines($stdout, $stderr) as $line) {
@@ -54,6 +55,7 @@ final class CodexEventParser
             }
 
             $terminal = $type === 'turn.completed' || $type === 'turn.failed';
+            $fatalError = $fatalError || $type === 'error';
 
             if ($type === 'error' || $type === 'turn.failed') {
                 $reason ??= $this->failureReason($type === 'error' ? $event : ($event->error ?? null));
@@ -62,6 +64,13 @@ final class CodexEventParser
             if ($itemFailure) {
                 $reason ??= $this->failureReason($event->item);
             }
+        }
+
+        // A fatal thread error can occur before a turn exists; an item error cannot end a stream.
+        if ($reason !== null
+            && ! $terminal
+            && ! $fatalError) {
+            throw new DriverFailure('malformed_output');
         }
 
         return $reason ?? 'process_error';
