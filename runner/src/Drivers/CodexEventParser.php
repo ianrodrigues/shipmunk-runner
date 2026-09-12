@@ -217,7 +217,6 @@ final class CodexEventParser
         $events = [];
         $message = null;
         $usage = null;
-        $structuredMessages = 0;
 
         foreach ($lines as $line) {
             if ($state === 'complete') {
@@ -233,6 +232,14 @@ final class CodexEventParser
             if ($type === 'thread.started' && $state === 'initial') {
                 $this->text($event->thread_id ?? null, 128, NativeFailureReason::MalformedOutput);
                 $state = 'thread';
+            } elseif (
+                $type === 'item.completed'
+                && $state === 'thread'
+                && ($event->item->type ?? null) === 'error'
+            ) {
+                $this->recordItemLifecycle($event, $items);
+
+                throw new DriverFailure($this->failureReason($event->item));
             } elseif ($type === 'turn.started' && $state === 'thread') {
                 $state = 'turn';
                 $events[] = $this->event($claim, count($events) + 1, 'progress', 'Codex execution started.');
@@ -252,9 +259,6 @@ final class CodexEventParser
                 if ($kind === 'agent_message' && $type === 'item.completed') {
                     $this->text($item->text ?? null, self::MAX_LINE_BYTES, NativeFailureReason::InvalidResult);
                     // Earlier commentary is allowed; only the last completed message is the final result.
-                    if (str_starts_with(ltrim($item->text), '{') && ++$structuredMessages > 1) {
-                        throw new DriverFailure(NativeFailureReason::InvalidResult);
-                    }
                     $message = $item->text;
                 }
                 if (in_array($kind, ['command_execution', 'file_change', 'mcp_tool_call', 'web_search'], true) && $type !== 'item.updated') {
