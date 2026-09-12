@@ -13,6 +13,8 @@ if (args.length === 1 && args[0] === '--version') {
 } else if (args.join(' ') === 'login status') {
     console.log('Logged in using ChatGPT');
 } else if (args[0] === 'exec' && args.includes('--ephemeral')) {
+    emit({ type: 'thread.started', thread_id: 'synthetic-preflight-thread' });
+    emit({ type: 'turn.started' });
     emit({ type: 'item.completed', item: { id: 'auth', type: 'agent_message', text: 'SHIPMUNK_AUTH_OK' } });
     emit({ type: 'turn.completed' });
 } else if (args[0] === 'exec') {

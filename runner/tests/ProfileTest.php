@@ -163,7 +163,11 @@ final class SimulatedProfileRuntime implements ProfileRuntime
             return new CommandResult(0, '', '');
         }
         if ($command === 'preflight') {
-            return $this->preflight ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"id\":\"auth-message\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
+            return $this->preflight ?? new CommandResult(
+                0,
+                file_get_contents(__DIR__.'/fixtures/codex/preflight-success.jsonl'),
+                '',
+            );
         }
         ($this->onProbe ?? static fn () => null)();
 
@@ -512,16 +516,21 @@ $tests['validated Codex preflight rate limit reaches profile completion without 
         profile_assert($store->read('active') === null && ! is_dir($store->home()));
     }
 };
-$tests['successful Codex preflight cannot activate credentials with an unfinished item'] = function (): void {
+$tests['invalid successful Codex preflight cannot activate credentials'] = function (): void {
     $fixture = file_get_contents(__DIR__.'/fixtures/codex/preflight-unfinished-item.jsonl');
+    $outputs = [
+        $fixture,
+        str_replace('"type":"reasoning"', '"type":"agent_message"', $fixture),
+        implode("\n", array_slice(explode("\n", $fixture), 3)),
+    ];
 
-    foreach (['reasoning', 'agent_message'] as $kind) {
+    foreach ($outputs as $output) {
         [$root, $store] = profile_fixture();
         $api = new SimulatedProfileControlPlane;
         $runtime = new SimulatedProfileRuntime;
         $runtime->preflight = new CommandResult(
             0,
-            str_replace('"type":"reasoning"', '"type":"'.$kind.'"', $fixture),
+            $output,
             'SYNTHETIC_PRIVATE_STDERR',
         );
 
