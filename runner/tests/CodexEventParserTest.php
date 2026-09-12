@@ -108,7 +108,26 @@ foreach ($malformed as $name => $output) {
 $streamLines = explode("\n", $valid);
 parser_rejects('duplicate completed item', 'malformed_output', implode("\n", [...array_slice($streamLines, 0, 3), $streamLines[2], ...array_slice($streamLines, 3)]));
 $secondMessage = str_replace('item_1', 'item_2', $streamLines[2]);
-parser_rejects('duplicate structured result', 'invalid_result', implode("\n", [...array_slice($streamLines, 0, 3), $secondMessage, ...array_slice($streamLines, 3)]));
+$commentary = json_encode([
+    'type' => 'item.completed',
+    'item' => [
+        'id' => 'commentary',
+        'type' => 'agent_message',
+        'text' => json_encode([...$result, 'summary' => 'SYNTHETIC_SECRET progress', 'outcome' => 'incomplete']),
+    ],
+], JSON_THROW_ON_ERROR);
+$withCommentary = implode("\n", [...array_slice($streamLines, 0, 2), $commentary, ...array_slice($streamLines, 2)]);
+$final = $parser->parse(parser_claim(), 0, $withCommentary);
+parser_assert($final->result['summary'] === 'Done.' && $final->result['outcome'] === 'no_findings', 'Structured commentary replaced the final result.');
+parser_assert(! str_contains(json_encode($final), 'SYNTHETIC_SECRET'), 'Structured commentary escaped normalization.');
+fwrite(STDOUT, "PASS final structured message supersedes structured commentary\n");
+$invalidFinal = str_replace('Done.', '', $secondMessage);
+parser_rejects('invalid final after valid structured commentary', 'invalid_result', implode("\n", [...array_slice($streamLines, 0, 3), $invalidFinal, ...array_slice($streamLines, 3)]));
+$startupError = json_encode([
+    'type' => 'item.completed',
+    'item' => ['id' => 'startup', 'type' => 'error', 'message' => 'SYNTHETIC_SECRET runtime unavailable'],
+], JSON_THROW_ON_ERROR);
+parser_rejects('startup runtime error before turn', 'process_error', implode("\n", [$streamLines[0], $startupError, ...array_slice($streamLines, 1)]));
 parser_rejects('item type changes midstream', 'malformed_output', str_replace('"id":"item_1","type":"command_execution","command":"echo SYNTHETIC_SECRET","aggregated_output"', '"id":"item_1","type":"file_change","command":"echo SYNTHETIC_SECRET","aggregated_output"', $fixture));
 parser_rejects('stderr bound', 'malformed_output', $valid, 0, str_repeat('x', CodexEventParser::MAX_OUTPUT_BYTES));
 parser_rejects('missing terminal', 'missing_result', implode("\n", array_slice(explode("\n", $valid), 0, 3))."\n");
