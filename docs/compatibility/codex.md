@@ -1,0 +1,39 @@
+# Codex runtime compatibility
+
+The runner pins **Codex CLI 0.154.0**. It invokes the official `codex exec` process; it does not implement an OpenAI API client or automatically fall back to API-key billing. Native authentication uses the protected assigned profile and the existing `subscription` wire value. Version inspection, current ChatGPT login mode and a small authenticated preflight precede repository work.
+
+## Execution boundary
+
+Codex runs in a credential-only container. Repository commands run in a separate, non-root, network-disabled container with no profile, host workspace, control-plane token or Docker socket mounted. A bundled stdio MCP server exposes only `repository_command`. Its bounded local request file is handled by the trusted host supervisor, which checks the active lease before dispatching the command into the repository container. Candidate repository code never executes in the host supervisor or credential container.
+
+The native process starts in `/empty`, ignores user configuration and rules, disables ambient AGENTS discovery, and receives approved dashboard and hash-checked trusted AGENTS instructions explicitly. Candidate `.codex`, hooks, MCP, skills and AGENTS files remain repository data. Native environment variables come from a clean allowlist. No ambient API keys, provider URLs, home directories or proxy settings are inherited.
+
+The native permission profile grants read-only filesystem access and denies `/profile` and `/bridge` to model-invoked filesystem tools. Global approvals remain `never`; only the operator-owned MCP repository tool is explicitly approved. Shell execution, unified execution, code mode, plugins, hooks, apps, computer/browser tools, images, goals, memory, multi-agent work and skill discovery are disabled. Bundled runtime instructions belong to the pinned trusted image.
+
+**Local tools are not all absent.** The pinned runtime still advertises `apply_patch` and MCP discovery tools. Offline forced-tool probes demonstrate denied credential-file add, update and delete operations. Ordinary Docker restrictions also prevent the runtime's nested namespace helper from launching. This fail-closed behavior is part of the tested configuration; do not enable privileged containers, relax seccomp, enable local shell tools or change the permission profile without repeating boundary validation.
+
+Each attempt records deterministic container identities before starting them. Independent host watchdogs cover the native, repository and diff-collector containers. Watchdog children close inherited sibling renewal channels so parent death is detected promptly. A durable profile execution marker spans execution and cleanup; uncertain cleanup retains exclusion and prevents stopped acknowledgement until recovery confirms isolation. Repository code and native account refresh never share a profile concurrently.
+
+Custom repository images must provide Git, GNU find and GNU tar supporting `--format=pax`, `--null`, `--verbatim-files-from`, `--no-recursion` and `--pax-option`. BusyBox tar is insufficient. The bundled native image supplies these tools.
+
+## Inputs, output and sessions
+
+The existing source convention is one head snapshot, or two snapshots ordered base then head. Git archive wrappers are removed only when their suffix matches the supplied revision. Bounded PAX `comment` and `path` records are supported; links, special files and unsupported metadata are rejected, and executable modes are retained without group or world permissions. Commands start in `/workspace` at the head; `/baseline` supplies the base when present. Approved instructions come from the separate version-1 bundle. Configured `max_turns` is enforced conservatively as a maximum number of repository tool calls because this pinned `exec` interface has no general `--max-turns` flag. Repository commands have a 10-second host-side deadline; the MCP bridge waits up to 30 seconds for the response; the claim deadline and renewable lease bound the whole attempt. Repository network remains disabled, including when effective configuration requests restricted network access; restricted egress is not yet implemented.
+
+Native JSONL is limited to 2 MiB overall, 64 KiB per line and 10,000 events. The final model response contains only summary, outcome, findings and tests. Run identity, attempt identity, fence, usage and uploaded artifact references are derived outside the model response. The server revalidates the normalized v1 result and events. Raw reasoning, command output and provider diagnostics are not copied into progress events. Unknown usage is null; no cost is invented.
+
+Repository changes are collected from a frozen, bounded tmpfs snapshot using a separate collector. The original source and Git metadata are protected from repository commands, so rewriting repository history cannot hide edits. Patch artifacts contain the diff, verified before/after hashes and modes, tests and base revision in the server’s JSON envelope. Code-change runs must pin `base_sha` and `head_sha` to the same original revision; review runs cannot publish patches. At most 200 changed files are accepted.
+
+Malformed/truncated output, missing results, invalid structured results, process failure, expired authentication, rate limits and unavailable approvals have distinct sanitized failure reasons. Unknown provider error wording remains a generic process failure rather than a guessed classification. A failed runtime cannot emit a successful patch result.
+
+Session records live outside native and repository mounts and are looked up by explicit run ID. Compatibility binds the provider version, profile and credential reference, repository revisions, approved configuration, instruction and source artifacts and saved task context. A compatible record uses an explicit UUID; mismatches reconstruct a fresh session. No invocation uses `--last` or searches globally recent history. A retry starts with the supplied original source snapshots; resumed context must re-read that filesystem instead of assuming previous edits survived.
+
+## Verification and limits
+
+`CodexEventParserTest.php` uses labeled synthetic JSONL fixtures. `CodexDriverTest.php` simulates the native transport. Server contract and API tests validate the actual driver output, patch upload, completion and stopped acknowledgement. Docker transport tests use a synthetic native program with real Linux container boundaries. The native boundary fixture uses the actual pinned CLI and a loopback mock provider inside a network-disabled container to force tool calls; its synthetic API credentials never leave the fixture and are not a production authentication mode.
+
+The synthetic supervisor integration scenarios exercise the complete container lifecycle, cancellation of repository children and parent-death watchdog cleanup. Fixture coverage and final integrated quality gates must be reported separately.
+
+These checks do not establish live ChatGPT subscription compatibility, refresh, expiry, reconnect or release readiness. Execute [the designated-account scenario](../runtime/RT-02.md) and [configuration/credential provenance checks](../runtime/RT-03.md) on the intended Linux host. Both scenarios remain `not_run` until completed. A reported local login/readiness pass is narrower than the full scenario.
+
+Official mechanisms were checked against [non-interactive execution](https://developers.openai.com/codex/noninteractive/), [managed account authentication](https://learn.chatgpt.com/docs/auth/ci-cd-auth), [MCP tool approval](https://learn.chatgpt.com/docs/extend/mcp) and the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). Exact flags and security behavior are additionally exercised against the pinned executable; current documentation alone is not proof of compatibility.

@@ -1,0 +1,7 @@
+**
+!runner/
+runner/**
+!runner/containers/
+runner/containers/**
+!runner/containers/codex-mcp.mjs
+!runner/containers/codex-result.schema.json

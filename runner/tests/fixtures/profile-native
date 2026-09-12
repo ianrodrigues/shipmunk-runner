@@ -1,0 +1,14 @@
+#!/bin/sh
+# Deterministic account simulation. Never contacts native providers.
+umask 077
+/usr/bin/env > /profile/environment
+if [ "$1" = '--version' ]; then
+    case "$0" in
+        */codex) echo 'codex-cli 0.154.0';;
+        */claude) echo '2.1.269 (Claude Code)';;
+    esac
+    exit 0
+fi
+[ ! -e /var/run/docker.sock ] || exit 2
+[ ! -e /profile/01nnnnnnnnnnnnnnnnnnnnnnnn/home/sibling-secret ] || exit 3
+printf 'Logged in using ChatGPT\n' >&2

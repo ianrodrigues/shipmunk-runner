@@ -1,0 +1,13 @@
+# Offline Codex boundary fixture
+
+Run `php runner/tests/CodexBoundaryTest.php` with the real pinned Codex **0.154.0** image available as `shipmunk-profile-native:local`, or set `SHIPMUNK_CODEX_BOUNDARY_IMAGE` explicitly. A missing Docker daemon, missing image, version mismatch, unsupported configuration, or failed boundary assertion fails the test.
+
+The PHP test captures the actual `CodexDriver` command through an inert transport. The Node fixture executes that command with a synthetic model provider on container loopback. It does not substitute a model API in production. The container has no network, runs as an unprivileged user with all capabilities dropped, has a read-only root filesystem, and receives only read-only test scripts and the result schema. The synthetic profile and bridge spool are fresh tmpfs mounts. No personal home, subscription token, API key, application environment, or repository is mounted.
+
+The mock backend deliberately returns native tool calls. The assertions check the actual runtime tool inventory and force local `apply_patch` add, update, and delete operations against synthetic profile canaries. An explicit named read-only permission profile denies `/profile` and `/bridge`. `project_doc_max_bytes=0` prevents ambient AGENTS discovery; passing `--sandbox` would override named default permissions and is intentionally absent. These checks establish fail-closed behavior under this outer Docker boundary, not independent support for nested user namespaces on every deployment host.
+
+Codex still advertises local `apply_patch`. The unsupported `tools.apply_patch=false` setting is rejected, so disabling shell features must never be described as eliminating every local tool. The fixture verifies denied local operations alongside successful trusted MCP operations. Codex 0.154.0 initializes MCP using protocol `2025-06-18`; it sends progress metadata on `tools/list`. Its model transport discovers the repository tool with `tool_search_call`, then invokes function `repository_command` in namespace `mcp__repository`.
+
+The MCP test emulates the trusted host by reading the atomic request file and returning a fixed response. A command that would write to `/profile` is only passed through the spool and is never executed locally. The production transport separately owns repository-container execution and its fencing checks. `protocol.mjs` covers serialization, schema errors, stale IDs, symlink and oversized responses, malformed input, and the real 30-second monotonic deadline. It adds roughly 30 seconds to this test.
+
+This fixture does **not** establish live ChatGPT subscription compatibility, provider token refresh behavior, or authenticated production readiness. Those remain designated-account runtime checks.
