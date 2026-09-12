@@ -13,6 +13,11 @@ if (args.length === 1 && args[0] === '--version') {
 } else if (args.join(' ') === 'login status') {
     console.log('Logged in using ChatGPT');
 } else if (args[0] === 'exec' && args.includes('--ephemeral')) {
+    if (fs.existsSync('/profile/synthetic-preflight-failure')) {
+        emit({ type: 'error', code: 'unknown', message: 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT' });
+        process.stderr.write('SYNTHETIC_PRIVATE_NATIVE_STDERR\n');
+        process.exit(17);
+    }
     emit({ type: 'thread.started', thread_id: 'synthetic-preflight-thread' });
     emit({ type: 'turn.started' });
     emit({ type: 'item.completed', item: { id: 'auth', type: 'agent_message', text: 'SHIPMUNK_AUTH_OK' } });

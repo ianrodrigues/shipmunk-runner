@@ -21,6 +21,7 @@ use Shipmunk\Runner\HttpTransport;
 use Shipmunk\Runner\NativeExecutableAdapter;
 use Shipmunk\Runner\NativeExecution;
 use Shipmunk\Runner\Protocol;
+use Shipmunk\Runner\RunCommand;
 use Shipmunk\Runner\SafeTarExtractor;
 use Shipmunk\Runner\Sandbox;
 use Shipmunk\Runner\SandboxProcess;
@@ -289,6 +290,10 @@ final class FakeWatchdog implements Watchdog
 
 final class FakeControlPlane implements ControlPlaneClient
 {
+    public int $claims = 0;
+
+    public bool $hasWork = true;
+
     public int $heartbeatCount = 0;
 
     public bool $completed = false;
@@ -312,6 +317,8 @@ final class FakeControlPlane implements ControlPlaneClient
 
     public ?Closure $onHeartbeat = null;
 
+    public ?Closure $onComplete = null;
+
     public function __construct(
         public Claim $work,
         private string $archive,
@@ -321,7 +328,9 @@ final class FakeControlPlane implements ControlPlaneClient
 
     public function claim(): ?Claim
     {
-        return $this->work;
+        $this->claims++;
+
+        return $this->hasWork ? $this->work : null;
     }
 
     public function heartbeat(Claim $claim): Heartbeat
@@ -372,6 +381,7 @@ final class FakeControlPlane implements ControlPlaneClient
 
     public function complete(Claim $claim, array $result): void
     {
+        $this->onComplete?->__invoke();
         $this->completed = true;
         $this->completedResult = $result;
     }
@@ -950,6 +960,120 @@ runner_test('successful completion cleans up and acknowledges stopped before cle
         remove_directory($directory);
     }
 });
+
+foreach ([
+    'no_findings' => 0,
+    'incomplete' => 1,
+    'needs_input' => 1,
+    'no_work' => 0,
+    'rejected_completion' => 1,
+    'rejected_authorization' => 1,
+    'unconfirmed_cleanup' => 1,
+] as $case => $expectedExit) {
+    runner_test('poll once reports '.$case.' only after accepted completion and cleanup', function () use (
+        $case,
+        $expectedExit,
+    ): void {
+        $directory = temporary_directory();
+        $archive = tar_archive('file.txt', 'safe');
+        $references = artifact_references($archive);
+        $claim = fixture_claim([
+            'source_artifacts' => [$references['source']],
+            'instruction_artifacts' => [$references['instruction']],
+        ]);
+        $outcome = in_array($case, ['no_findings', 'incomplete', 'needs_input'], true) ? $case : 'no_findings';
+        $nativeOutput = json_encode([
+            'events' => [],
+            'artifacts' => [],
+            'result' => [
+                'protocol_version' => '1.0',
+                'run_id' => $claim->runId,
+                'attempt_id' => $claim->attemptId,
+                'fence' => $claim->fence,
+                'summary' => 'SYNTHETIC_PRIVATE_MODEL_CONTENT',
+                'outcome' => $outcome,
+                'findings' => [],
+                'patch_artifact' => null,
+                'tests' => [],
+                'usage' => null,
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $clock = new FakeClock;
+        $client = new FakeControlPlane($claim, $archive, clock: $clock);
+        $client->hasWork = $case !== 'no_work';
+        $client->failAcknowledgement = $case === 'unconfirmed_cleanup';
+        $process = new FakeProcess(running: false, nativeOutput: $nativeOutput);
+        $state = new AttemptStateStore($directory.'/active.json');
+        $terminal = [];
+        $errors = [];
+        $client->onComplete = static function () use ($case, &$terminal): void {
+            assert_same([], $terminal, 'Completion was reported before the server accepted it.');
+
+            if ($case === 'rejected_completion') {
+                throw new RuntimeException('SYNTHETIC_PRIVATE_RESPONSE');
+            }
+
+            if ($case === 'rejected_authorization') {
+                throw new ControlPlaneException(401, 'SYNTHETIC_PRIVATE_RESPONSE');
+            }
+        };
+        $client->onAcknowledge = static function () use (&$terminal): void {
+            assert_same([], $terminal, 'Completion was reported before stopped acknowledgement.');
+        };
+        $supervisor = new Supervisor(
+            $client,
+            new FakeSandbox($process),
+            new FakeNativeExecutableAdapter,
+            $state,
+            new WorkspacePreparer($directory.'/workspaces'),
+            clock: $clock,
+            watchdog: new FakeWatchdog,
+        );
+        $command = new RunCommand(
+            $supervisor,
+            static function (string $message) use (&$terminal, $case, $client, $process, $state): void {
+                if ($case !== 'no_work') {
+                    assert_true($client->completed && $client->acknowledged);
+                    assert_true($process->removed);
+                    assert_same(null, $state->load());
+                }
+
+                $terminal[] = $message;
+            },
+            static function (string $message) use (&$errors): void {
+                $errors[] = $message;
+            },
+        );
+
+        try {
+            assert_same($expectedExit, $command->run(true));
+            assert_same(1, $client->claims, 'Poll once claimed more than one attempt.');
+
+            if (in_array($case, ['rejected_completion', 'rejected_authorization', 'unconfirmed_cleanup'], true)) {
+                assert_same([], $terminal);
+                assert_same(1, count($errors));
+                assert_same($case === 'unconfirmed_cleanup', $state->load() !== null);
+
+                if ($case === 'rejected_authorization') {
+                    assert_same([
+                        "Runner request failed with HTTP 401. Check the runner connection and authorization.\n",
+                    ], $errors);
+                }
+            } else {
+                assert_same([], $errors);
+                assert_same([
+                    $case === 'no_work'
+                        ? "No eligible queued work was returned for this runner.\n"
+                        : 'Run '.$claim->runId.', attempt '.$claim->attemptId.': '.$outcome.".\n",
+                ], $terminal);
+            }
+
+            assert_true(! str_contains(json_encode([$terminal, $errors]), 'SYNTHETIC_PRIVATE'));
+        } finally {
+            remove_directory($directory);
+        }
+    });
+}
 
 runner_test('setup keeps a maximum-size artifact manifest below the shared request throttle', function (): void {
     $directory = temporary_directory();
