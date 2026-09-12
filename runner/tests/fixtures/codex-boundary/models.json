@@ -1,0 +1,40 @@
+{
+    "models": [
+        {
+            "slug": "gpt-5.6-sol",
+            "display_name": "Offline code-mode-required fixture",
+            "description": "Synthetic model metadata for pinned CLI boundary tests.",
+            "supported_reasoning_levels": [
+                {
+                    "effort": "low",
+                    "description": "Fast responses with lighter reasoning"
+                },
+                {
+                    "effort": "medium",
+                    "description": "Balances speed and reasoning depth for everyday tasks"
+                },
+                {
+                    "effort": "high",
+                    "description": "Greater reasoning depth for complex problems"
+                },
+                {
+                    "effort": "xhigh",
+                    "description": "Extra high reasoning depth for complex problems"
+                }
+            ],
+            "shell_type": "unified_exec",
+            "visibility": "hide",
+            "supported_in_api": true,
+            "priority": 16,
+            "support_verbosity": true,
+            "truncation_policy": {
+                "mode": "tokens",
+                "limit": 10000
+            },
+            "experimental_supported_tools": [],
+            "tool_mode": "code_mode_only",
+            "supports_search_tool": true,
+            "base_instructions": "Follow the offline fixture instructions."
+        }
+    ]
+}

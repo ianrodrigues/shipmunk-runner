@@ -117,6 +117,8 @@ try {
     $repo = json_decode($commands->mustRun(['docker', 'inspect', $name.'-repo'])->stdout, true, flags: JSON_THROW_ON_ERROR)[0];
     transport_assert($native['HostConfig']['NetworkMode'] === 'bridge', 'Native provider network is unavailable.');
     transport_assert($repo['HostConfig']['NetworkMode'] === 'none', 'Repository acquired network access.');
+    transport_assert($native['HostConfig']['PidsLimit'] === 128, 'Native host task limit does not support the pinned runtime.');
+    transport_assert($repo['HostConfig']['PidsLimit'] === 64, 'Repository task limit was widened.');
     foreach ([$native, $repo] as $inspection) {
         transport_assert($inspection['HostConfig']['ReadonlyRootfs'] === true, 'Writable sandbox root.');
         transport_assert($inspection['Config']['User'] === posix_geteuid().':'.posix_getegid(), 'Unexpected sandbox identity.');
@@ -305,6 +307,7 @@ JS], '', static function (int $requiredSeconds): void {});
     transport_assert(str_contains($patch, "+hidden\r\n") && str_contains($patch, 'old mode 100644'), 'Collected diff omitted ignored bytes or file modes.');
     $repoState = json_decode($commands->mustRun(['docker', 'inspect', $name.'-repo'])->stdout, true, flags: JSON_THROW_ON_ERROR)[0];
     $collector = json_decode($commands->mustRun(['docker', 'inspect', $name.'-diff'])->stdout, true, flags: JSON_THROW_ON_ERROR)[0];
+    transport_assert($collector['HostConfig']['PidsLimit'] === 64, 'Collector task limit was widened.');
     transport_assert($repoState['State']['Paused'] === true, 'Repository writers were not frozen during collection.');
     transport_assert($collector['HostConfig']['PidMode'] === '' && $collector['HostConfig']['NetworkMode'] === 'none', 'Collector namespace isolation was widened.');
     $snapshotMount = array_values(array_filter($collector['Mounts'], static fn (array $mount): bool => $mount['Destination'] === '/snapshot-source'))[0];

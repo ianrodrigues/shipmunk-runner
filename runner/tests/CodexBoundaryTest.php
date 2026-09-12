@@ -71,10 +71,11 @@ try {
 $container = 'shipmunk-codex-boundary-'.bin2hex(random_bytes(8));
 $command = [
     'docker', 'run', '--rm', '--name', $container,
-    '--network', 'none', '--read-only', '--user', '65532:65532',
+    '--network', 'none', '--init', '--read-only', '--user', '65532:65532',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--log-driver', 'none',
-    '--pids-limit', '128', '--memory', '512m', '--cpus', '1',
-    '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m,mode=1777',
+    '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
+    '--ulimit', 'nofile=1024:1024',
+    '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777',
     '--tmpfs', '/profile:rw,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=0700',
     '--tmpfs', '/bridge:rw,nosuid,nodev,noexec,size=1m,uid=65532,gid=65532,mode=0700',
     '--mount', 'type=bind,src='.$runner.'/tests/fixtures/codex-boundary,dst=/fixture/tests,readonly',
