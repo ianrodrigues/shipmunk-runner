@@ -4,7 +4,7 @@ The runner pins **Codex CLI 0.154.0**. It invokes the official `codex exec` proc
 
 ## Execution boundary
 
-Codex runs in a credential-only container. Repository commands run in a separate, non-root, network-disabled container with no profile, host workspace, control-plane token or Docker socket mounted. A bundled stdio MCP server exposes only `repository_command`. Its bounded local request file is handled by the trusted host supervisor, which checks the active lease before dispatching the command into the repository container. Candidate repository code never executes in the host supervisor or credential container.
+Codex runs in a credential-only container. Repository commands run in a separate, non-root, network-disabled container with no profile, host workspace, control-plane token or Docker socket mounted. A bundled stdio MCP server exposes only `repository_command`. Its bounded local request file is handled by the trusted host supervisor, which checks the active lease before dispatching the command into the repository container. Repository commands execute only in the repository container. The credential container can evaluate Code Mode JavaScript in the restricted V8 context described below; that context has no direct filesystem, process or network APIs.
 
 The native process starts in `/empty`, ignores user configuration and rules, disables ambient AGENTS discovery, and receives approved dashboard and hash-checked trusted AGENTS instructions explicitly. Candidate `.codex`, hooks, MCP, skills and AGENTS files remain repository data. Native environment variables come from a clean allowlist. No ambient API keys, provider URLs, home directories or proxy settings are inherited.
 
