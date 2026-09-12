@@ -31,12 +31,12 @@ make check
 
 1. Pass the checks and merge the reviewed runner changes.
 2. Create a GitHub release with a semantic version tag such as `v0.1.0-alpha.1`, targeting that commit. Mark alpha versions as prereleases.
-3. Publish the release. The [release workflow](.github/workflows/release.yml) runs the standalone checks, then builds and uploads `shipmunk-runner-VERSION.tar`, `SHA256SUMS` and `runner-release.json` from that tag's commit.
+3. Publish the release. The [release workflow](.github/workflows/release.yml) runs the standalone checks, then builds and uploads `shipmunk-runner-VERSION.tar`, `installer.php`, `SHA256SUMS` and `runner-release.json` from that tag's commit.
 
 Publishing either a stable release or a prerelease triggers the workflow. Draft creation alone does not. A rerun verifies and reuses matching assets, resumes missing uploads, and refuses to replace different bytes. Only the upload job has repository write permission, and its token is exposed only to the upload step. See [release packaging and application pins](docs/releases.md).
 
 ## Source relationship and license
 
-This repository is the public source for runner releases. The application currently retains a runner snapshot for integrated tests; removing that copy or moving application CI is outside this initial extraction. [source-snapshot.json](source-snapshot.json) records the initial snapshot's origin and file hashes without copying private repository history. Future runner changes should be reviewed here, released under an independent version, and then synchronized into the application's test snapshot and release pin.
+This repository is the public source for runner releases. Runner source and native checks live here. The application consumes the pinned public release for setup and does not retain a tracked runner source copy. Runner-coupled application tests are temporarily disabled until a separate cross-repository integration strategy is implemented. [source-snapshot.json](source-snapshot.json) records the initial snapshot's origin and file hashes without copying private repository history. Future runner changes should be reviewed here, released under an independent version, and then adopted through an explicit application release-pin update.
 
 The runner follows the application's existing MIT declaration. See [LICENSE](LICENSE). Native clients and container dependencies retain their own licenses; they are downloaded from their official distributions rather than committed here.

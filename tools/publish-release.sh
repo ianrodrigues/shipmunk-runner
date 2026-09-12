@@ -12,7 +12,7 @@ release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
 [[ "$(jq -r .tag_name <<<"$release")" == "$RELEASE_TAG" ]]
 [[ "$(jq -r .draft <<<"$release")" == false ]]
 
-for name in "shipmunk-runner-$RELEASE_TAG.tar" runner-release.json SHA256SUMS; do
+for name in "shipmunk-runner-$RELEASE_TAG.tar" installer.php runner-release.json SHA256SUMS; do
     artifact="$output/$name"
     digest="sha256:$(sha256sum "$artifact" | cut -d ' ' -f 1)"
     assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")

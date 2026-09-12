@@ -6,7 +6,7 @@ trap 'rm -rf "$fixture"' EXIT
 mkdir "$fixture/bin" "$fixture/dist"
 export RELEASE_TAG=v0.2.0-alpha.1 RELEASE_ID=123 GITHUB_REPOSITORY=ianrodrigues/shipmunk-runner
 export GH_FAKE_STATE="$fixture/state.json"
-for name in "shipmunk-runner-$RELEASE_TAG.tar" runner-release.json SHA256SUMS; do
+for name in "shipmunk-runner-$RELEASE_TAG.tar" installer.php runner-release.json SHA256SUMS; do
     printf 'SYNTHETIC_RELEASE_%s\n' "$name" > "$fixture/dist/$name"
 done
 printf '{"version":"%s"}\n' "$RELEASE_TAG" > "$fixture/dist/runner-release.json"
@@ -33,14 +33,14 @@ export PATH="$fixture/bin:$PATH"
 printf '{"assets":[],"uploads":0}\n' > "$GH_FAKE_STATE"
 cd "$root"
 bash tools/publish-release.sh "$fixture/dist"
-[[ "$(jq .uploads "$GH_FAKE_STATE")" == 3 ]]
+[[ "$(jq .uploads "$GH_FAKE_STATE")" == 4 ]]
 bash tools/publish-release.sh "$fixture/dist"
-[[ "$(jq .uploads "$GH_FAKE_STATE")" == 3 ]]
+[[ "$(jq .uploads "$GH_FAKE_STATE")" == 4 ]]
 # Resume a partial upload without replacing the first matching asset.
 jq '.assets = [.assets[0]] | .uploads = 1' "$GH_FAKE_STATE" > "$fixture/partial.json"
 mv "$fixture/partial.json" "$GH_FAKE_STATE"
 bash tools/publish-release.sh "$fixture/dist"
-[[ "$(jq .uploads "$GH_FAKE_STATE")" == 3 ]]
+[[ "$(jq .uploads "$GH_FAKE_STATE")" == 4 ]]
 # A changed existing asset must stop the release rather than overwrite it.
 jq '.assets[0].digest = "sha256:changed"' "$GH_FAKE_STATE" > "$fixture/changed.json"
 mv "$fixture/changed.json" "$GH_FAKE_STATE"
@@ -48,5 +48,5 @@ if bash tools/publish-release.sh "$fixture/dist" > "$fixture/output" 2>&1; then
     echo 'Expected mismatched existing asset to be rejected.' >&2
     exit 1
 fi
-[[ "$(jq .uploads "$GH_FAKE_STATE")" == 3 ]]
+[[ "$(jq .uploads "$GH_FAKE_STATE")" == 4 ]]
 printf 'PASS release upload verifies new assets, resumes partial uploads and refuses changed existing assets\n'
