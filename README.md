@@ -25,7 +25,7 @@ docker tag alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be1216
 make check
 ```
 
-`make check` runs syntax checks, package and release-upload fixtures, the supervisor/container suite, and pinned native executable checks. Native image construction downloads the pinned official packages; tests use synthetic data without account access. No application, database, Redis, Composer installation or application checkout is required. CI uses disposable GitHub-hosted Linux runners; public pull requests never use the application's private self-hosted runner.
+`make check` runs syntax checks, package and release-upload fixtures, the supervisor/container suite, and pinned native executable checks. Native image construction downloads the pinned official packages; tests use synthetic data without account access. No application, database, Redis, Composer installation or application checkout is required. Trusted pushes, internal pull requests and releases use the existing `github-runner-01` self-hosted Linux runner. Pull requests from forks use disposable GitHub-hosted Ubuntu runners and cannot execute on the private runner.
 
 ## Publish a release
 
