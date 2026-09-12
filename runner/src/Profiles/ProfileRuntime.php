@@ -11,6 +11,7 @@ interface ProfileRuntime
 {
     public function start(string $sandbox, string $home): void;
 
+    /** @param Closure(): void $checkpoint */
     public function run(string $sandbox, string $agent, string $command, Closure $checkpoint): CommandResult;
 
     /** Returns only after the entire native process tree is confirmed absent. */

@@ -10,12 +10,16 @@ use Shipmunk\Runner\CommandRunner;
 use Shipmunk\Runner\ControlPlaneClient;
 use Shipmunk\Runner\ControlPlaneException;
 use Shipmunk\Runner\DockerSandbox;
+use Shipmunk\Runner\DockerSandboxProcess;
+use Shipmunk\Runner\Drivers\CodexWatchdog;
 use Shipmunk\Runner\FakeNativeExecutableAdapter;
 use Shipmunk\Runner\Heartbeat;
 use Shipmunk\Runner\HostWatchdog;
 use Shipmunk\Runner\HttpControlPlaneClient;
 use Shipmunk\Runner\HttpResponse;
 use Shipmunk\Runner\HttpTransport;
+use Shipmunk\Runner\NativeExecutableAdapter;
+use Shipmunk\Runner\NativeExecution;
 use Shipmunk\Runner\Protocol;
 use Shipmunk\Runner\SafeTarExtractor;
 use Shipmunk\Runner\Sandbox;
@@ -295,6 +299,9 @@ final class FakeControlPlane implements ControlPlaneClient
     /** @var list<array{kind: string, bytes: string, sha256: string}> */
     public array $uploaded = [];
 
+    /** @var list<array<string, mixed>> */
+    public array $events = [];
+
     public bool $acknowledged = false;
 
     public bool $failAcknowledgement = false;
@@ -303,10 +310,13 @@ final class FakeControlPlane implements ControlPlaneClient
 
     public ?Closure $onDownload = null;
 
+    public ?Closure $onHeartbeat = null;
+
     public function __construct(
         public Claim $work,
         private string $archive,
         public ?int $failHeartbeatAt = null,
+        private Clock $clock = new FakeClock,
     ) {}
 
     public function claim(): ?Claim
@@ -317,12 +327,13 @@ final class FakeControlPlane implements ControlPlaneClient
     public function heartbeat(Claim $claim): Heartbeat
     {
         $this->heartbeatCount++;
+        $this->onHeartbeat?->__invoke();
 
         if ($this->failHeartbeatAt !== null && $this->heartbeatCount >= $this->failHeartbeatAt) {
             throw new RuntimeException('lease lost');
         }
 
-        return new Heartbeat(false, new DateTimeImmutable('@'.(string) ((int) microtime(true) + 45)));
+        return new Heartbeat(false, new DateTimeImmutable('@'.(string) ((int) $this->clock->now() + 45)));
     }
 
     public function acknowledgeStopped(Claim $claim): void
@@ -336,7 +347,10 @@ final class FakeControlPlane implements ControlPlaneClient
         $this->acknowledged = true;
     }
 
-    public function sendEvents(Claim $claim, array $events): void {}
+    public function sendEvents(Claim $claim, array $events): void
+    {
+        array_push($this->events, ...$events);
+    }
 
     public function downloadArtifact(Claim $claim, string $artifactId, string $sha256): string
     {
@@ -435,6 +449,17 @@ runner_test('HTTP client accepts the flat manifest claim with a 45 second local 
     assert_same(45, Supervisor::LEASE_SECONDS);
 });
 
+runner_test('claim identifiers reject trailing line breaks', function (): void {
+    assert_throws(InvalidArgumentException::class, fn () => new Claim(
+        "01k4w000000000000000000001\n",
+        '01k4w000000000000000000002',
+        1,
+        new DateTimeImmutable('@1045'),
+        new DateTimeImmutable('@1900'),
+        ['protocol_version' => '1.0'],
+    ));
+});
+
 runner_test('HTTP client downloads only attempt-scoped input artifacts and verifies both hashes', function (): void {
     $transport = new RecordingTransport;
     $bytes = 'source archive';
@@ -455,6 +480,25 @@ runner_test('HTTP client downloads only attempt-scoped input artifacts and verif
     assert_same('application/octet-stream', $transport->requests[0]['headers']['Accept']);
     assert_same(Protocol::INPUT_ARTIFACT_MAX_BYTES, $transport->requests[0]['maxResponseBytes']);
     assert_same(Protocol::HTTP_TIMEOUT_SECONDS, $transport->requests[0]['timeoutSeconds']);
+
+    $transport->responses[] = new HttpResponse(200, [
+        'x-artifact-sha256' => $sha256,
+    ], $bytes);
+    assert_same($bytes, $client->downloadArtifact(
+        $claim,
+        '01k4w000000000000000000003',
+        $sha256,
+    ));
+
+    $transport->responses[] = new HttpResponse(200, [
+        'x-artifact-sha256' => $sha256,
+        'content-length' => 'invalid',
+    ], $bytes);
+    assert_throws(RuntimeException::class, fn () => $client->downloadArtifact(
+        $claim,
+        '01k4w000000000000000000003',
+        $sha256,
+    ));
 
     $transport->responses[] = new HttpResponse(200, [
         'x-artifact-sha256' => str_repeat('0', 64),
@@ -539,6 +583,188 @@ runner_test('safe tar extraction accepts regular files and rejects traversal and
     }
 });
 
+runner_test('sandbox startup reports cleanup failure without replacing its original cause', function (): void {
+    $directory = temporary_directory();
+    $bin = $directory.'/bin';
+    mkdir($bin, 0700);
+    file_put_contents($bin.'/docker', <<<'SH'
+#!/bin/sh
+case "$1" in
+    start) echo "startup command detail" >&2; exit 1 ;;
+    inspect) echo "true"; exit 0 ;;
+    stop) echo "cleanup stop detail" >&2; exit 1 ;;
+    kill) echo "cleanup kill detail" >&2; exit 1 ;;
+esac
+exit 1
+SH);
+    chmod($bin.'/docker', 0700);
+    $path = getenv('PATH');
+    putenv('PATH='.$bin.':'.($path === false ? '' : $path));
+
+    try {
+        (new DockerSandboxProcess(str_repeat('a', 64), new CommandRunner, $directory, []))->start();
+        throw new RuntimeException('Expected sandbox startup to fail.');
+    } catch (RuntimeException $exception) {
+        assert_same('Sandbox startup failed, and its cleanup also failed.', $exception->getMessage());
+        assert_true(! str_contains($exception->getMessage(), 'cleanup kill detail'));
+        assert_true(str_contains($exception->getPrevious()?->getMessage() ?? '', 'startup command detail'));
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH='.$path);
+        remove_directory($directory);
+    }
+});
+
+runner_test('command runner still times out an idle subprocess', function (): void {
+    $started = microtime(true);
+    assert_throws(RuntimeException::class, fn () => (new CommandRunner)->mustRun(
+        [PHP_BINARY, '-r', 'sleep(5);'],
+        timeoutSeconds: 1,
+    ));
+    assert_true(microtime(true) - $started < 3, 'Idle subprocess timeout was not enforced promptly.');
+});
+
+runner_test('Codex watchdog rollback disarms every armed sibling and preserves the arm failure', function (): void {
+    $record = (object) ['disarmed' => []];
+    $watchdog = new class($record) implements Watchdog
+    {
+        public function __construct(private object $record) {}
+
+        public function arm(string $sandboxId, DateTimeImmutable $lease, DateTimeImmutable $deadline): WatchdogLease
+        {
+            if (str_ends_with($sandboxId, '-diff')) {
+                throw new RuntimeException('diff watchdog arm failed');
+            }
+
+            return new class($this->record, $sandboxId) implements WatchdogLease
+            {
+                public function __construct(private object $record, private string $sandboxId) {}
+
+                public function renew(DateTimeImmutable $lease): void {}
+
+                public function disarm(): void
+                {
+                    $this->record->disarmed[] = $this->sandboxId;
+
+                    if ($this->sandboxId === 'sandbox') {
+                        throw new RuntimeException('first rollback failed');
+                    }
+                }
+            };
+        }
+    };
+
+    try {
+        (new CodexWatchdog($watchdog))->arm(
+            'sandbox',
+            new DateTimeImmutable('@1045'),
+            new DateTimeImmutable('@1900'),
+        );
+        throw new RuntimeException('Expected watchdog arm to fail.');
+    } catch (RuntimeException $exception) {
+        assert_same('diff watchdog arm failed', $exception->getMessage());
+    }
+
+    assert_same(['sandbox', 'sandbox-repo'], $record->disarmed);
+});
+
+runner_test('deadline crossing during heartbeat blocks the renewed attempt', function (): void {
+    $directory = temporary_directory();
+    $clock = new FakeClock;
+    $claim = new Claim(
+        '01k4w000000000000000000001',
+        '01k4w000000000000000000002',
+        1,
+        new DateTimeImmutable('@1045'),
+        new DateTimeImmutable('@1001'),
+        [
+            'protocol_version' => '1.0',
+            'source_artifacts' => [],
+            'instruction_artifacts' => [],
+        ],
+    );
+    $client = new FakeControlPlane($claim, '', clock: $clock);
+    $client->onHeartbeat = function () use ($clock): void {
+        $clock->time = 1001;
+    };
+    $process = new FakeProcess(running: false);
+    $supervisor = new Supervisor(
+        $client,
+        new FakeSandbox($process),
+        new FakeNativeExecutableAdapter,
+        new AttemptStateStore($directory.'/active.json'),
+        new WorkspacePreparer($directory.'/workspaces'),
+        clock: $clock,
+        watchdog: new FakeWatchdog,
+    );
+
+    try {
+        assert_throws(RuntimeException::class, fn () => $supervisor->runOnce());
+        assert_same(1, $client->heartbeatCount);
+        assert_true(! $process->started && ! $client->completed);
+    } finally {
+        remove_directory($directory);
+    }
+});
+
+runner_test('deadline crossing during decode blocks every publication request', function (): void {
+    $directory = temporary_directory();
+    $clock = new FakeClock;
+    $claim = new Claim(
+        '01k4w000000000000000000001',
+        '01k4w000000000000000000002',
+        1,
+        new DateTimeImmutable('@1045'),
+        new DateTimeImmutable('@1001'),
+        [
+            'protocol_version' => '1.0',
+            'source_artifacts' => [],
+            'instruction_artifacts' => [],
+        ],
+    );
+    $client = new FakeControlPlane($claim, '', clock: $clock);
+    $adapter = new class($clock) implements NativeExecutableAdapter
+    {
+        public function __construct(private FakeClock $clock) {}
+
+        public function decode(Claim $claim, int $exitCode, string $output): NativeExecution
+        {
+            $this->clock->time = 1001;
+            $bytes = 'late patch';
+
+            return new NativeExecution(
+                [['type' => 'progress']],
+                [['kind' => 'patch', 'bytes' => $bytes, 'sha256' => hash('sha256', $bytes)]],
+                [
+                    'protocol_version' => '1.0',
+                    'run_id' => $claim->runId,
+                    'attempt_id' => $claim->attemptId,
+                    'fence' => $claim->fence,
+                    'patch_artifact' => null,
+                ],
+            );
+        }
+    };
+    $process = new FakeProcess(running: false);
+    $supervisor = new Supervisor(
+        $client,
+        new FakeSandbox($process),
+        $adapter,
+        new AttemptStateStore($directory.'/active.json'),
+        new WorkspacePreparer($directory.'/workspaces'),
+        clock: $clock,
+        watchdog: new FakeWatchdog,
+    );
+
+    try {
+        assert_throws(RuntimeException::class, fn () => $supervisor->runOnce());
+        assert_same([], $client->events);
+        assert_same([], $client->uploaded);
+        assert_true(! $client->completed && $client->acknowledged);
+    } finally {
+        remove_directory($directory);
+    }
+});
+
 runner_test('lease heartbeat failure stops and removes the sandbox before clearing state', function (): void {
     $directory = temporary_directory();
     $archive = tar_archive('file.txt', 'safe');
@@ -547,7 +773,8 @@ runner_test('lease heartbeat failure stops and removes the sandbox before cleari
         'source_artifacts' => [$references['source']],
         'instruction_artifacts' => [$references['instruction']],
     ]);
-    $client = new FakeControlPlane($claim, $archive, failHeartbeatAt: 12);
+    $clock = new FakeClock;
+    $client = new FakeControlPlane($claim, $archive, failHeartbeatAt: 12, clock: $clock);
     $process = new FakeProcess;
     $sandbox = new FakeSandbox($process);
     $state = new AttemptStateStore($directory.'/active.json');
@@ -557,7 +784,7 @@ runner_test('lease heartbeat failure stops and removes the sandbox before cleari
         new FakeNativeExecutableAdapter,
         $state,
         new WorkspacePreparer($directory.'/workspaces'),
-        clock: new FakeClock,
+        clock: $clock,
         watchdog: new FakeWatchdog,
     );
 
@@ -638,7 +865,8 @@ runner_test('failed cleanup acknowledgement retains state and blocks replacement
         'source_artifacts' => [$references['source']],
         'instruction_artifacts' => [$references['instruction']],
     ]);
-    $client = new FakeControlPlane($claim, $archive, failHeartbeatAt: 12);
+    $clock = new FakeClock;
+    $client = new FakeControlPlane($claim, $archive, failHeartbeatAt: 12, clock: $clock);
     $client->failAcknowledgement = true;
     $process = new FakeProcess;
     $sandbox = new FakeSandbox($process);
@@ -653,7 +881,7 @@ runner_test('failed cleanup acknowledgement retains state and blocks replacement
         new FakeNativeExecutableAdapter,
         $state,
         new WorkspacePreparer($directory.'/workspaces'),
-        clock: new FakeClock,
+        clock: $clock,
         watchdog: new FakeWatchdog,
     );
 
@@ -693,7 +921,8 @@ runner_test('successful completion cleans up and acknowledges stopped before cle
         'tests' => [],
         'usage' => null,
     ]], JSON_THROW_ON_ERROR);
-    $client = new FakeControlPlane($claim, $archive);
+    $clock = new FakeClock;
+    $client = new FakeControlPlane($claim, $archive, clock: $clock);
     $process = new FakeProcess(running: false, nativeOutput: $output);
     $state = new AttemptStateStore($directory.'/active.json');
     $client->onAcknowledge = function () use ($client, $process, $state): void {
@@ -707,7 +936,7 @@ runner_test('successful completion cleans up and acknowledges stopped before cle
         new FakeNativeExecutableAdapter,
         $state,
         new WorkspacePreparer($directory.'/workspaces'),
-        clock: new FakeClock,
+        clock: $clock,
         watchdog: new FakeWatchdog,
     );
 
@@ -742,8 +971,8 @@ runner_test('setup keeps a maximum-size artifact manifest below the shared reque
         'tests' => [],
         'usage' => null,
     ]], JSON_THROW_ON_ERROR);
-    $client = new FakeControlPlane($claim, $archive);
     $clock = new FakeClock;
+    $client = new FakeControlPlane($claim, $archive, clock: $clock);
     $client->onDownload = function () use ($clock): void {
         $clock->time += 1;
     };
@@ -794,14 +1023,15 @@ runner_test('completion uses the server identifier returned for one uploaded pat
         'tests' => [],
         'usage' => null,
     ]], JSON_THROW_ON_ERROR);
-    $client = new FakeControlPlane($claim, $archive);
+    $clock = new FakeClock;
+    $client = new FakeControlPlane($claim, $archive, clock: $clock);
     $supervisor = new Supervisor(
         $client,
         new FakeSandbox(new FakeProcess(running: false, nativeOutput: $output)),
         new FakeNativeExecutableAdapter,
         new AttemptStateStore($directory.'/active.json'),
         new WorkspacePreparer($directory.'/workspaces'),
-        clock: new FakeClock,
+        clock: $clock,
         watchdog: new FakeWatchdog,
     );
 
@@ -842,14 +1072,15 @@ runner_test('multiple patch artifacts are rejected before upload or completion',
         'usage' => null,
     ]], JSON_THROW_ON_ERROR);
 
-    $client = new FakeControlPlane($claim, $archive);
+    $clock = new FakeClock;
+    $client = new FakeControlPlane($claim, $archive, clock: $clock);
     $supervisor = new Supervisor(
         $client,
         new FakeSandbox(new FakeProcess(running: false, nativeOutput: $output)),
         new FakeNativeExecutableAdapter,
         new AttemptStateStore($directory.'/active.json'),
         new WorkspacePreparer($directory.'/workspaces'),
-        clock: new FakeClock,
+        clock: $clock,
         watchdog: new FakeWatchdog,
     );
 
@@ -898,14 +1129,19 @@ runner_test('independent host watchdog removes a live sandbox after its supervis
     $controller = pcntl_fork();
 
     if ($controller === 0) {
-        $watchdogLease = (new HostWatchdog($commands))->arm(
-            $process->id(),
-            $claim->leaseExpiresAt,
-            $claim->deadline,
-        );
-        file_put_contents($ready, 'ready');
-        sleep(600);
-        $watchdogLease->disarm();
+        try {
+            $watchdogLease = (new HostWatchdog($commands))->arm(
+                $process->id(),
+                $claim->leaseExpiresAt,
+                $claim->deadline,
+            );
+            file_put_contents($ready, 'ready');
+            sleep(600);
+            $watchdogLease->disarm();
+        } catch (Throwable) {
+            // The parent detects the missing readiness marker.
+        }
+
         exit(1);
     }
 
@@ -946,6 +1182,13 @@ runner_test('Docker sandbox enforces non-root isolation resource limits and no c
     putenv('SHIPMUNK_RUNNER_TOKEN=host-runner-secret');
     $directory = temporary_directory();
     file_put_contents($directory.'/fixture.txt', 'fixture');
+    $bulk = fopen($directory.'/bulk.bin', 'x');
+    assert_true(is_resource($bulk), 'Unable to prepare large workspace fixture.');
+    $chunk = str_repeat('x', 1024 * 1024);
+    for ($megabyte = 0; $megabyte < 65; $megabyte++) {
+        assert_same(strlen($chunk), fwrite($bulk, $chunk), 'Unable to write large workspace fixture.');
+    }
+    fclose($bulk);
     $claim = fixture_claim([
         'fake_mode' => 'ignore_term',
         'fake_require_fixture' => true,
@@ -984,6 +1227,10 @@ runner_test('Docker sandbox enforces non-root isolation resource limits and no c
             }
         });
         assert_true($checkpoints >= 5, 'Sandbox setup did not expose heartbeat checkpoints.');
+        assert_same(
+            (string) (65 * 1024 * 1024),
+            trim($commands->mustRun(['docker', 'exec', $process->id(), 'sh', '-c', 'wc -c < /workspace/bulk.bin'])->stdout),
+        );
         assert_same('65532', trim($commands->mustRun(['docker', 'exec', $process->id(), 'id', '-u'])->stdout));
         $observed = null;
 

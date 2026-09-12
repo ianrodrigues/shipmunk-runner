@@ -250,7 +250,9 @@ final readonly class Supervisor
         string $workspace,
         ?WatchdogLease $watchdog,
     ): DateTimeImmutable {
+        $this->assertBeforeDeadline($claim);
         $heartbeat = $this->client->heartbeat($claim);
+        $this->assertBeforeDeadline($claim);
 
         if ($heartbeat->stop) {
             throw new RuntimeException('Control plane requested execution stop.');
