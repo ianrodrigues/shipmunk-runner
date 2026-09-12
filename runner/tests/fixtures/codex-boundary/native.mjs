@@ -82,6 +82,28 @@ async function runNative(item, extra = [], mediate = false, rejection = null) {
             const body = JSON.parse(Buffer.concat(chunks));
             requests.push(body);
 
+            const schema = body.text.format.schema;
+            assert.equal(schema.properties.outcome.type, 'string');
+            assert.equal(
+                schema.properties.findings.items.properties.side.type,
+                'string',
+            );
+            assert.equal(
+                schema.properties.findings.items.properties.severity.type,
+                'string',
+            );
+            assert.equal(
+                schema.properties.tests.items.properties.status.type,
+                'string',
+            );
+            assert.equal(
+                Object.hasOwn(
+                    schema.properties.findings.items.properties.path,
+                    'pattern',
+                ),
+                false,
+            );
+
             if (rejection !== null) {
                 response.writeHead(400, { 'Content-Type': 'application/json' });
                 response.end(JSON.stringify({ error: rejection }));
@@ -335,15 +357,54 @@ for (const code of ['model_not_found', 'invalid_json_schema', 'unknown']) {
     assert.equal(result.code, 1);
     assert.equal(result.requests.length, 1);
     console.log(
-        'NATIVE_REJECTION_FIXTURE ' +
+        'NATIVE_PARSER_FIXTURE ' +
             JSON.stringify({
-                backend_code: code,
+                case: code,
                 exit_code: result.code,
                 stdout: result.stdout,
                 stderr: result.stderr,
             }),
     );
 }
+
+const unsafeFinding = await runNative({
+    type: 'message',
+    role: 'assistant',
+    id: 'msg_unsafe_finding',
+    status: 'completed',
+    content: [
+        {
+            type: 'output_text',
+            text: JSON.stringify({
+                summary: 'Synthetic finding with an unsafe path.',
+                outcome: 'findings',
+                findings: [
+                    {
+                        path: '../outside',
+                        line: 1,
+                        side: 'RIGHT',
+                        severity: 'high',
+                        explanation: 'SYNTHETIC_SECRET_UNSAFE_FINDING',
+                        evidence: 'Synthetic evidence.',
+                    },
+                ],
+                tests: [],
+            }),
+            annotations: [],
+        },
+    ],
+});
+assert.equal(unsafeFinding.code, 0);
+assert.equal(unsafeFinding.requests.length, 1);
+console.log(
+    'NATIVE_PARSER_FIXTURE ' +
+        JSON.stringify({
+            case: 'unsafe_finding_path',
+            exit_code: unsafeFinding.code,
+            stdout: unsafeFinding.stdout,
+            stderr: unsafeFinding.stderr,
+        }),
+);
 
 await rm('/tmp/work', { recursive: true, force: true });
 

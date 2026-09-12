@@ -7,6 +7,7 @@
       "maxLength": 16384
     },
     "outcome": {
+      "type": "string",
       "enum": [
         "findings",
         "no_findings",
@@ -23,8 +24,7 @@
           "path": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 1024,
-            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\x00-\\x1f]+$"
+            "maxLength": 1024
           },
           "line": {
             "type": "integer",
@@ -32,12 +32,14 @@
             "maximum": 9007199254740991
           },
           "side": {
+            "type": "string",
             "enum": [
               "LEFT",
               "RIGHT"
             ]
           },
           "severity": {
+            "type": "string",
             "enum": [
               "info",
               "low",
@@ -80,6 +82,7 @@
             "maxLength": 2048
           },
           "status": {
+            "type": "string",
             "enum": [
               "passed",
               "failed",

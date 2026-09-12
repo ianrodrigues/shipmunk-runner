@@ -90,19 +90,21 @@ $command = [
 try {
     $result = $commands->mustRun($command, timeoutSeconds: 210);
     $rejections = [];
+    $fixturePrefix = 'NATIVE_PARSER_FIXTURE ';
 
     foreach (explode("\n", rtrim($result->stdout, "\n")) as $line) {
-        if (! str_starts_with($line, 'NATIVE_REJECTION_FIXTURE ')) {
+        if (! str_starts_with($line, $fixturePrefix)) {
             fwrite(STDOUT, $line."\n");
 
             continue;
         }
 
-        $fixture = json_decode(substr($line, 25), true, 32, JSON_THROW_ON_ERROR);
-        $expected = match ($fixture['backend_code']) {
+        $fixture = json_decode(substr($line, strlen($fixturePrefix)), true, 32, JSON_THROW_ON_ERROR);
+        $expected = match ($fixture['case']) {
             'model_not_found' => NativeFailureReason::ModelUnavailable,
             'invalid_json_schema' => NativeFailureReason::InvalidOutputSchema,
             'unknown' => NativeFailureReason::ProcessError,
+            'unsafe_finding_path' => NativeFailureReason::InvalidResult,
         };
 
         try {
@@ -113,23 +115,28 @@ try {
                 $fixture['stderr'],
             );
 
-            throw new LogicException('Native backend rejection was accepted.');
+            throw new LogicException('Invalid native response was accepted.');
         } catch (DriverFailure $failure) {
             if ($failure->reason !== $expected) {
-                throw new LogicException('Native backend rejection lost its known reason.');
+                throw new LogicException('Native response rejection lost its known reason.');
             }
 
             if (str_contains($failure->summary(), 'SYNTHETIC_SECRET')) {
-                throw new LogicException('Native backend rejection leaked provider text.');
+                throw new LogicException('Native response rejection leaked provider text.');
             }
         }
 
-        $rejections[] = $fixture['backend_code'];
-        fwrite(STDOUT, 'PASS pinned native backend rejection '.$expected->value."\n");
+        $rejections[] = $fixture['case'];
+        fwrite(STDOUT, 'PASS pinned native response rejection '.$expected->value."\n");
     }
 
-    if ($rejections !== ['model_not_found', 'invalid_json_schema', 'unknown']) {
-        throw new LogicException('Native backend rejection fixtures were not all exercised.');
+    if ($rejections !== [
+        'model_not_found',
+        'invalid_json_schema',
+        'unknown',
+        'unsafe_finding_path',
+    ]) {
+        throw new LogicException('Native response rejection fixtures were not all exercised.');
     }
 } finally {
     $commands->run(['docker', 'rm', '--force', $container]);
