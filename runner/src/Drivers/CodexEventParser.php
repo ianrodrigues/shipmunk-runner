@@ -23,14 +23,17 @@ final class CodexEventParser
     public const MAX_PATCH_BYTES = 1_048_576;
 
     /**
-     * Retain the first failure only after validating every record in the response.
+     * Return no failure only after validating the complete authenticated response.
      */
     public function preflightFailureReason(
+        int $exitCode,
         string $stdout,
         string $stderr = '',
-    ): string {
+    ): ?string {
         $reason = null;
         $terminal = false;
+        $completed = false;
+        $message = null;
         $fatalError = false;
         $items = [];
 
@@ -45,6 +48,7 @@ final class CodexEventParser
             if (str_starts_with($event->type, 'item.')) {
                 $this->recordItemLifecycle($event, $items);
             }
+
             $type = $event->type;
             $itemFailure = str_starts_with($type, 'item.') && $event->item->type === 'error';
             $failure = $type === 'error' || $type === 'turn.failed' || $itemFailure;
@@ -52,6 +56,15 @@ final class CodexEventParser
             // Codex can report an error before turn.failed, but cannot resume work afterward.
             if ($reason !== null && ! $failure) {
                 throw new DriverFailure('malformed_output');
+            }
+
+            if ($type === 'item.completed' && $event->item->type === 'agent_message') {
+                $message = $event->item->text ?? null;
+            }
+
+            if ($type === 'turn.completed') {
+                $this->assertItemsComplete($items);
+                $completed = true;
             }
 
             $terminal = $type === 'turn.completed' || $type === 'turn.failed';
@@ -67,13 +80,27 @@ final class CodexEventParser
         }
 
         // A fatal thread error can occur before a turn exists; an item error cannot end a stream.
-        if ($reason !== null
+        if (
+            $reason !== null
             && ! $terminal
-            && ! $fatalError) {
+            && ! $fatalError
+        ) {
             throw new DriverFailure('malformed_output');
         }
 
-        return $reason ?? 'process_error';
+        if ($reason !== null) {
+            return $reason;
+        }
+
+        if (
+            $exitCode !== 0
+            || ! $completed
+            || $message !== 'SHIPMUNK_AUTH_OK'
+        ) {
+            return 'process_error';
+        }
+
+        return null;
     }
 
     private function assertPreflightEvent(stdClass $event): void
@@ -109,8 +136,7 @@ final class CodexEventParser
     private function recordItemLifecycle(
         stdClass $event,
         array &$items,
-    ): void
-    {
+    ): void {
         $item = $event->item;
         $id = $this->text($item->id ?? null, 128, 'malformed_output');
         $kind = $this->text($item->type ?? null, 128, 'malformed_output');
@@ -139,6 +165,18 @@ final class CodexEventParser
             'type' => $kind,
             'complete' => $event->type === 'item.completed',
         ];
+    }
+
+    /**
+     * @param array<array-key, array{type: string, complete: bool}> $items
+     */
+    private function assertItemsComplete(array $items): void
+    {
+        foreach ($items as $item) {
+            if (! $item['complete']) {
+                throw new DriverFailure('malformed_output');
+            }
+        }
     }
 
     public function parse(
@@ -203,11 +241,7 @@ final class CodexEventParser
                     $events[] = $this->event($claim, count($events) + 1, $type === 'item.started' ? 'tool_started' : 'tool_finished', 'Codex tool activity.');
                 }
             } elseif ($type === 'turn.completed' && $state === 'turn') {
-                foreach ($items as $item) {
-                    if (! $item['complete']) {
-                        throw new DriverFailure('malformed_output');
-                    }
-                }
+                $this->assertItemsComplete($items);
                 $usage = $this->usage($event->usage ?? null);
                 $state = 'complete';
             } else {

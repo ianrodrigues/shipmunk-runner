@@ -22,6 +22,8 @@ The existing source convention is one head snapshot, or two snapshots ordered ba
 
 Native JSONL is limited to 2 MiB overall, 64 KiB per line and 10,000 events. The final model response contains only summary, outcome, findings and tests. Run identity, attempt identity, fence, usage and uploaded artifact references are derived outside the model response. The server revalidates the normalized v1 result and events. Raw reasoning, command output and provider diagnostics are not copied into progress events. Unknown usage is null; no cost is invented.
 
+Authenticated preflight uses the same item lifecycle validation as execution. A successful terminal requires every tracked item to be complete, a zero process exit code and an exact final `SHIPMUNK_AUTH_OK` message. A failed terminal can end with active items; its sanitized failure reason is retained after the complete stream passes validation.
+
 Repository changes are collected from a frozen, bounded tmpfs snapshot using a separate collector. The original source and Git metadata are protected from repository commands, so rewriting repository history cannot hide edits. Patch artifacts contain the diff, verified before/after hashes and modes, tests and base revision in the server’s JSON envelope. Code-change runs must pin `base_sha` and `head_sha` to the same original revision; review runs cannot publish patches. At most 200 changed files are accepted.
 
 Malformed/truncated output, missing results, invalid structured results, process failure, expired authentication, rate limits and unavailable approvals have distinct sanitized failure reasons. Unknown provider error wording remains a generic process failure rather than a guessed classification. A failed runtime cannot emit a successful patch result.

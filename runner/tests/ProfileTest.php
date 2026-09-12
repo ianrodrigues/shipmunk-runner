@@ -512,6 +512,60 @@ $tests['validated Codex preflight rate limit reaches profile completion without 
         profile_assert($store->read('active') === null && ! is_dir($store->home()));
     }
 };
+$tests['successful Codex preflight cannot activate credentials with an unfinished item'] = function (): void {
+    $fixture = file_get_contents(__DIR__.'/fixtures/codex/preflight-unfinished-item.jsonl');
+
+    foreach (['reasoning', 'agent_message'] as $kind) {
+        [$root, $store] = profile_fixture();
+        $api = new SimulatedProfileControlPlane;
+        $runtime = new SimulatedProfileRuntime;
+        $runtime->preflight = new CommandResult(
+            0,
+            str_replace('"type":"reasoning"', '"type":"'.$kind.'"', $fixture),
+            'SYNTHETIC_PRIVATE_STDERR',
+        );
+
+        $result = profile_lifecycle($api, $runtime)->operate($store, PROFILE, 'login', OPERATION);
+
+        profile_assert($result === [
+            'health' => 'error',
+            'reason' => 'native_probe_failed',
+        ]);
+        profile_assert(end($api->requests) === [
+            'operations/'.OPERATION.'/completion',
+            [
+                'stopped' => true,
+                'health' => 'error',
+                'reason' => 'native_probe_failed',
+                'runtime_version' => '0.154.0',
+            ],
+        ]);
+        profile_assert($runtime->stopped);
+        profile_assert($store->read('active') === null);
+        profile_assert(! is_dir($store->home()));
+        profile_assert(! str_contains(json_encode($api->requests), 'SYNTHETIC_PRIVATE'));
+    }
+};
+$tests['Codex preflight accepts completed items and preserves failed terminals with active items'] = function (): void {
+    $fixture = file_get_contents(__DIR__.'/fixtures/codex/preflight-unfinished-item.jsonl');
+    $completed = str_replace('"type":"item.started"', '"type":"item.completed"', $fixture);
+
+    profile_assert(NativeProfile::authenticatedHealth('codex', new CommandResult(0, $completed, '')) === [
+        'health' => 'ready',
+        'reason' => null,
+    ]);
+
+    $failed = str_replace(
+        '{"type":"turn.completed"}',
+        '{"type":"turn.failed","error":{"code":"rate_limit_exceeded"}}',
+        $fixture,
+    );
+
+    profile_assert(NativeProfile::authenticatedHealth('codex', new CommandResult(1, $failed, '')) === [
+        'health' => 'rate_limited',
+        'reason' => 'rate_limited',
+    ]);
+};
 $tests['orphaned Codex rate-limit item updates complete as generic failure'] = function (): void {
     foreach ([0, 1] as $exitCode) {
         [$root, $store] = profile_fixture();

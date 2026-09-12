@@ -310,6 +310,12 @@ foreach (['turn.completed', 'turn.failed'] as $type) {
 }
 foreach ([
     'empty process error' => ['', 'SYNTHETIC_SECRET', 1, 'process_error'],
+    'unfinished item with a successful auth message' => [
+        file_get_contents(__DIR__.'/fixtures/codex/preflight-unfinished-item.jsonl'),
+        '',
+        0,
+        'malformed_output',
+    ],
     'unrecognized successful response' => ["{\"type\":\"turn.completed\"}\n", '', 0, 'process_error'],
     'truncated output' => ['{"type":"error","code":"token_expired"}', '', 1, 'malformed_output'],
     'duplicate error code' => ["{\"type\":\"error\",\"code\":\"token_expired\",\"code\":\"rate_limit_exceeded\"}\n", '', 1, 'malformed_output'],
