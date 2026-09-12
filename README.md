@@ -25,7 +25,7 @@ docker tag alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be1216
 make check
 ```
 
-`make check` runs syntax checks, package and release-upload fixtures, the supervisor/container suite, and pinned native executable checks. Native image construction downloads the pinned official packages; tests use synthetic data without account access. No application, database, Redis, Composer installation or application checkout is required. Trusted pushes, internal pull requests and releases use the existing `github-runner-01` self-hosted Linux runner. Pull request jobs from forks are skipped; they cannot execute on the private runner, and there is no GitHub-hosted fallback. A maintainer must review a fork contribution before promoting it to a trusted internal branch for checks.
+`make check` runs syntax checks, package and release-upload fixtures, the supervisor/container suite, and pinned native executable checks. Native image construction downloads the pinned official packages; tests use synthetic data without account access. No application, database, Redis, Composer installation or application checkout is required. Trusted pushes, internal pull requests and releases use the existing `github-runner-01` self-hosted Linux runner. The configured check job skips fork pull requests, and there is no GitHub-hosted fallback. The repository also requires approval for all external contributors: a fork can edit workflow files, so the job condition alone is not an isolation boundary. Do not approve external fork workflow runs. Review a fork contribution and promote the accepted code to a trusted internal branch before running checks.
 
 ## Publish a release
 
