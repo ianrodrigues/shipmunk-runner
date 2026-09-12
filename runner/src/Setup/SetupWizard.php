@@ -10,8 +10,6 @@ use Throwable;
 
 final readonly class SetupWizard
 {
-    private const string IMAGE = 'shipmunk-profile-native:local';
-
     public function __construct(private string $checkout) {}
 
     public function run(array $arguments): int
@@ -53,12 +51,10 @@ final readonly class SetupWizard
         $this->docker();
         self::checkServer($bundle->data['base_url']);
         $files = new SetupFiles($home, $bundle->data['runner_id']);
-        $files->install($bundle, $this->checkout, PHP_BINARY);
-        fwrite(STDOUT, "Installed private configuration. The downloaded setup file is now mode 0600; delete it after setup.\nBuilding the pinned runtime image…\n");
-        $built = $this->execute(['env', 'DOCKER_BUILDKIT=1', 'docker', 'build', '--tag', self::IMAGE, '--file', $this->checkout.'/runner/containers/Dockerfile', $this->checkout]);
-        if ($built !== 0) {
-            throw new SetupException('Runtime image build failed. Your private configuration is retained; rerun setup to retry.');
-        }
+        fwrite(STDOUT, "Building the pinned runtime image…\n");
+        $image = $this->buildImage($files);
+        $files->install($bundle, $this->checkout, PHP_BINARY, $image);
+        fwrite(STDOUT, "Installed private configuration bound to the built image. The downloaded setup file is mode 0600; delete it after setup.\n");
 
         fwrite(STDOUT, "Codex login stays in this terminal. Its authenticated probe can consume subscription usage; use the account designated for this runner.\n");
         $result = 0;
@@ -141,10 +137,14 @@ final readonly class SetupWizard
             'profile_token' => trim((string) file_get_contents($root.'/profile.token')),
             'execution_token' => trim((string) file_get_contents($root.'/execution.token')),
         ]);
+        $image = $config['image_id'] ?? null;
+        if (! is_string($image) || preg_match('/\Asha256:[a-f0-9]{64}\z/', $image) !== 1) {
+            throw new SetupException('Rerun setup to bind this installation to its built runtime image.');
+        }
         $base = [
             '--base-url='.$bundle->data['base_url'],
             '--profiles-dir='.$root.'/profiles',
-            '--image='.self::IMAGE,
+            '--image='.$image,
         ];
         if ($command === 'run') {
             if (count($arguments) > 3 || (isset($arguments[2]) && $arguments[2] !== '--once')) {
@@ -155,7 +155,7 @@ final readonly class SetupWizard
                 '--token-file='.$root.'/execution.token',
                 '--state-dir='.$root.'/state',
                 '--driver=codex',
-                '--repository-image='.self::IMAGE,
+                '--repository-image='.$image,
             ];
             if (isset($arguments[2])) {
                 $options[] = '--once';
@@ -182,6 +182,34 @@ final readonly class SetupWizard
         ];
 
         return $this->execute([PHP_BINARY, $this->checkout.'/runner/bin/shipmunk-profile', ...$options]);
+    }
+
+    public function buildImage(SetupFiles $files): string
+    {
+        $identity = hash_init('sha256');
+        foreach (['Dockerfile', 'codex-mcp.mjs', 'codex-result.schema.json'] as $asset) {
+            if (! hash_update_file($identity, $this->checkout.'/runner/containers/'.$asset)) {
+                throw new SetupException('Runtime image inputs are missing. Download the runner again.');
+            }
+        }
+        $tag = 'shipmunk-profile-native:'.hash_final($identity);
+        $iid = $files->root.'/image-'.bin2hex(random_bytes(8)).'.tmp';
+        try {
+            $built = $this->execute(['env', 'DOCKER_BUILDKIT=1', 'docker', 'build', '--tag', $tag, '--iidfile', $iid, '--file', $this->checkout.'/runner/containers/Dockerfile', $this->checkout]);
+            if ($built !== 0) {
+                throw new SetupException('Runtime image build failed. Existing configuration is unchanged; rerun setup to retry.');
+            }
+            $image = trim((string) file_get_contents($iid));
+            if (preg_match('/\Asha256:[a-f0-9]{64}\z/', $image) !== 1) {
+                throw new SetupException('Docker did not return an immutable runtime image identity.');
+            }
+
+            return $image;
+        } finally {
+            if (is_file($iid)) {
+                unlink($iid);
+            }
+        }
     }
 
     public static function operationId(): string

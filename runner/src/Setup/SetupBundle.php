@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Shipmunk\Runner\Setup;
 
 use DateTimeImmutable;
+use RuntimeException;
 use Shipmunk\Runner\Profiles\ProfileStore;
 
 final readonly class SetupBundle
@@ -19,8 +20,12 @@ final readonly class SetupBundle
                 throw new SetupException('The setup file is incomplete. Download it again.');
             }
         }
-        ProfileStore::identifier($data['runner_id']);
-        ProfileStore::identifier($data['profile_id']);
+        try {
+            ProfileStore::identifier($data['runner_id']);
+            ProfileStore::identifier($data['profile_id']);
+        } catch (RuntimeException $exception) {
+            throw new SetupException('Unsafe setup identifier, ownership, type or permissions.', previous: $exception);
+        }
         $url = parse_url($data['base_url']);
         if (! is_array($url)
             || ! in_array($url['scheme'] ?? null, ['http', 'https'], true)
@@ -65,7 +70,11 @@ final readonly class SetupBundle
         if (! chmod($path, 0600)) {
             throw new SetupException('Cannot protect the downloaded setup file.');
         }
-        ProfileStore::protect($path);
+        try {
+            ProfileStore::protect($path);
+        } catch (RuntimeException $exception) {
+            throw new SetupException('Unsafe setup identifier, ownership, type or permissions.', previous: $exception);
+        }
         $contents = file_get_contents($path, length: 16385);
         $data = json_decode((string) $contents, true, flags: JSON_THROW_ON_ERROR);
         if (! is_array($data)) {

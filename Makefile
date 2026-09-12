@@ -38,6 +38,7 @@ runner-check:
 	php runner/tests/SetupTest.php
 	php runner/tests/PackageTest.php
 	DOCKER_BUILDKIT=0 php runner/tests/SetupContextTest.php
+	php runner/tests/SetupImageTest.php
 	DOCKER_BUILDKIT=1 docker build --pull=false --tag shipmunk-profile-test:local --file runner/tests/fixtures/profile-Dockerfile .
 	php runner/tests/ProfileContainerTest.php
 
