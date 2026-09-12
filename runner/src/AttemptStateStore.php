@@ -6,6 +6,11 @@ namespace Shipmunk\Runner;
 
 use RuntimeException;
 
+/**
+ * Atomic replacement and file fsync protect recovery from process crashes.
+ * Directory entries are not fsynced; abrupt host power loss can lose the latest
+ * rename or deletion. Recovery therefore also depends on server lease fencing.
+ */
 final readonly class AttemptStateStore
 {
     public function __construct(
