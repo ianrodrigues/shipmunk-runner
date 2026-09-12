@@ -189,9 +189,15 @@ foreach ([
                 'turn.failed' => ['type' => $type, 'error' => $error],
                 'item.completed' => ['type' => $type, 'item' => ['type' => 'error', ...$error]],
             };
+            $stdout = json_encode($event)."\n";
+
+            if ($type !== 'turn.failed') {
+                $stdout .= "{\"type\":\"error\",\"code\":\"unknown\"}\n";
+            }
+
             $transport->preflightResult = new CommandResult(
                 1,
-                json_encode($event)."\n{\"type\":\"error\",\"code\":\"unknown\"}\n",
+                $stdout,
                 'SYNTHETIC_SECRET',
             );
 
@@ -204,6 +210,14 @@ foreach ([
 foreach (['error', 'item.completed'] as $type) {
     foreach ([
         'invalid JSON' => "not-json\n",
+        'unknown event' => "{\"type\":\"future.failure\",\"message\":\"SYNTHETIC_SECRET\"}\n",
+        'missing event type' => "{}\n",
+        'unknown item' => "{\"type\":\"item.completed\",\"item\":{\"type\":\"future_tool\"}}\n",
+        'missing item' => "{\"type\":\"item.completed\"}\n",
+        'tool item' => "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\"}}\n",
+        'successful turn' => "{\"type\":\"turn.completed\"}\n",
+        'fresh thread' => "{\"type\":\"thread.started\",\"thread_id\":\"synthetic-thread\"}\n",
+        'fresh message' => "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n",
         'duplicate keys' => "{\"type\":\"error\",\"code\":\"token_expired\",\"code\":\"rate_limit_exceeded\"}\n",
     ] as $name => $trailing) {
         $tests['preflight '.$type.' cannot hide trailing '.$name] = function () use ($type, $trailing): void {
@@ -223,6 +237,30 @@ foreach (['error', 'item.completed'] as $type) {
             driver_assert(count($transport->commands) === 2);
         };
     }
+}
+$tests['preflight permits an error followed by its failed turn'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->preflightResult = new CommandResult(
+        1,
+        "{\"type\":\"error\",\"code\":\"rate_limit_exceeded\"}\n"
+            ."{\"type\":\"turn.failed\",\"error\":{\"code\":\"unknown\"}}\n",
+        '',
+    );
+
+    driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'rate_limited');
+};
+foreach (['turn.completed', 'turn.failed'] as $type) {
+    $tests['preflight rejects events after terminal '.$type] = function () use ($type): void {
+        $transport = new SimulatedAgentTransport;
+        $transport->preflightResult = new CommandResult(
+            1,
+            json_encode(['type' => $type])."\n"
+                ."{\"type\":\"error\",\"code\":\"rate_limit_exceeded\"}\n",
+            '',
+        );
+
+        driver_rejects(fn () => (new CodexDriver)->probe($transport, static function (): void {}), 'malformed_output');
+    };
 }
 foreach ([
     'empty process error' => ['', 'SYNTHETIC_SECRET', 1, 'process_error'],
