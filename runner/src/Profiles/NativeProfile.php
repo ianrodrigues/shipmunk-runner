@@ -6,6 +6,8 @@ namespace Shipmunk\Runner\Profiles;
 
 use RuntimeException;
 use Shipmunk\Runner\CommandResult;
+use Shipmunk\Runner\Drivers\CodexEventParser;
+use Shipmunk\Runner\Drivers\DriverFailure;
 
 final class NativeProfile
 {
@@ -89,13 +91,13 @@ final class NativeProfile
     public static function authenticatedHealth(string $agent, CommandResult $result): array
     {
         $failed = ['health' => 'error', 'reason' => 'native_probe_failed'];
-        if ($result->exitCode !== 0) {
-            return $failed;
-        }
         if (! in_array($agent, ['codex', 'claude_code'], true)) {
             return $failed;
         }
         if ($agent === 'claude_code') {
+            if ($result->exitCode !== 0) {
+                return $failed;
+            }
             $data = json_decode($result->stdout, true);
 
             return is_array($data) && ($data['type'] ?? null) === 'result'
@@ -103,6 +105,20 @@ final class NativeProfile
                 && is_string($data['result'] ?? null) && trim($data['result']) === 'SHIPMUNK_AUTH_OK'
                 ? ['health' => 'ready', 'reason' => null] : $failed;
         }
+
+        try {
+            $reason = (new CodexEventParser)->preflightFailureReason($result->stdout, $result->stderr);
+        } catch (DriverFailure) {
+            return $failed;
+        }
+
+        if ($reason === 'rate_limited') {
+            return ['health' => 'rate_limited', 'reason' => 'rate_limited'];
+        }
+        if ($result->exitCode !== 0) {
+            return $failed;
+        }
+
         $message = false;
         $completed = false;
         foreach (explode("\n", trim($result->stdout)) as $line) {
