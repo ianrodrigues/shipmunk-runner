@@ -36,11 +36,19 @@ try {
             throw new RuntimeException('Release assets are not deterministic.');
         }
     }
+    $checksummed = [];
     foreach (file($temporary.'/first/SHA256SUMS', FILE_IGNORE_NEW_LINES) as $line) {
         [$hash, $file] = explode('  ', $line, 2);
+        $checksummed[] = $file;
         if (! in_array($file, [$name, 'installer.php', 'runner-release.json'], true) || $hash !== hash_file('sha256', $temporary.'/first/'.$file)) {
             throw new RuntimeException('Published checksum does not match its asset.');
         }
+    }
+    sort($checksummed);
+    $expectedChecksums = [$name, 'installer.php', 'runner-release.json'];
+    sort($expectedChecksums);
+    if ($checksummed !== $expectedChecksums) {
+        throw new RuntimeException('Every release asset must have exactly one checksum.');
     }
     if ($manifest['installer_sha256'] !== hash_file('sha256', $temporary.'/first/installer.php') || $manifest['installer_url'] !== 'https://github.com/ianrodrigues/shipmunk-runner/releases/download/'.$manifest['version'].'/installer.php') {
         throw new RuntimeException('Release manifest does not bind the installer asset.');

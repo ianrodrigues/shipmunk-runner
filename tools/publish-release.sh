@@ -15,12 +15,12 @@ release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
 for name in "shipmunk-runner-$RELEASE_TAG.tar" installer.php runner-release.json SHA256SUMS; do
     artifact="$output/$name"
     digest="sha256:$(sha256sum "$artifact" | cut -d ' ' -f 1)"
-    assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")
+    assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" | jq 'add')
     matches=$(jq --arg name "$name" '[.[] | select(.name == $name)]' <<<"$assets")
     count=$(jq length <<<"$matches")
     if [[ "$count" == 0 ]]; then
         gh release upload "$RELEASE_TAG" "$artifact" --repo "$GITHUB_REPOSITORY"
-        assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")
+        assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" | jq 'add')
         matches=$(jq --arg name "$name" '[.[] | select(.name == $name)]' <<<"$assets")
     fi
     [[ "$(jq length <<<"$matches")" == 1 ]]

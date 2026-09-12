@@ -18,7 +18,9 @@ state_path=Path(os.environ['GH_FAKE_STATE'])
 state=json.loads(state_path.read_text())
 args=sys.argv[1:]
 if args[0]=='api':
-    if '/assets?' in args[1]:print(json.dumps(state['assets']))
+    if any('/assets?' in arg for arg in args):
+        pages=[state['assets'][i:i+100] for i in range(0,len(state['assets']),100)] or [[]]
+        print(json.dumps(pages if '--paginate' in args and '--slurp' in args else pages[0]))
     else:print(json.dumps({'tag_name':os.environ['RELEASE_TAG'],'draft':False}))
 elif args[:2]==['release','upload']:
     artifact=Path(args[3])
@@ -41,8 +43,13 @@ jq '.assets = [.assets[0]] | .uploads = 1' "$GH_FAKE_STATE" > "$fixture/partial.
 mv "$fixture/partial.json" "$GH_FAKE_STATE"
 bash tools/publish-release.sh "$fixture/dist"
 [[ "$(jq .uploads "$GH_FAKE_STATE")" == 4 ]]
+# Matching release assets after the first page must be reused without uploads.
+jq '.assets = ([range(0;101) | {name:("unrelated-" + tostring),digest:"sha256:unrelated"}] + .assets)' "$GH_FAKE_STATE" > "$fixture/paginated.json"
+mv "$fixture/paginated.json" "$GH_FAKE_STATE"
+bash tools/publish-release.sh "$fixture/dist"
+[[ "$(jq .uploads "$GH_FAKE_STATE")" == 4 ]]
 # A changed existing asset must stop the release rather than overwrite it.
-jq '.assets[0].digest = "sha256:changed"' "$GH_FAKE_STATE" > "$fixture/changed.json"
+jq '.assets[101].digest = "sha256:changed"' "$GH_FAKE_STATE" > "$fixture/changed.json"
 mv "$fixture/changed.json" "$GH_FAKE_STATE"
 if bash tools/publish-release.sh "$fixture/dist" > "$fixture/output" 2>&1; then
     echo 'Expected mismatched existing asset to be rejected.' >&2
