@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Shipmunk\Runner\CommandResult;
 use Shipmunk\Runner\ControlPlaneException;
+use Shipmunk\Runner\Drivers\CodexEventParser;
 use Shipmunk\Runner\HttpResponse;
 use Shipmunk\Runner\HttpTransport;
 use Shipmunk\Runner\Profiles\HttpProfileControlPlane;
@@ -162,7 +163,7 @@ final class SimulatedProfileRuntime implements ProfileRuntime
             return new CommandResult(0, '', '');
         }
         if ($command === 'preflight') {
-            return $this->preflight ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}", '');
+            return $this->preflight ?? new CommandResult(0, "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n", '');
         }
         ($this->onProbe ?? static fn () => null)();
 
@@ -480,6 +481,54 @@ $tests['simulated cached login cannot become ready when authenticated preflight 
     profile_assert($result === ['health' => 'error', 'reason' => 'native_probe_failed']);
     profile_assert($store->read('active') === null && ! is_dir($store->home()));
     profile_assert(! str_contains(json_encode($api->requests), 'PRIVATE_REVOKED_TOKEN'));
+};
+$tests['validated Codex preflight rate limit reaches profile completion without native output'] = function (): void {
+    foreach ([0, 1] as $exitCode) {
+        [$root, $store] = profile_fixture();
+        $api = new SimulatedProfileControlPlane;
+        $runtime = new SimulatedProfileRuntime;
+        $nativeOutput = json_encode([
+            'type' => 'turn.failed',
+            'error' => [
+                'code' => 'rate_limit_exceeded',
+                'message' => 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT',
+            ],
+        ])."\n";
+        $runtime->preflight = new CommandResult($exitCode, $nativeOutput, 'SYNTHETIC_PRIVATE_STDERR');
+
+        $result = profile_lifecycle($api, $runtime)->operate($store, PROFILE, 'login', OPERATION);
+
+        profile_assert($result === ['health' => 'rate_limited', 'reason' => 'rate_limited']);
+        profile_assert(end($api->requests) === [
+            'operations/'.OPERATION.'/completion',
+            [
+                'stopped' => true,
+                'health' => 'rate_limited',
+                'reason' => 'rate_limited',
+                'runtime_version' => '0.154.0',
+            ],
+        ]);
+        profile_assert(! str_contains(json_encode($api->requests), 'SYNTHETIC_PRIVATE'));
+        profile_assert($store->read('active') === null && ! is_dir($store->home()));
+    }
+};
+$tests['malformed Codex output after a rate limit fails closed'] = function (): void {
+    $rateLimit = json_encode([
+        'type' => 'error',
+        'code' => 'rate_limit_exceeded',
+        'message' => 'SYNTHETIC_PRIVATE_NATIVE_OUTPUT',
+    ]);
+
+    foreach ([
+        $rateLimit."\nnot-json\n",
+        $rateLimit,
+        $rateLimit."\n".str_repeat('x', CodexEventParser::MAX_OUTPUT_BYTES),
+    ] as $output) {
+        profile_assert(NativeProfile::authenticatedHealth('codex', new CommandResult(1, $output, '')) === [
+            'health' => 'error',
+            'reason' => 'native_probe_failed',
+        ]);
+    }
 };
 $tests['simulated expired unfinished begin is acknowledged stopped rather than forgetting its lease'] = function (): void {
     [$root, $store] = profile_fixture();
