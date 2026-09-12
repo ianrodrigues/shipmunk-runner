@@ -43,7 +43,7 @@ runner-check:
 	php runner/tests/ProfileContainerTest.php
 
 native-image-check:
-	DOCKER_BUILDKIT=1 docker build --tag shipmunk-profile-native-test:local --file runner/containers/Dockerfile .
+	SHIPMUNK_PROFILE_IMAGE=shipmunk-profile-native-test:local php runner/tests/InstalledNativeImageTest.php
 	php runner/tests/NativeImageTest.php
 	php runner/tests/NativeHomeTest.php
 	SHIPMUNK_CODEX_TEST_IMAGE=shipmunk-profile-native-test:local php runner/tests/DockerAgentTransportTest.php
