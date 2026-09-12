@@ -31,6 +31,7 @@ final class CodexEventParser
     ): string {
         $reason = null;
         $terminal = false;
+        $items = [];
 
         foreach ($this->lines($stdout, $stderr) as $line) {
             if ($terminal) {
@@ -39,6 +40,10 @@ final class CodexEventParser
 
             $event = $this->decode($line, 'malformed_output');
             $this->assertPreflightEvent($event);
+
+            if (str_starts_with($event->type, 'item.')) {
+                $this->recordItemLifecycle($event, $items);
+            }
             $type = $event->type;
             $itemFailure = str_starts_with($type, 'item.') && $event->item->type === 'error';
             $failure = $type === 'error' || $type === 'turn.failed' || $itemFailure;
@@ -89,6 +94,42 @@ final class CodexEventParser
         }
     }
 
+    /**
+     * @param array<string, array{type: string, complete: bool}> $items
+     */
+    private function recordItemLifecycle(
+        stdClass $event,
+        array &$items,
+    ): void
+    {
+        $item = $event->item;
+        $this->text($item->id ?? null, 128, 'malformed_output');
+        $previous = $items[$item->id] ?? null;
+
+        if ($previous !== null) {
+            if ($previous['complete']) {
+                throw new DriverFailure('malformed_output');
+            }
+
+            if ($previous['type'] !== $item->type) {
+                throw new DriverFailure('malformed_output');
+            }
+
+            if ($event->type === 'item.started') {
+                throw new DriverFailure('malformed_output');
+            }
+        }
+
+        if ($event->type === 'item.updated' && $previous === null) {
+            throw new DriverFailure('malformed_output');
+        }
+
+        $items[$item->id] = [
+            'type' => $item->type,
+            'complete' => $event->type === 'item.completed',
+        ];
+    }
+
     public function parse(
         Claim $claim,
         int $exitCode,
@@ -131,19 +172,11 @@ final class CodexEventParser
                 if (! $item instanceof stdClass) {
                     throw new DriverFailure('malformed_output');
                 }
-                $this->text($item->id ?? null, 128, 'malformed_output');
                 $kind = $item->type ?? null;
                 if (! in_array($kind, ['agent_message', 'reasoning', 'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'todo_list', 'error'], true)) {
                     throw new DriverFailure('malformed_output');
                 }
-                $previous = $items[$item->id] ?? null;
-                if ($previous !== null && ($previous['complete'] || $previous['type'] !== $kind || $type === 'item.started')) {
-                    throw new DriverFailure('malformed_output');
-                }
-                if ($type === 'item.updated' && $previous === null) {
-                    throw new DriverFailure('malformed_output');
-                }
-                $items[$item->id] = ['type' => $kind, 'complete' => $type === 'item.completed'];
+                $this->recordItemLifecycle($event, $items);
                 if ($kind === 'error') {
                     throw new DriverFailure($this->failureReason($item));
                 }
