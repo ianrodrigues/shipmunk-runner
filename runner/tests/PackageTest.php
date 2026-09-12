@@ -83,6 +83,7 @@ try {
     $size = (int) octdec(trim(substr($header, 124, 12), "\0 "));
     $entryLength = 512 + (int) (ceil($size / 512) * 512);
     $invalid = [
+        'missing entry' => substr($package['contents'], $entryLength),
         'duplicate' => substr($package['contents'], 0, $entryLength).$package['contents'],
         'truncated' => substr($package['contents'], 0, -1),
         'trailing' => $package['contents'].'not-padding',
@@ -104,7 +105,7 @@ try {
         package_assert(! file_exists($rejectHome.'/.shipmunk'));
     }
     package_rejects(fn () => PackageInstaller::install($package['contents'], $rejectHome, str_repeat('0', 64), $package['files']));
-    fwrite(STDOUT, "PASS tampered digest, duplicate, truncated, oversized, noncanonical, linked and traversal archives are rejected before filesystem writes\n");
+    fwrite(STDOUT, "PASS tampered digest, missing entries, duplicate, truncated, oversized, noncanonical, linked and traversal archives are rejected before filesystem writes\n");
 
     unlink($source.'/runner/bootstrap.php');
     symlink($source.'/.env', $source.'/runner/bootstrap.php');
