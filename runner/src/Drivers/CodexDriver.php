@@ -160,7 +160,10 @@ final class CodexDriver implements AgentDriver
         }
 
         $this->assertAccountMode($transport, $checkpoint);
-        $execution = $this->parseExecution($claim, $result, $transport->patch());
+        $patch = ($claim->manifest['kind'] ?? null) === 'review'
+            ? null
+            : $transport->patch();
+        $execution = $this->parseExecution($claim, $result, $patch);
 
         $firstLine = strtok($result->stdout, "\n");
         $event = json_decode($firstLine === false ? '' : $firstLine, true);

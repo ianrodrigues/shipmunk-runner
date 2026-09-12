@@ -30,6 +30,8 @@ final class SimulatedAgentTransport implements AgentTransport
 
     public ?string $diff = null;
 
+    public int $patchCalls = 0;
+
     public ?CommandResult $preflightResult = null;
 
     public function __construct()
@@ -66,6 +68,8 @@ final class SimulatedAgentTransport implements AgentTransport
 
     public function patch(): ?string
     {
+        $this->patchCalls++;
+
         return $this->diff;
     }
 
@@ -171,6 +175,37 @@ $tests['shared lifecycle inspects authenticates executes and stops with isolated
     driver_assert(! in_array('--sandbox', $command['argv'], true));
     driver_assert(! str_contains(json_encode($result), 'SYNTHETIC_SECRET'));
     driver_assert(str_contains(implode("\n", $command['argv']), 'Approved AGENTS instructions.'));
+};
+$tests['review test outputs do not become patch artifacts or invalidate findings'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->diff = "diff --git a/.npm/_logs/test.log b/.npm/_logs/test.log\n+disposable test output\n";
+    $execution = (new CodexDriver)->start(
+        driver_claim(['kind' => 'review']),
+        $transport,
+        static function (): void {},
+    );
+
+    driver_assert($execution->result['outcome'] === 'no_findings');
+    driver_assert($execution->artifacts === []);
+    driver_assert($execution->result['patch_artifact'] === null);
+    driver_assert($transport->patchCalls === 0);
+};
+$tests['implementation still collects and binds its verified patch'] = function (): void {
+    $transport = new SimulatedAgentTransport;
+    $transport->stdout = str_replace('no_findings', 'changes_proposed', $transport->stdout);
+    $transport->diff = "diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after\n";
+    $execution = (new CodexDriver)->start(
+        driver_claim(['kind' => 'implement', 'base_sha' => str_repeat('a', 40)]),
+        $transport,
+        static function (): void {},
+    );
+
+    driver_assert($transport->patchCalls === 1);
+    driver_assert($execution->result['outcome'] === 'changes_proposed');
+    driver_assert(count($execution->artifacts) === 1);
+    $artifact = json_decode($execution->artifacts[0]['bytes'], true, flags: JSON_THROW_ON_ERROR);
+    driver_assert($artifact['patch'] === $transport->diff);
+    driver_assert($artifact['base_sha'] === str_repeat('a', 40));
 };
 $tests['runtime version mismatch prevents execution'] = function (): void {
     $transport = new SimulatedAgentTransport;
