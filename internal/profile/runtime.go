@@ -394,6 +394,13 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 		return err
 	}
 	checkpoint := func() error { return nil }
+	existing, existingErr := runtime.inspect(ctx, sandboxName, checkpoint)
+	if existingErr == nil && runtime.ownsReservation(existing, sandboxName) {
+		return nil
+	}
+	if existingErr != nil && !errors.Is(existingErr, errContainerAbsent) {
+		return fmt.Errorf("inspect profile sandbox before create reconciliation: %w", existingErr)
+	}
 	image, err := runtime.resolveImage(ctx, checkpoint)
 	if err != nil {
 		return fmt.Errorf("resolve profile image for create reconciliation: %w", err)
@@ -416,7 +423,7 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 			if inspectErr != nil {
 				return fmt.Errorf("verify profile create reservation: %w", inspectErr)
 			}
-			if !runtime.ownsReservation(inspection, sandboxName, image) {
+			if !runtime.ownsReservation(inspection, sandboxName) {
 				return errors.New("profile create reservation has unexpected identity")
 			}
 			return nil
@@ -442,7 +449,7 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 		if inspectErr != nil {
 			return fmt.Errorf("inspect profile sandbox during create reconciliation (%v): %w", createErr, inspectErr)
 		}
-		if runtime.ownsReservation(inspection, sandboxName, image) {
+		if runtime.ownsReservation(inspection, sandboxName) {
 			return nil
 		}
 		if !runtime.ownsRuntimeContainer(inspection, sandboxName) {
@@ -454,12 +461,12 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 	}
 }
 
-func (runtime *dockerRuntime) ownsReservation(inspection dockerInspection, sandboxName, image string) bool {
+func (runtime *dockerRuntime) ownsReservation(inspection dockerInspection, sandboxName string) bool {
 	return inspection.Name == "/"+sandboxName &&
 		inspection.Config.Labels[profileUIDLabel] == "true" &&
 		inspection.Config.Labels[profileNameLabel] == sandboxName &&
 		inspection.Config.Labels[profileReservationLabel] == "true" &&
-		inspection.Config.Image == image && !inspection.State.Running && len(inspection.Mounts) == 0
+		!inspection.State.Running && len(inspection.Mounts) == 0
 }
 
 func (runtime *dockerRuntime) resolveImage(ctx context.Context, checkpoint Checkpoint) (string, error) {
