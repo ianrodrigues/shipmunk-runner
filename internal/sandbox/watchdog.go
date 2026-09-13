@@ -561,13 +561,13 @@ func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, c
 
 func (docker *Docker) cleanupWatchdog(options watchdogOptions, createInFlight bool, confirmedID string) error {
 	if options.profile {
-		return docker.cleanupProfileWatchdogSandbox(options.name)
+		return docker.cleanupProfileWatchdogSandbox(options.name, createInFlight, confirmedID)
 	}
 	return docker.cleanupWatchdogSandbox(options.name, createInFlight, confirmedID)
 }
 
-func (docker *Docker) cleanupProfileWatchdogSandbox(name string) error {
-	return docker.cleanupWatchdogSandboxWithOwner(name, false, "", ownsProfileSandboxIdentifier)
+func (docker *Docker) cleanupProfileWatchdogSandbox(name string, createInFlight bool, confirmedID string) error {
+	return docker.cleanupWatchdogSandboxWithOwner(name, createInFlight, confirmedID, ownsProfileSandboxIdentifier)
 }
 
 func (docker *Docker) cleanupWatchdogSandboxWithOwner(

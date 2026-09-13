@@ -472,6 +472,82 @@ esac
 	}
 }
 
+func TestProfileWatchdogWaitsForDelayedCreateAfterParentDeath(t *testing.T) {
+	root := t.TempDir()
+	name := "shipmunk-profile-01k4w000000000000000000001"
+	present := filepath.Join(root, "present")
+	running := filepath.Join(root, "running")
+	docker := filepath.Join(root, "docker-fixture")
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  inspect)
+    if [ -f %q ]; then
+      state=false
+      if [ -f %q ]; then state=true; fi
+      cat <<JSON
+[{"Id":"%s","Name":"/%s","Config":{"Labels":{"shipmunk.profile-runtime":"true","shipmunk.profile-sandbox":"%s"}},"State":{"Running":$state}}]
+JSON
+      exit 0
+    fi
+    echo "Error: No such object: $2" >&2
+    exit 1
+    ;;
+  stop) rm -f %q; exit 0 ;;
+  kill) rm -f %q; exit 0 ;;
+  rm) rm -f %q %q; exit 0 ;;
+  *) exit 0 ;;
+esac
+`, present, running, testContainer, name, name, running, running, present, running)
+	if err := os.WriteFile(docker, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	arguments := []string{
+		"--docker", docker, "--name", name, "--profile-mode", "true",
+		"--lease", fmt.Sprint(time.Now().Add(time.Minute).UnixNano()),
+		"--deadline", fmt.Sprint(time.Now().Add(2 * time.Minute).UnixNano()),
+		"--poll-interval", "1ms",
+	}
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- RunWatchdogCommand(arguments, inputReader, outputWriter) }()
+	output := bufio.NewReader(outputReader)
+	if ready, err := output.ReadString('\n'); err != nil || strings.TrimSpace(ready) != "READY" {
+		t.Fatalf("watchdog readiness = %q, %v", ready, err)
+	}
+	if _, err := io.WriteString(inputWriter, "phase:1:started:\n"); err != nil {
+		t.Fatal(err)
+	}
+	if ack, err := output.ReadString('\n'); err != nil || strings.TrimSpace(ack) != "ACK:1" {
+		t.Fatalf("create-phase acknowledgement = %q, %v", ack, err)
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("profile watchdog treated temporary absence as proof after parent death: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	if err := os.WriteFile(present, []byte("late create"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(running, []byte("running"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("profile watchdog did not stop the delayed container")
+	}
+	if _, err := os.Stat(present); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("profile watchdog left the delayed container: %v", err)
+	}
+}
+
 func TestArmProfileLaunchesWatchdogInExplicitProfileOwnershipMode(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	root := t.TempDir()

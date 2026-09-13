@@ -45,10 +45,17 @@ var (
 // revoked. Runtime methods call it before Docker work and while commands run.
 type Checkpoint func() error
 
+// CreatePhase reports the uncertain window around Docker container creation
+// to the independent watchdog.
+type CreatePhase interface {
+	CreateStarted() error
+	CreateFinished(string) error
+}
+
 // Runtime manages a credential-only native profile container. Lifecycle and
 // protected storage remain owned by the caller.
 type Runtime interface {
-	Start(context.Context, string, string, Checkpoint) error
+	Start(context.Context, string, string, Checkpoint, CreatePhase) error
 	Run(context.Context, string, string, string, Checkpoint) (CommandResult, error)
 	Stop(context.Context, string, bool) error
 }
@@ -168,12 +175,12 @@ type dockerInspection struct {
 	} `json:"Mounts"`
 }
 
-func (runtime *dockerRuntime) Start(ctx context.Context, sandboxName, home string, checkpoint Checkpoint) error {
+func (runtime *dockerRuntime) Start(ctx context.Context, sandboxName, home string, checkpoint Checkpoint, createPhase CreatePhase) error {
 	if err := validateSandboxName(sandboxName); err != nil {
 		return err
 	}
-	if checkpoint == nil {
-		return errors.New("profile operation checkpoint is required")
+	if checkpoint == nil || createPhase == nil {
+		return errors.New("profile operation checkpoint and create-phase reporter are required")
 	}
 	absoluteHome, err := filepath.Abs(home)
 	if err != nil || !filepath.IsAbs(absoluteHome) || filepath.Clean(absoluteHome) != absoluteHome || strings.ContainsAny(absoluteHome, ",\r\n\x00") {
@@ -221,11 +228,23 @@ func (runtime *dockerRuntime) Start(ctx context.Context, sandboxName, home strin
 	if err := verifyPinnedProfileHome(absoluteHome, homePin); err != nil {
 		return err
 	}
+	createPhaseAttempted := false
 	created, dispatched, err := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, arguments, true,
-		func() error { return verifyPinnedProfileHome(absoluteHome, homePin) })
+		func() error {
+			if err := verifyPinnedProfileHome(absoluteHome, homePin); err != nil {
+				return err
+			}
+			createPhaseAttempted = true
+			return createPhase.CreateStarted()
+		})
 	if err != nil {
 		if dispatched {
 			return fmt.Errorf("%w: create profile sandbox: %v", ErrCreateUncertain, err)
+		}
+		if createPhaseAttempted {
+			if finishErr := createPhase.CreateFinished(""); finishErr != nil {
+				return fmt.Errorf("%w: create did not dispatch but watchdog phase could not be closed: %v", ErrCreateUncertain, finishErr)
+			}
 		}
 		return fmt.Errorf("create profile sandbox: %w", err)
 	}
@@ -239,6 +258,9 @@ func (runtime *dockerRuntime) Start(ctx context.Context, sandboxName, home strin
 	}
 	if !runtime.owns(inspection, sandboxName) || inspection.Config.Image != image || !strings.HasPrefix(inspection.ID, containerID) || inspection.State.Running || !runtime.hasExpectedHomeMount(inspection, absoluteHome) {
 		return fmt.Errorf("%w: Docker created a profile sandbox with unexpected identity, image, mount, or state", ErrCreateUncertain)
+	}
+	if err := createPhase.CreateFinished(inspection.ID); err != nil {
+		return fmt.Errorf("%w: confirm created profile sandbox with watchdog: %v", ErrCreateUncertain, err)
 	}
 	if _, _, err := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, []string{"start", inspection.ID}, true, nil); err != nil {
 		return fmt.Errorf("start profile sandbox: %w", err)
