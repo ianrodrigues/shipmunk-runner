@@ -78,9 +78,6 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 }
 
 func TestDockerTransportPinsSourceAndProfileDirectories(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("fd-backed Docker bind paths are used on Linux")
-	}
 	d := new(recordedDocker)
 	transport := transportFixture(t, d)
 	original := transport.sourceHandle.Name()
@@ -108,7 +105,7 @@ func TestDockerTransportPinsSourceAndProfileDirectories(t *testing.T) {
 	for _, call := range calls {
 		all += strings.Join(call, " ") + "\n"
 	}
-	if !strings.Contains(all, "src=/proc/") {
+	if runtime.GOOS == "linux" && !strings.Contains(all, "src=/proc/") {
 		t.Fatal("profile bind did not use a pinned descriptor path")
 	}
 }
