@@ -26,6 +26,10 @@ import (
 
 const transportCommandLimit = 4 << 20
 
+// ErrTransportCleanupUnconfirmed means startup crossed a Docker side-effect
+// boundary and the transport could not prove every deterministic resource absent.
+var ErrTransportCleanupUnconfirmed = errors.New("Codex transport cleanup is unconfirmed")
+
 var transportNamePattern = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
 
 // TransportConfig describes the three-container Codex boundary. Image names are
@@ -183,7 +187,7 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	defer func() {
 		if err != nil {
 			if cleanup := t.cleanup(context.Background()); cleanup != nil {
-				err = errors.Join(err, fmt.Errorf("Codex setup cleanup was not confirmed: %w", cleanup))
+				err = errors.Join(err, fmt.Errorf("%w: Codex setup cleanup was not confirmed: %v", ErrTransportCleanupUnconfirmed, cleanup))
 			}
 		}
 	}()

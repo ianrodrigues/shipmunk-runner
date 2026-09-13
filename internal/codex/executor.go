@@ -38,6 +38,7 @@ type ExecutorConfig struct {
 	CommandTimeout                                              time.Duration
 	NewTransport                                                func(TransportConfig) (agentTransport, error)
 	Watchdog                                                    *sandbox.Watchdog
+	ArmWatchdog                                                 func(string, time.Time, time.Time) (codexWatchdogLease, error)
 }
 
 // Executor adapts the native Codex stream into the supervisor's bounded,
@@ -50,7 +51,14 @@ type Executor struct {
 
 type activeExecution struct {
 	transport agentTransport
-	watchdog  *sandbox.Lease
+	watchdog  codexWatchdogLease
+}
+
+type codexWatchdogLease interface {
+	Renew(time.Time) error
+	CreateStarted() error
+	CreateFinished(string) error
+	Disarm() error
 }
 
 func NewExecutor(cfg ExecutorConfig) (*Executor, error) {
@@ -70,10 +78,15 @@ func NewExecutor(cfg ExecutorConfig) (*Executor, error) {
 		return nil, errors.New("Codex command budget is invalid")
 	}
 	if cfg.NewTransport == nil {
-		if cfg.Watchdog == nil {
+		if cfg.Watchdog == nil && cfg.ArmWatchdog == nil {
 			return nil, errors.New("Codex watchdog configuration is incomplete")
 		}
 		cfg.NewTransport = func(c TransportConfig) (agentTransport, error) { return NewDockerTransport(c) }
+	}
+	if cfg.ArmWatchdog == nil && cfg.Watchdog != nil {
+		cfg.ArmWatchdog = func(name string, lease, deadline time.Time) (codexWatchdogLease, error) {
+			return cfg.Watchdog.ArmCodex(name, lease, deadline)
+		}
 	}
 	return &Executor{cfg: cfg, active: make(map[string]activeExecution)}, nil
 }
@@ -98,9 +111,9 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	e.mu.Lock()
 	e.active[executionKey(claim)] = activeExecution{transport: transport}
 	e.mu.Unlock()
-	var watchdog *sandbox.Lease
-	if e.cfg.Watchdog != nil {
-		watchdog, err = e.cfg.Watchdog.ArmCodex("shipmunk-codex-"+claim.AttemptID+"-"+fmt.Sprint(claim.Fence), claim.LeaseExpiresAt, claim.Deadline)
+	var watchdog codexWatchdogLease
+	if e.cfg.ArmWatchdog != nil {
+		watchdog, err = e.cfg.ArmWatchdog("shipmunk-codex-"+claim.AttemptID+"-"+fmt.Sprint(claim.Fence), claim.LeaseExpiresAt, claim.Deadline)
 		if err != nil {
 			return supervisor.Execution{}, err
 		}
@@ -112,6 +125,11 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 		}
 	}
 	if err = transport.Start(ctx); err != nil {
+		if watchdog != nil && !errors.Is(err, ErrTransportCleanupUnconfirmed) {
+			if phaseErr := watchdog.CreateFinished(""); phaseErr != nil {
+				err = errors.Join(err, phaseErr)
+			}
+		}
 		return supervisor.Execution{}, err
 	}
 	if watchdog != nil {
