@@ -62,7 +62,7 @@ func CollectSnapshots(beforeRoot, afterRoot string) (*Patch, error) {
 	if err != nil {
 		return nil, err
 	}
-	return CollectPatch(beforeRoot, afterRoot, generated)
+	return collectSnapshotPatch(before, after, generated)
 }
 
 // CollectPatch verifies independently collected patch bytes against protected
@@ -81,6 +81,10 @@ func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 		return nil, fmt.Errorf("changed snapshot: %w", err)
 	}
 
+	return collectSnapshotPatch(before, after, patch)
+}
+
+func collectSnapshotPatch(before, after map[string]fileState, patch []byte) (*Patch, error) {
 	paths := make([]string, 0, len(before)+len(after))
 	seen := make(map[string]bool)
 	for path := range before {

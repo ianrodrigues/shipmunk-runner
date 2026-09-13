@@ -225,6 +225,12 @@ func TestDockerTransportRejectsBridgeDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestBridgeRequestMetadataRejectsNilAfterStatFailure(t *testing.T) {
+	if validBridgeRequestInfo(nil) {
+		t.Fatal("nil metadata from a failed stat was accepted")
+	}
+}
+
 func TestDockerTransportRejectsStaleResponseTemporary(t *testing.T) {
 	transport := transportFixture(t, new(recordedDocker))
 	transport.started = true

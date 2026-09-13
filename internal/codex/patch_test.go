@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -37,6 +38,23 @@ func TestCollectPatchDerivesSortedMetadataAndHashes(t *testing.T) {
 	}
 	if result.ChangedFiles[1].AfterMode != nil || result.ChangedFiles[2].BeforeMode != nil || *result.ChangedFiles[2].AfterMode != "100755" {
 		t.Fatal("incorrect add/delete metadata")
+	}
+}
+
+func TestCollectSnapshotsMatchesIndependentPatchVerification(t *testing.T) {
+	before, after := t.TempDir(), t.TempDir()
+	writeFile(t, before, "file.txt", "before\n", 0644)
+	writeFile(t, after, "file.txt", "after\n", 0644)
+	generated, err := CollectSnapshots(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := CollectPatch(before, after, generated.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generated.SHA256 != verified.SHA256 || !bytes.Equal(generated.Bytes, verified.Bytes) || !reflect.DeepEqual(generated.ChangedFiles, verified.ChangedFiles) {
+		t.Fatal("single-pass collection differs from independent supplied-patch verification")
 	}
 }
 
