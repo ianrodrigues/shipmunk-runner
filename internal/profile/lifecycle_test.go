@@ -147,6 +147,8 @@ type fakeLifecycleRuntime struct {
 	startErr          error
 	stopErr           error
 	stopInFlightErr   error
+	reconcileErr      error
+	reconciles        int
 	runErrors         map[string]error
 	runResults        map[string]CommandResult
 	onRun             func(string)
@@ -223,10 +225,17 @@ func (runtime *fakeLifecycleRuntime) Stop(ctx context.Context, _ string, createM
 	return runtime.stopErr
 }
 
+func (runtime *fakeLifecycleRuntime) ReconcileCreate(context.Context, string) error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.reconciles++
+	return runtime.reconcileErr
+}
+
 func TestLifecycleUncertainCreateRetainsJournalAndRequiresConfirmedAbsence(t *testing.T) {
 	store, lifecycle, control, runtime, _ := newLifecycleFixture(t)
 	runtime.startErr = ErrCreateUncertain
-	runtime.stopInFlightErr = ErrCreateUncertain
+	runtime.reconcileErr = ErrCreateUncertain
 	_, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne)
 	if err == nil {
 		t.Fatal("uncertain create was not surfaced")
@@ -235,13 +244,27 @@ func TestLifecycleUncertainCreateRetainsJournalAndRequiresConfirmedAbsence(t *te
 	if readErr != nil || pending == nil || !isTrue(pending["create_attempted"]) {
 		t.Fatalf("uncertain create intent was not retained: %#v, %v", pending, readErr)
 	}
-	if runtime.stops != 1 || !reflect.DeepEqual(runtime.stopMayBeInFlight, []bool{true}) {
-		t.Fatalf("cleanup did not require confirmed absence: stops=%d flags=%v", runtime.stops, runtime.stopMayBeInFlight)
+	if runtime.reconciles != 1 || runtime.stops != 0 {
+		t.Fatalf("cleanup did not require create reconciliation: reconciles=%d stops=%d", runtime.reconciles, runtime.stops)
 	}
 	for _, call := range control.snapshotCalls() {
 		if strings.HasSuffix(call.suffix, "/completion") {
 			t.Fatal("uncertain create was acknowledged before absence was confirmed")
 		}
+	}
+}
+
+func TestLifecycleClearsUncertainCreateOnlyAfterReconciliation(t *testing.T) {
+	store, lifecycle, _, runtime, _ := newLifecycleFixture(t)
+	runtime.startErr = ErrCreateUncertain
+	if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne); err != nil {
+		t.Fatalf("Operate() = %v", err)
+	}
+	if runtime.reconciles != 1 || runtime.stops != 1 || !reflect.DeepEqual(runtime.stopMayBeInFlight, []bool{false}) {
+		t.Fatalf("create recovery calls = reconciles %d, stops %d flags %v", runtime.reconciles, runtime.stops, runtime.stopMayBeInFlight)
+	}
+	if pending, err := store.Read("pending"); err != nil || pending != nil {
+		t.Fatalf("pending journal after reconciled completion = %#v, %v", pending, err)
 	}
 }
 
@@ -422,10 +445,7 @@ func TestLifecycleRejectsMalformedRecoveryJournalWithoutMutation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, lifecycle, control, runtime, _ := newLifecycleFixture(t)
-			home, err := store.CreateHome()
-			if err != nil {
-				t.Fatal(err)
-			}
+			home := createTestHome(t, store)
 			marker := filepath.Join(home, "must-remain")
 			if err := os.WriteFile(marker, []byte("secret"), 0600); err != nil {
 				t.Fatal(err)
@@ -618,7 +638,7 @@ func TestLifecycleRetainsReadyRecoveryUntilInactiveAcknowledgement(t *testing.T)
 		t.Fatal("expected lost completion")
 	}
 	control.completionErr = nil
-	if err := store.Invalidate(); err != nil {
+	if err := store.WithExclusive(func(locked *Store) error { return locked.Invalidate() }); err != nil {
 		t.Fatal(err)
 	}
 	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": true, "stopped": true, "health": HealthReady, "reason": nil})

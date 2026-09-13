@@ -21,13 +21,14 @@ import (
 )
 
 const (
-	nativeOutputLimit  = 16 << 10
-	nativeCommandLimit = 30 * time.Second
-	nativeLoginLimit   = 15 * time.Minute
-	dockerCallLimit    = 10 * time.Second
-	dockerOutputLimit  = 16 << 10
-	profileUIDLabel    = "shipmunk.profile-runtime"
-	profileNameLabel   = "shipmunk.profile-sandbox"
+	nativeOutputLimit       = 16 << 10
+	nativeCommandLimit      = 30 * time.Second
+	nativeLoginLimit        = 15 * time.Minute
+	dockerCallLimit         = 10 * time.Second
+	dockerOutputLimit       = 16 << 10
+	profileUIDLabel         = "shipmunk.profile-runtime"
+	profileNameLabel        = "shipmunk.profile-sandbox"
+	profileReservationLabel = "shipmunk.profile-create-reservation"
 )
 
 // ErrCreateUncertain means Docker received a create request but the runtime
@@ -58,6 +59,7 @@ type Runtime interface {
 	Start(context.Context, string, string, Checkpoint, CreatePhase) error
 	Run(context.Context, string, string, string, Checkpoint) (CommandResult, error)
 	Stop(context.Context, string, bool) error
+	ReconcileCreate(context.Context, string) error
 }
 
 // commandBoundary is deliberately narrow so runtime behavior can be tested
@@ -380,6 +382,101 @@ func (runtime *dockerRuntime) Stop(ctx context.Context, sandboxName string, crea
 			return errors.New("Docker did not confirm profile sandbox absence")
 		}
 		return fmt.Errorf("confirm profile sandbox absence: %w", err)
+	}
+	return nil
+}
+
+// ReconcileCreate atomically reserves the deterministic sandbox name before
+// clearing an uncertain create. A late original create then conflicts with the
+// reservation instead of creating a container after recovery observed absence.
+func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName string) error {
+	if err := validateSandboxName(sandboxName); err != nil {
+		return err
+	}
+	checkpoint := func() error { return nil }
+	image, err := runtime.resolveImage(ctx, checkpoint)
+	if err != nil {
+		return fmt.Errorf("resolve profile image for create reconciliation: %w", err)
+	}
+	for {
+		created, _, createErr := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, []string{
+			"create", "--name", sandboxName,
+			"--label", profileUIDLabel + "=recovery-reservation",
+			"--label", profileNameLabel + "=" + sandboxName,
+			"--label", profileReservationLabel + "=true",
+			"--entrypoint", "/usr/bin/env", image,
+			"-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", "exit 0",
+		}, true, nil)
+		if createErr == nil {
+			containerID := strings.TrimSpace(created.stdout)
+			if !containerIDPattern.MatchString(containerID) {
+				return errors.New("Docker returned an invalid profile reservation identifier")
+			}
+			inspection, inspectErr := runtime.inspect(ctx, containerID, checkpoint)
+			if inspectErr != nil {
+				return fmt.Errorf("verify profile create reservation: %w", inspectErr)
+			}
+			if !runtime.ownsReservation(inspection, sandboxName, image) {
+				return errors.New("profile create reservation has unexpected identity")
+			}
+			return runtime.removeReservation(ctx, inspection.ID, sandboxName, image)
+		}
+
+		inspection, inspectErr := runtime.inspect(ctx, sandboxName, checkpoint)
+		if errors.Is(inspectErr, errContainerAbsent) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			continue
+		}
+		if inspectErr != nil {
+			return fmt.Errorf("inspect profile sandbox during create reconciliation (%v): %w", createErr, inspectErr)
+		}
+		if runtime.ownsReservation(inspection, sandboxName, image) {
+			if err := runtime.removeReservation(ctx, inspection.ID, sandboxName, image); err != nil {
+				return err
+			}
+			continue
+		}
+		if !runtime.ownsRuntimeContainer(inspection, sandboxName) {
+			return errors.New("refusing to reconcile a profile sandbox not owned by Shipmunk")
+		}
+		if err := runtime.Stop(ctx, sandboxName, false); err != nil {
+			return err
+		}
+	}
+}
+
+func (runtime *dockerRuntime) ownsReservation(inspection dockerInspection, sandboxName, image string) bool {
+	return inspection.Name == "/"+sandboxName &&
+		inspection.Config.Labels[profileUIDLabel] == "recovery-reservation" &&
+		inspection.Config.Labels[profileNameLabel] == sandboxName &&
+		inspection.Config.Labels[profileReservationLabel] == "true" &&
+		inspection.Config.Image == image && !inspection.State.Running && len(inspection.Mounts) == 0
+}
+
+func (runtime *dockerRuntime) removeReservation(ctx context.Context, identifier, sandboxName, image string) error {
+	checkpoint := func() error { return nil }
+	inspection, err := runtime.inspect(ctx, identifier, checkpoint)
+	if errors.Is(err, errContainerAbsent) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect profile create reservation before removal: %w", err)
+	}
+	if !runtime.ownsReservation(inspection, sandboxName, image) {
+		return errors.New("refusing to remove a profile create reservation with unexpected identity")
+	}
+	if _, _, err := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, []string{"rm", "--force", inspection.ID}, true, nil); err != nil {
+		if _, inspectErr := runtime.inspect(ctx, inspection.ID, checkpoint); !errors.Is(inspectErr, errContainerAbsent) {
+			return fmt.Errorf("remove profile create reservation: %w", err)
+		}
+	}
+	if _, err := runtime.inspect(ctx, sandboxName, checkpoint); !errors.Is(err, errContainerAbsent) {
+		if err == nil {
+			return errors.New("Docker did not confirm profile create reservation absence")
+		}
+		return fmt.Errorf("confirm profile create reservation absence: %w", err)
 	}
 	return nil
 }

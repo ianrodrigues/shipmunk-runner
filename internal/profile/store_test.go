@@ -29,6 +29,19 @@ func openTestStore(t *testing.T) (*Store, string) {
 	return store, root
 }
 
+func createTestHome(t *testing.T, store *Store) string {
+	t.Helper()
+	var home string
+	if err := store.WithExclusive(func(locked *Store) error {
+		var err error
+		home, err = locked.CreateHome()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestStorePHPJournalFormatsAndAtomicReplacement(t *testing.T) {
 	store, _ := openTestStore(t)
 	fixtures := map[string]map[string]any{
@@ -258,12 +271,26 @@ func TestExclusiveLockSpansCallbackAndIsPerProfile(t *testing.T) {
 	}
 }
 
-func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
-	store, root := openTestStore(t)
-	home, err := store.CreateHome()
-	if err != nil {
+func TestHomeCreationAndInvalidationRequireExclusiveLock(t *testing.T) {
+	store, _ := openTestStore(t)
+	if _, err := store.CreateHome(); err == nil {
+		t.Fatal("CreateHome succeeded without the profile lock")
+	}
+	home := createTestHome(t, store)
+	if err := store.Invalidate(); err == nil {
+		t.Fatal("Invalidate succeeded without the profile lock")
+	}
+	if err := store.WithExclusive(func(locked *Store) error { return locked.Invalidate() }); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Lstat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("locked invalidation did not remove home: %v", err)
+	}
+}
+
+func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
+	store, root := openTestStore(t)
+	home := createTestHome(t, store)
 	nativeDir := filepath.Join(home, "native")
 	if err := os.Mkdir(nativeDir, 0755); err != nil {
 		t.Fatal(err)
@@ -300,7 +327,7 @@ func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
 	if err := store.ValidateHome(); err == nil {
 		t.Fatal("ValidateHome accepted a symlink")
 	}
-	if err := store.Invalidate(); err != nil {
+	if err := store.WithExclusive(func(locked *Store) error { return locked.Invalidate() }); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(outside)
@@ -311,10 +338,7 @@ func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
 
 func TestNativeNormalizationValidatesWholeTreeBeforeChangingModes(t *testing.T) {
 	store, _ := openTestStore(t)
-	home, err := store.CreateHome()
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := createTestHome(t, store)
 	ordinary := filepath.Join(home, "ordinary")
 	unsafe := filepath.Join(home, "unsafe")
 	if err := os.WriteFile(ordinary, []byte("first"), 0644); err != nil {
@@ -337,10 +361,7 @@ func TestNativeNormalizationRejectsUnsafeEntriesBeforeChangingAnyModes(t *testin
 	for _, unsafeKind := range []string{"symlink", "hardlink", "fifo", "special_mode"} {
 		t.Run(unsafeKind, func(t *testing.T) {
 			store, root := openTestStore(t)
-			home, err := store.CreateHome()
-			if err != nil {
-				t.Fatal(err)
-			}
+			home := createTestHome(t, store)
 			ordinary := filepath.Join(home, "ordinary")
 			if err := os.WriteFile(ordinary, []byte("native"), 0644); err != nil {
 				t.Fatal(err)
@@ -350,6 +371,7 @@ func TestNativeNormalizationRejectsUnsafeEntriesBeforeChangingAnyModes(t *testin
 			if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			var err error
 			switch unsafeKind {
 			case "symlink":
 				err = os.Symlink(outside, unsafe)
@@ -389,10 +411,7 @@ func TestNativeNormalizationRejectsUnsafeEntriesBeforeChangingAnyModes(t *testin
 
 func TestNativeNormalizationRejectsDirectoryReplacedByOutsideSymlink(t *testing.T) {
 	store, root := openTestStore(t)
-	home, err := store.CreateHome()
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := createTestHome(t, store)
 	nativeDir := filepath.Join(home, "native")
 	if err := os.Mkdir(nativeDir, 0755); err != nil {
 		t.Fatal(err)
@@ -440,10 +459,7 @@ func TestNativeNormalizationRejectsDirectoryReplacedByOutsideSymlink(t *testing.
 
 func TestNativeNormalizationDoesNotChmodReplacedOutsideFile(t *testing.T) {
 	store, root := openTestStore(t)
-	home, err := store.CreateHome()
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := createTestHome(t, store)
 	credential := filepath.Join(home, "credential")
 	if err := os.WriteFile(credential, []byte("native"), 0644); err != nil {
 		t.Fatal(err)
@@ -481,7 +497,7 @@ func TestNativeNormalizationDoesNotChmodReplacedOutsideFile(t *testing.T) {
 	}
 }
 
-func TestNativeInvalidationRemovesReplacedOutsideSymlinkWithoutFollowingIt(t *testing.T) {
+func TestNativeInvalidationLeavesReplacedOutsideSymlinkUntouched(t *testing.T) {
 	_, root := openTestStore(t)
 	home := filepath.Join(root, "home")
 	if err := os.Mkdir(home, 0700); err != nil {
@@ -518,26 +534,107 @@ func TestNativeInvalidationRemovesReplacedOutsideSymlinkWithoutFollowingIt(t *te
 			t.Errorf("replace inspected directory: %v", err)
 		}
 	}}
-	if err := removeProfileTree(home, hooks); err != nil {
-		t.Fatalf("invalidation failed to safely remove replacement symlink: %v", err)
+	if err := removeProfileTree(home, hooks); err == nil {
+		t.Fatal("invalidation accepted a replaced native home entry")
 	}
 	if !replaced {
 		t.Fatal("replacement hook was not reached")
 	}
-	if _, err := os.Lstat(nativeDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("replacement symlink remains after invalidation: %v", err)
+	if info, err := os.Lstat(nativeDir); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("invalidation did not preserve replacement symlink: %v", err)
 	}
 	if contents, err := os.ReadFile(outsideFile); err != nil || string(contents) != "outside" {
 		t.Fatalf("invalidation changed outside file: %q, %v", contents, err)
 	}
 }
 
-func TestExecutionJournalUsesPHPIdentityAndRequiresLock(t *testing.T) {
-	store, _ := openTestStore(t)
-	home, err := store.CreateHome()
-	if err != nil {
+func TestNativeInvalidationLeavesReplacedHomeEntryUntouched(t *testing.T) {
+	_, root := openTestStore(t)
+	home := filepath.Join(root, "home")
+	if err := os.Mkdir(home, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(home, "credential"), []byte("native"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outside, "preserve")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	parked := filepath.Join(root, "moved-home")
+	replaced := false
+	hooks := nativeTreeHooks{beforeHomeRemove: func(parent *os.Root, name string) {
+		if name != "home" || replaced {
+			return
+		}
+		replaced = true
+		path := filepath.Join(parent.Name(), name)
+		if err := os.Rename(path, parked); err != nil {
+			t.Errorf("move inspected home: %v", err)
+			return
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Errorf("replace inspected home: %v", err)
+		}
+	}}
+	if err := removeProfileTree(home, hooks); err == nil {
+		t.Fatal("invalidation accepted a replaced home entry")
+	}
+	if !replaced {
+		t.Fatal("home replacement hook was not reached")
+	}
+	if info, err := os.Lstat(home); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("invalidation did not preserve replacement home symlink: %v", err)
+	}
+	if contents, err := os.ReadFile(outsideFile); err != nil || string(contents) != "outside" {
+		t.Fatalf("invalidation changed replacement target: %q, %v", contents, err)
+	}
+}
+
+func TestNativeInvalidationRejectsFileReplacedBeforeRemoval(t *testing.T) {
+	_, root := openTestStore(t)
+	home := filepath.Join(root, "home")
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(home, "credential")
+	if err := os.WriteFile(entry, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	parked := filepath.Join(root, "moved-credential")
+	replaced := false
+	hooks := nativeTreeHooks{beforeEntryRemove: func(parent *os.Root, name string) {
+		if name != "credential" || replaced {
+			return
+		}
+		replaced = true
+		path := filepath.Join(parent.Name(), name)
+		if err := os.Rename(path, parked); err != nil {
+			t.Errorf("move inspected credential: %v", err)
+			return
+		}
+		if err := os.WriteFile(path, []byte("replacement"), 0600); err != nil {
+			t.Errorf("replace inspected credential: %v", err)
+		}
+	}}
+	if err := removeProfileTree(home, hooks); err == nil {
+		t.Fatal("invalidation accepted a credential replaced before removal")
+	}
+	if !replaced {
+		t.Fatal("replacement hook was not reached")
+	}
+	if contents, err := os.ReadFile(entry); err != nil || string(contents) != "replacement" {
+		t.Fatalf("invalidation changed replacement credential: %q, %v", contents, err)
+	}
+}
+
+func TestExecutionJournalUsesPHPIdentityAndRequiresLock(t *testing.T) {
+	store, _ := openTestStore(t)
+	home := createTestHome(t, store)
 	credential := filepath.Join(home, "credential")
 	if err := os.WriteFile(credential, []byte("synthetic"), 0644); err != nil {
 		t.Fatal(err)
