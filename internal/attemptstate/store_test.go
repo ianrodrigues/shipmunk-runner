@@ -341,7 +341,7 @@ func TestStoreLockDescriptorsAreCloseOnExec(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	command := exec.Command(os.Args[0], "-test.run=^TestStoreLockDescriptorsAreCloseOnExec$")
+	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestStoreLockDescriptorsAreCloseOnExec$")
 	command.Env = append(os.Environ(),
 		"ATTEMPT_STATE_CLOEXEC_HELPER=1",
 		"ATTEMPT_STATE_CLOEXEC_PATH="+path,
