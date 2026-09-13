@@ -89,33 +89,67 @@ func TestDecodeRejectsAmbiguousAndMalformedInput(t *testing.T) {
 }
 
 func TestClaimEnforcesCanonicalProtocolFields(t *testing.T) {
-	raw := []byte(`{"protocol_version":"1.0","run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":9007199254740991,"deadline":"2099-01-01T00:00:00Z"}`)
+	raw, err := os.ReadFile(filepath.Join(contracts, "fixtures/valid/manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	claim, err := ParseClaim(raw, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claim.Fence != MaxSafeInteger || !claim.LeaseExpiresAt.Equal(time.Unix(0, 0).UTC().Add(45*time.Second)) {
+	if claim.Fence != 1 || !claim.LeaseExpiresAt.Equal(time.Unix(0, 0).UTC().Add(45*time.Second)) {
 		t.Fatalf("unexpected claim: %#v", claim)
 	}
 	for _, replacement := range []string{"\"protocol_version\":\"2.0\"", "\"run_id\":\"01K4W000000000000000000001\"", "\"deadline\":\"2099-01-01T00:00:00+00:00\"", "\"fence\":1.5"} {
-		invalid := strings.Replace(string(raw), `"protocol_version":"1.0"`, replacement, 1)
+		invalid := strings.Replace(string(raw), `"protocol_version": "1.0"`, replacement, 1)
 		if strings.Contains(replacement, "run_id") {
-			invalid = strings.Replace(string(raw), `"run_id":"01k4w000000000000000000001"`, replacement, 1)
+			invalid = strings.Replace(string(raw), `"run_id": "01k4w000000000000000000001"`, replacement, 1)
 		}
 		if strings.Contains(replacement, "deadline") {
-			invalid = strings.Replace(string(raw), `"deadline":"2099-01-01T00:00:00Z"`, replacement, 1)
+			invalid = strings.Replace(string(raw), `"deadline": "2026-09-10T18:00:00Z"`, replacement, 1)
 		}
 		if strings.Contains(replacement, "fence") {
-			invalid = strings.Replace(string(raw), `"fence":9007199254740991`, replacement, 1)
+			invalid = strings.Replace(string(raw), `"fence": 1`, replacement, 1)
 		}
 		if _, err := ParseClaim([]byte(invalid), time.Now()); err == nil {
 			t.Errorf("accepted %s", replacement)
 		}
 	}
+	value, err := Decode(raw, ManifestMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := object(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"unknown nested property":            func(data map[string]any) { data["effective_config"].(map[string]any)["unsafe"] = true },
+		"missing required nullable property": func(data map[string]any) { delete(data["effective_config"].(map[string]any), "trusted_revision") },
+		"null where string is required":      func(data map[string]any) { data["deadline"] = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := deepCopyObject(manifest)
+			mutate(copy)
+			if _, err := ClaimFromManifest(copy, time.Now()); err == nil {
+				t.Fatal("accepted invalid manifest")
+			}
+		})
+	}
+}
+
+func deepCopyObject(source map[string]any) map[string]any {
+	value, _ := Decode([]byte(mustJSON(source)), ManifestMaxBytes)
+	copy, _ := object(value)
+	return copy
 }
 
 func TestHTTPClientMatchesControlPlaneBoundary(t *testing.T) {
-	manifest := `{"protocol_version":"1.0","run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"deadline":"2099-01-01T00:00:00Z"}`
+	manifestBytes, err := os.ReadFile(filepath.Join(contracts, "fixtures/valid/manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := string(manifestBytes)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer runner-token" || request.Header.Get("X-Shipmunk-Protocol") != Version {
 			t.Errorf("credentials/version headers missing")

@@ -12,6 +12,8 @@ var (
 	sha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
+func IsULID(value string) bool { return ulidPattern.MatchString(value) }
+
 // Claim is the immutable, fenced response to a successful claim request.
 type Claim struct {
 	RunID          string
@@ -35,6 +37,9 @@ func ParseClaim(raw []byte, now time.Time) (Claim, error) {
 }
 
 func ClaimFromManifest(manifest map[string]any, now time.Time) (Claim, error) {
+	if err := ValidateManifest(manifest); err != nil {
+		return Claim{}, fmt.Errorf("invalid claim manifest: %w", err)
+	}
 	if version, err := stringField(manifest, "protocol_version"); err != nil || version != Version {
 		return Claim{}, fmt.Errorf("unsupported manifest protocol version")
 	}
