@@ -45,6 +45,26 @@ type fakeCommand struct {
 	afterImage          func() error
 }
 
+type fakeCreatePhase struct {
+	started  int
+	finished []string
+}
+
+func (phase *fakeCreatePhase) CreateStarted() error {
+	phase.started++
+	return nil
+}
+
+func (phase *fakeCreatePhase) CreateFinished(containerID string) error {
+	phase.finished = append(phase.finished, containerID)
+	return nil
+}
+
+type noOpCreatePhase struct{}
+
+func (noOpCreatePhase) CreateStarted() error        { return nil }
+func (noOpCreatePhase) CreateFinished(string) error { return nil }
+
 func newFakeCommand() *fakeCommand {
 	return &fakeCommand{imageID: testImageID, containerID: testContainerID, label: "true"}
 }
@@ -213,11 +233,15 @@ func TestStartUsesResolvedImageAndCredentialOnlyIsolation(t *testing.T) {
 	runtime := newTestRuntime(t, fake)
 	home := protectedHome(t)
 	checkpoints := 0
+	createPhase := &fakeCreatePhase{}
 	if err := runtime.Start(context.Background(), testProfileName, home, func() error {
 		checkpoints++
 		return nil
-	}); err != nil {
+	}, createPhase); err != nil {
 		t.Fatal(err)
+	}
+	if createPhase.started != 1 || !slices.Equal(createPhase.finished, []string{testContainerID}) {
+		t.Fatalf("watchdog create phases = started %d finished %v", createPhase.started, createPhase.finished)
 	}
 	if checkpoints < 4 {
 		t.Fatalf("checkpoint calls = %d, want before image inspect, existing-name inspect, create, and start", checkpoints)
@@ -294,7 +318,7 @@ func TestStartRejectsMutableImageResponseAndRootAccount(t *testing.T) {
 	fake := newFakeCommand()
 	fake.imageID = "shipmunk-profile-native:local"
 	runtime := newTestRuntime(t, fake)
-	if err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }); err == nil {
+	if err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }, noOpCreatePhase{}); err == nil {
 		t.Fatal("accepted a mutable image inspect result")
 	}
 	if len(fake.commands) != 1 {
@@ -312,7 +336,7 @@ func TestStartRejectsInsecureProfileHomeAndPathReplacement(t *testing.T) {
 	if err := os.Chmod(unsafeHome, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.Start(context.Background(), testProfileName, unsafeHome, func() error { return nil }); err == nil {
+	if err := runtime.Start(context.Background(), testProfileName, unsafeHome, func() error { return nil }, noOpCreatePhase{}); err == nil {
 		t.Fatal("accepted a profile home with broad permissions")
 	}
 	if len(fake.commands) != 0 {
@@ -331,7 +355,7 @@ func TestStartRejectsInsecureProfileHomeAndPathReplacement(t *testing.T) {
 		}
 		return nil
 	}
-	if err := runtime.Start(context.Background(), testProfileName, home, func() error { return nil }); err == nil {
+	if err := runtime.Start(context.Background(), testProfileName, home, func() error { return nil }, noOpCreatePhase{}); err == nil {
 		t.Fatal("accepted a profile home path replaced before container creation")
 	}
 	for _, command := range fake.commands {
@@ -346,7 +370,7 @@ func TestStartMarksOnlyDispatchedCreatesUncertain(t *testing.T) {
 		fake := newFakeCommand()
 		fake.createNotDispatched = true
 		runtime := newTestRuntime(t, fake)
-		err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil })
+		err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }, noOpCreatePhase{})
 		if err == nil || errors.Is(err, ErrCreateUncertain) {
 			t.Fatalf("Start error = %v, want ordinary pre-dispatch failure", err)
 		}
@@ -360,7 +384,7 @@ func TestStartMarksOnlyDispatchedCreatesUncertain(t *testing.T) {
 		fake.blockCreate = true
 		runtime := newTestRuntime(t, fake)
 		runtime.config.dockerTimeout = 20 * time.Millisecond
-		err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil })
+		err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }, noOpCreatePhase{})
 		if !errors.Is(err, ErrCreateUncertain) {
 			t.Fatalf("Start error = %v, want ErrCreateUncertain", err)
 		}

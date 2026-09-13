@@ -28,6 +28,7 @@ type ControlPlane interface {
 // WatchdogLease remains alive independently of the lifecycle process and owns
 // cleanup when its control channel closes or its renewed lease expires.
 type WatchdogLease interface {
+	CreatePhase
 	Renew(time.Time) error
 	Disarm() error
 }
@@ -284,7 +285,7 @@ func (lifecycle *Lifecycle) authenticate(
 		_ = watchdogLease.Disarm()
 		return Health{}, checkpoint.stage(), nil, err
 	}
-	if err := lifecycle.Runtime.Start(ctx, sandboxName, store.Home(), checkpoint.callback); err != nil {
+	if err := lifecycle.Runtime.Start(ctx, sandboxName, store.Home(), checkpoint.callback, watchdogLease); err != nil {
 		if !errors.Is(err, ErrCreateUncertain) {
 			pending["create_attempted"] = false
 			if persistErr := store.Write("pending", pending); persistErr != nil {
@@ -433,6 +434,9 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 	if err != nil || pending == nil {
 		return err
 	}
+	if err := validatePendingJournal(pending, profileID); err != nil {
+		return err
+	}
 	journalProfileID, _ := pending["profile_id"].(string)
 	if journalProfileID != profileID {
 		return errors.New("profile journal identity mismatch")
@@ -441,9 +445,6 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 	sandboxName, sandboxOK := pending["sandbox"].(string)
 	if !ok || protocol.ValidateOperationID(operationID) != nil || !sandboxOK || sandboxName != "shipmunk-profile-"+operationID {
 		return errors.New("profile journal sandbox mismatch")
-	}
-	if _, ok := pending["operation"].(string); !ok {
-		return errors.New("profile journal operation is invalid")
 	}
 	if err := lifecycle.stopAndDisarm(sandboxName, isTrue(pending["create_attempted"]), nil); err != nil {
 		return err
@@ -467,8 +468,10 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 		pending["binding"] = binding
 	}
 	outcome, exists := healthFromJournal(pending["outcome"])
-	if !exists {
+	if _, outcomePresent := pending["outcome"]; !outcomePresent {
 		outcome = Health{Health: HealthError, Reason: "operation_stopped"}
+	} else if !exists {
+		return errors.New("profile journal outcome is invalid")
 	}
 	recoveryFailed := isTrue(pending["recovery_failed"])
 	if outcome.Health == HealthReady {
@@ -607,6 +610,9 @@ func (lifecycle *Lifecycle) reportFailure(stage string) {
 }
 
 func validateBinding(binding map[string]any, profileID, operationID string, now time.Time) (time.Time, error) {
+	if err := validateJournalBinding(binding, profileID, operationID); err != nil {
+		return time.Time{}, err
+	}
 	responseProfileID, profileIDOK := binding["profile_id"].(string)
 	responseOperationID, operationIDOK := binding["operation_id"].(string)
 	stopRequested, stopOK := binding["stop_requested"].(bool)
@@ -664,8 +670,16 @@ func healthFromJournal(value any) (Health, bool) {
 	if !ok {
 		return Health{}, false
 	}
+	for key := range data {
+		if key != "health" && key != "reason" {
+			return Health{}, false
+		}
+	}
 	health, ok := data["health"].(string)
 	if !ok || health == "" {
+		return Health{}, false
+	}
+	if _, exists := data["reason"]; !exists {
 		return Health{}, false
 	}
 	reason := ""
@@ -676,7 +690,136 @@ func healthFromJournal(value any) (Health, bool) {
 			return Health{}, false
 		}
 	}
-	return Health{Health: health, Reason: reason}, true
+	result := Health{Health: health, Reason: reason}
+	return result, validHealthOutcome(result)
+}
+
+func validatePendingJournal(pending map[string]any, profileID string) error {
+	allowed := map[string]struct{}{
+		"profile_id": {}, "operation_id": {}, "operation": {}, "sandbox": {},
+		"binding": {}, "outcome": {}, "create_attempted": {}, "recovery_failed": {},
+	}
+	for key := range pending {
+		if _, ok := allowed[key]; !ok {
+			return errors.New("profile journal contains an unknown field")
+		}
+	}
+	if pendingProfileID, ok := pending["profile_id"].(string); !ok || pendingProfileID != profileID {
+		return errors.New("profile journal identity mismatch")
+	}
+	operationID, ok := pending["operation_id"].(string)
+	if !ok || protocol.ValidateOperationID(operationID) != nil {
+		return errors.New("profile journal operation identity is invalid")
+	}
+	sandboxName, ok := pending["sandbox"].(string)
+	if !ok || sandboxName != "shipmunk-profile-"+operationID {
+		return errors.New("profile journal sandbox mismatch")
+	}
+	operation, ok := pending["operation"].(string)
+	if !ok || (operation != "login" && operation != "probe" && operation != "disconnect") {
+		return errors.New("profile journal operation is invalid")
+	}
+	createAttempted, hasCreateAttempt := pending["create_attempted"]
+	if hasCreateAttempt {
+		if _, ok := createAttempted.(bool); !ok {
+			return errors.New("profile journal create phase is invalid")
+		}
+	}
+	recoveryFailed, hasRecoveryFailed := pending["recovery_failed"]
+	if hasRecoveryFailed {
+		if _, ok := recoveryFailed.(bool); !ok {
+			return errors.New("profile journal recovery phase is invalid")
+		}
+	}
+	rawBinding, hasBinding := pending["binding"]
+	binding, bindingOK := rawBinding.(map[string]any)
+	if hasBinding && (!bindingOK || binding == nil) {
+		return errors.New("profile journal binding is invalid")
+	}
+	if hasBinding {
+		if err := validateJournalBinding(binding, profileID, operationID); err != nil {
+			return err
+		}
+	}
+	rawOutcome, hasOutcome := pending["outcome"]
+	if hasOutcome {
+		if _, ok := healthFromJournal(rawOutcome); !ok {
+			return errors.New("profile journal outcome is invalid")
+		}
+		if !hasBinding {
+			return errors.New("profile journal outcome has no binding")
+		}
+	}
+	if hasCreateAttempt && isTrue(createAttempted) && !hasBinding {
+		return errors.New("profile journal create phase has no binding")
+	}
+	if isTrue(recoveryFailed) && (!hasOutcome || !hasBinding) {
+		return errors.New("profile journal recovery failure phase is incomplete")
+	}
+	if isTrue(recoveryFailed) {
+		outcome, _ := healthFromJournal(rawOutcome)
+		if outcome != (Health{Health: HealthError, Reason: "operation_stopped"}) {
+			return errors.New("profile journal recovery failure outcome is invalid")
+		}
+	}
+	return nil
+}
+
+func validateJournalBinding(binding map[string]any, profileID, operationID string) error {
+	if bindingProfileID, ok := binding["profile_id"].(string); !ok || bindingProfileID != profileID {
+		return errors.New("profile journal binding identity is invalid")
+	}
+	if bindingOperationID, ok := binding["operation_id"].(string); !ok || bindingOperationID != operationID {
+		return errors.New("profile journal binding operation is invalid")
+	}
+	credentialReference, ok := binding["credential_reference"].(string)
+	if !ok || !credentialReferencePattern.MatchString(credentialReference) {
+		return errors.New("profile journal credential reference is invalid")
+	}
+	if agent, ok := binding["agent"].(string); !ok || agent == "" {
+		return errors.New("profile journal agent is invalid")
+	}
+	if authMode, ok := binding["auth_mode"].(string); !ok || authMode == "" {
+		return errors.New("profile journal auth mode is invalid")
+	}
+	if runtimeVersion, ok := binding["runtime_version"].(string); !ok || runtimeVersion == "" {
+		return errors.New("profile journal runtime version is invalid")
+	}
+	if _, ok := binding["stop_requested"].(bool); !ok {
+		return errors.New("profile journal stop state is invalid")
+	}
+	leaseText, ok := binding["lease_expires_at"].(string)
+	if !ok {
+		return errors.New("profile journal lease is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, leaseText); err != nil {
+		return errors.New("profile journal lease is invalid")
+	}
+	if stopped, exists := binding["stopped"]; exists {
+		if _, ok := stopped.(bool); !ok {
+			return errors.New("profile journal stopped state is invalid")
+		}
+	}
+	return nil
+}
+
+func validHealthOutcome(outcome Health) bool {
+	switch outcome.Health {
+	case HealthReady:
+		return outcome.Reason == ""
+	case HealthExpired:
+		return outcome.Reason == ReasonNativeLoginRequired
+	case HealthUnsupported:
+		return outcome.Reason == ReasonNativeModeMismatch || outcome.Reason == ReasonRuntimeMismatch
+	case HealthRateLimited:
+		return outcome.Reason == ReasonRateLimited
+	case HealthError:
+		return outcome.Reason == ReasonNativeProbeFailed || outcome.Reason == "operation_failed" || outcome.Reason == "operation_stopped"
+	case "disconnected":
+		return outcome.Reason == "disconnected"
+	default:
+		return false
+	}
 }
 
 func definitiveBeginStatus(status int) bool {

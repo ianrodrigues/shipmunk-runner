@@ -164,7 +164,7 @@ func newFakeLifecycleRuntime() *fakeLifecycleRuntime {
 	}
 }
 
-func (runtime *fakeLifecycleRuntime) Start(_ context.Context, _ string, _ string, checkpoint Checkpoint) error {
+func (runtime *fakeLifecycleRuntime) Start(_ context.Context, _ string, _ string, checkpoint Checkpoint, _ CreatePhase) error {
 	runtime.mu.Lock()
 	runtime.starts++
 	if runtime.log != nil {
@@ -276,6 +276,9 @@ type fakeProfileWatchdogLease struct {
 	err      error
 }
 
+func (lease *fakeProfileWatchdogLease) CreateStarted() error        { return nil }
+func (lease *fakeProfileWatchdogLease) CreateFinished(string) error { return nil }
+
 func (lease *fakeProfileWatchdogLease) Renew(expiry time.Time) error {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
@@ -372,6 +375,91 @@ func TestLifecyclePersistsBeforeBeginAndDistinguishesDefinitiveErrors(t *testing
 				t.Fatalf("begin calls = %#v", calls)
 			}
 		})
+	}
+}
+
+func TestLifecycleRejectsMalformedRecoveryJournalWithoutMutation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "unsupported operation", mutate: func(pending map[string]any) { pending["operation"] = "execute" }},
+		{name: "unknown outcome health", mutate: func(pending map[string]any) {
+			pending["outcome"] = map[string]any{"health": "mystery", "reason": nil}
+		}},
+		{name: "malformed outcome", mutate: func(pending map[string]any) { pending["outcome"] = "ready" }},
+		{name: "unknown outcome reason", mutate: func(pending map[string]any) {
+			pending["outcome"] = map[string]any{"health": HealthError, "reason": "private-error"}
+		}},
+		{name: "invalid create phase", mutate: func(pending map[string]any) { pending["create_attempted"] = "yes" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, lifecycle, control, runtime, _ := newLifecycleFixture(t)
+			home, err := store.CreateHome()
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(home, "must-remain")
+			if err := os.WriteFile(marker, []byte("secret"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			pending := map[string]any{
+				"profile_id": testProfileID, "operation_id": operationOne, "operation": "login",
+				"sandbox": "shipmunk-profile-" + operationOne,
+				"binding": cloneMap(control.binding),
+			}
+			test.mutate(pending)
+			if err := store.Write("pending", pending); err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.Read("pending")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "probe", operationTwo); err == nil {
+				t.Fatal("malformed recovery journal was accepted")
+			}
+			after, err := store.Read("pending")
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("recovery mutated pending journal: before=%#v after=%#v err=%v", before, after, err)
+			}
+			if runtime.stops != 0 || len(control.snapshotCalls()) != 0 {
+				t.Fatalf("recovery performed external effects: stops=%d calls=%#v", runtime.stops, control.snapshotCalls())
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("recovery mutated credential home: %v", err)
+			}
+		})
+	}
+}
+
+func TestLifecycleRecoversValidInterruptedJournalWithoutOutcome(t *testing.T) {
+	store, lifecycle, control, runtime, _ := newLifecycleFixture(t)
+	pending := map[string]any{
+		"profile_id": testProfileID, "operation_id": operationOne, "operation": "login",
+		"sandbox": "shipmunk-profile-" + operationOne,
+		"binding": cloneMap(control.binding),
+	}
+	if err := store.Write("pending", pending); err != nil {
+		t.Fatal(err)
+	}
+	control.operationID = operationTwo
+	control.binding["operation_id"] = operationTwo
+	if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "disconnect", operationTwo); err != nil {
+		t.Fatalf("valid interrupted journal without an outcome was rejected: %v", err)
+	}
+	var recovered *lifecycleCall
+	for _, call := range control.snapshotCalls() {
+		if call.suffix == "operations/"+operationOne+"/completion" {
+			copyCall := call
+			recovered = &copyCall
+		}
+	}
+	if recovered == nil || recovered.payload["health"] != HealthError || recovered.payload["reason"] != "operation_stopped" {
+		t.Fatalf("interrupted operation did not preserve default recovery outcome: %#v", recovered)
+	}
+	if runtime.starts != 0 {
+		t.Fatalf("recovery replayed login for an interrupted journal: %d starts", runtime.starts)
 	}
 }
 
