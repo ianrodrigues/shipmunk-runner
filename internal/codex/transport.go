@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +59,8 @@ type DockerTransport struct {
 	patch           *Patch
 	patchCollected  bool
 	fence           int64
+	profileHandle   *os.File
+	sourceHandle    *os.File
 }
 
 func NewDockerTransport(cfg TransportConfig) (*DockerTransport, error) {
@@ -94,35 +98,73 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 	if cfg.CommandTimeout <= 0 {
 		cfg.CommandTimeout = 30 * time.Second
 	}
+	var handles [2]*os.File
+	closeHandles := func() {
+		for _, handle := range handles {
+			if handle != nil {
+				_ = handle.Close()
+			}
+		}
+	}
 	for index, root := range []string{cfg.ProfileHome, cfg.Source} {
 		info, err := os.Lstat(root)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			closeHandles()
 			return nil, errors.New("Codex transport input directory is invalid")
 		}
 		resolved, err := filepath.EvalSymlinks(root)
 		if err != nil {
+			closeHandles()
 			return nil, errors.New("Codex transport input directory is invalid")
 		}
+		handle, openErr := os.Open(resolved)
+		if openErr != nil {
+			for _, opened := range handles {
+				if opened != nil {
+					_ = opened.Close()
+				}
+			}
+			return nil, errors.New("Codex transport input directory is invalid")
+		}
+		openedInfo, statErr := handle.Stat()
+		if statErr != nil || !os.SameFile(info, openedInfo) {
+			_ = handle.Close()
+			for _, opened := range handles {
+				if opened != nil {
+					_ = opened.Close()
+				}
+			}
+			return nil, errors.New("Codex transport input directory changed while opening")
+		}
+		handles[index] = handle
+		stable := resolved
+		if runtime.GOOS == "linux" {
+			stable = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
+		}
 		if index == 0 {
-			cfg.ProfileHome = resolved
+			cfg.ProfileHome = stable
 		} else {
-			cfg.Source = resolved
+			cfg.Source = stable
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(cfg.Source, ".git")); err == nil || !errors.Is(err, os.ErrNotExist) {
+		closeHandles()
 		return nil, errors.New("repository input must not contain Git metadata")
 	}
 	bridge, err := os.MkdirTemp("", "shipmunk-codex-bridge-")
 	if err != nil {
+		closeHandles()
 		return nil, errors.New("cannot create protected command bridge")
 	}
 	if err := os.Chmod(bridge, 0700); err != nil {
+		closeHandles()
 		_ = os.RemoveAll(bridge)
 		return nil, errors.New("cannot protect command bridge")
 	}
-	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence}
+	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence, profileHandle: handles[0], sourceHandle: handles[1]}
 	mediator, err := NewMediator(fence, cfg.MaxCommands, t)
 	if err != nil {
+		closeHandles()
 		_ = os.RemoveAll(bridge)
 		return nil, err
 	}
@@ -141,7 +183,7 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	defer func() {
 		if err != nil {
 			if cleanup := t.cleanup(context.Background()); cleanup != nil {
-				err = fmt.Errorf("Codex setup failed and cleanup was not confirmed: %w", err)
+				err = errors.Join(err, fmt.Errorf("Codex setup cleanup was not confirmed: %w", cleanup))
 			}
 		}
 	}()
@@ -353,7 +395,9 @@ func (t *DockerTransport) CollectPatch(ctx context.Context) (_ *Patch, err error
 	t.mediator.Seal()
 	defer func() {
 		if err != nil {
-			_ = t.cleanup(context.Background())
+			if cleanup := t.cleanup(context.Background()); cleanup != nil {
+				err = errors.Join(err, fmt.Errorf("Codex patch cleanup was not confirmed: %w", cleanup))
+			}
 		}
 	}()
 	if _, err = t.run(ctx, nil, "pause", t.cfg.Name+"-repo"); err != nil {
@@ -437,6 +481,14 @@ func (t *DockerTransport) cleanup(ctx context.Context) error {
 		}
 	}
 	t.started = false
+	if t.profileHandle != nil {
+		_ = t.profileHandle.Close()
+		t.profileHandle = nil
+	}
+	if t.sourceHandle != nil {
+		_ = t.sourceHandle.Close()
+		t.sourceHandle = nil
+	}
 	if failed {
 		return errors.New("cannot confirm all Codex process trees are absent")
 	}
@@ -490,21 +542,26 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func archiveDirectory(root string, limit int64) ([]byte, error) {
+	rootHandle, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("cannot open repository source")
+	}
+	defer rootHandle.Close()
 	var b bytes.Buffer
 	tw := tar.NewWriter(&b)
 	var total int64
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, e error) error {
+	err = fs.WalkDir(rootHandle.FS(), ".", func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
 		}
-		if p == root {
+		if p == "." {
 			return nil
 		}
-		rel, e := filepath.Rel(root, p)
-		if e != nil || !safeRepositoryPath(filepath.ToSlash(rel)) {
+		rel := filepath.ToSlash(p)
+		if !safeRepositoryPath(rel) {
 			return errors.New("repository source path is invalid")
 		}
-		info, e := os.Lstat(p)
+		info, e := rootHandle.Lstat(p)
 		if e != nil {
 			return e
 		}
@@ -529,14 +586,20 @@ func archiveDirectory(root string, limit int64) ([]byte, error) {
 		if total > limit {
 			return errors.New("repository source exceeds limit")
 		}
-		f, e := os.Open(p)
+		f, e := rootHandle.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 		if e != nil {
 			return e
 		}
-		_, ce := io.Copy(tw, f)
+		opened, statErr := f.Stat()
+		if statErr != nil || !os.SameFile(info, opened) {
+			_ = f.Close()
+			return errors.New("repository source changed while opening")
+		}
+		_, ce := io.CopyN(tw, f, info.Size())
+		finished, finishErr := f.Stat()
 		closeErr := f.Close()
-		if ce != nil {
-			return ce
+		if ce != nil || finishErr != nil || !os.SameFile(info, finished) || finished.Size() != info.Size() || !finished.ModTime().Equal(info.ModTime()) {
+			return errors.New("repository source changed while reading")
 		}
 		return closeErr
 	})

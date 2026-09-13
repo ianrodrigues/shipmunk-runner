@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,14 +50,18 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
-	execution, err := executor.Execute(context.Background(), claim, nil, t.TempDir())
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "sources", "0"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := executor.Execute(context.Background(), claim, nil, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if execution.Result["outcome"] != "no_findings" || len(execution.Artifacts) != 0 {
 		t.Fatalf("unexpected execution: %#v", execution)
 	}
-	if len(transport.calls) != 6 {
+	if len(transport.calls) != 5 {
 		t.Fatalf("native calls=%d, want version + two probes around execution", len(transport.calls))
 	}
 	joined := strings.Join(transport.calls[3], " ")
@@ -65,5 +70,18 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 	}
 	if err = executor.Cleanup(context.Background(), claim); err != nil || !transport.stopped {
 		t.Fatalf("cleanup=%v stopped=%t", err, transport.stopped)
+	}
+}
+
+func TestSelectSourceUsesReviewHead(t *testing.T) {
+	root := t.TempDir()
+	for _, index := range []string{"0", "1"} {
+		if err := os.MkdirAll(filepath.Join(root, "sources", index), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := selectSource(root)
+	if err != nil || got != filepath.Join(root, "sources", "1") {
+		t.Fatalf("source=%q err=%v", got, err)
 	}
 }

@@ -70,7 +70,11 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 		_ = state.Close()
 		return nil, nil, err
 	}
-	router := &codexProfileRouter{profilesDir: options.ProfilesDir, nativeImage: options.Image, repositoryImage: options.RepositoryImage, dockerExecutable: dockerExecutable, active: make(map[string]supervisor.Executor)}
+	mode := codexsession.Fresh
+	if options.SessionMode == "resume" {
+		mode = codexsession.Resume
+	}
+	router := &codexProfileRouter{profilesDir: options.ProfilesDir, nativeImage: options.Image, repositoryImage: options.RepositoryImage, dockerExecutable: dockerExecutable, active: make(map[string]supervisor.Executor), sessionMode: mode}
 	return &supervisor.Supervisor{Client: client, State: state, Workspaces: workspaces, Executor: router}, state.Close, nil
 }
 
@@ -78,6 +82,7 @@ type codexProfileRouter struct {
 	profilesDir, nativeImage, repositoryImage, dockerExecutable string
 	mu                                                          sync.Mutex
 	active                                                      map[string]supervisor.Executor
+	sessionMode                                                 codexsession.Mode
 }
 
 func (r *codexProfileRouter) build(claim protocol.Claim) (supervisor.Executor, error) {
@@ -93,7 +98,7 @@ func (r *codexProfileRouter) build(claim protocol.Claim) (supervisor.Executor, e
 	if err != nil {
 		return nil, err
 	}
-	delegate, err := codex.NewExecutor(codex.ExecutorConfig{ProfileHome: store.Home(), NativeImage: r.nativeImage, RepositoryImage: r.repositoryImage, DockerExecutable: r.dockerExecutable, Sessions: sessions, SessionMode: codexsession.Fresh})
+	delegate, err := codex.NewExecutor(codex.ExecutorConfig{ProfileHome: store.Home(), NativeImage: r.nativeImage, RepositoryImage: r.repositoryImage, DockerExecutable: r.dockerExecutable, Sessions: sessions, SessionMode: r.sessionMode})
 	if err != nil {
 		return nil, err
 	}
