@@ -1,0 +1,467 @@
+// Package attemptstate reads and writes the runner's unversioned PHP-compatible
+// active-attempt journal.
+package attemptstate
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+)
+
+const maxStateBytes = 16 * 1024
+
+const phpDateAtom = "2006-01-02T15:04:05-07:00"
+
+var stateFields = map[string]struct{}{
+	"run_id": {}, "attempt_id": {}, "fence": {}, "profile_id": {},
+	"sandbox_id": {}, "lease_expires_at": {}, "deadline": {}, "workspace": {},
+}
+
+// State is the durable identity and recovery context for one fenced attempt.
+type State struct {
+	RunID          string
+	AttemptID      string
+	Fence          int64
+	ProfileID      *string
+	SandboxID      *string
+	LeaseExpiresAt time.Time
+	Deadline       time.Time
+	Workspace      string
+}
+
+// Store holds the exclusive process-lifetime supervisor lock for one state path.
+type Store struct {
+	mu        sync.Mutex
+	path      string
+	directory *os.File
+	lockFile  *os.File
+	closed    bool
+	fs        fileOps
+}
+
+type fileOps struct {
+	syncFile func(*os.File) error
+	syncDir  func(string) error
+}
+
+// Open resolves and prepares the state directory, then exclusively locks the
+// journal until Close. A second supervisor receives an error instead of
+// sharing mutable recovery state.
+func Open(path string) (*Store, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("attempt state path is empty")
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve attempt state path: %w", err)
+	}
+	parent, err := prepareDirectory(filepath.Dir(absPath))
+	if err != nil {
+		return nil, fmt.Errorf("prepare attempt state directory: %w", err)
+	}
+	statePath := filepath.Join(parent, filepath.Base(absPath))
+	if err := validateLeaf(statePath); err != nil {
+		return nil, fmt.Errorf("unsafe attempt state path: %w", err)
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return nil, fmt.Errorf("open attempt state directory: %w", err)
+	}
+	lock, err := openAndLock(statePath + ".lock")
+	if err != nil {
+		_ = directory.Close()
+		return nil, fmt.Errorf("lock attempt state: %w", err)
+	}
+	store := &Store{
+		path:      statePath,
+		directory: directory,
+		lockFile:  lock,
+		fs: fileOps{
+			syncFile: func(file *os.File) error { return file.Sync() },
+			syncDir:  syncDirectory,
+		},
+	}
+	if err := store.verifyDirectory(); err != nil {
+		_ = unlockAndClose(lock)
+		_ = directory.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// Load returns nil when no active journal exists. It rejects malformed,
+// oversized, duplicated-key, or unsupported state without changing the file.
+func (store *Store) Load() (*State, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.ensureOpen(); err != nil {
+		return nil, err
+	}
+	if err := store.verifyDirectory(); err != nil {
+		return nil, err
+	}
+	return store.loadLocked()
+}
+
+// Save durably replaces the state file. Existing state must be understood
+// before replacement so an older or unsupported journal is never destroyed.
+func (store *Store) Save(state State) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.ensureOpen(); err != nil {
+		return err
+	}
+	if err := store.verifyDirectory(); err != nil {
+		return err
+	}
+	if _, err := store.loadLocked(); err != nil {
+		return fmt.Errorf("refuse to replace unsupported attempt state: %w", err)
+	}
+	if err := validateState(state); err != nil {
+		return err
+	}
+
+	contents, err := marshalState(state)
+	if err != nil {
+		return err
+	}
+	if len(contents) > maxStateBytes {
+		return errors.New("attempt state exceeded its byte limit")
+	}
+	temporary, err := store.createTemporary(contents)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if temporary != "" {
+			_ = os.Remove(temporary)
+		}
+	}()
+
+	if err := validateLeaf(store.path); err != nil {
+		return fmt.Errorf("unsafe attempt state path: %w", err)
+	}
+	if err := store.verifyDirectory(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, store.path); err != nil {
+		return fmt.Errorf("commit attempt state: %w", err)
+	}
+	temporary = ""
+	if err := store.fs.syncDir(filepath.Dir(store.path)); err != nil {
+		return fmt.Errorf("sync attempt state directory: %w", err)
+	}
+	return nil
+}
+
+// Clear removes a valid journal and syncs its directory. Invalid or unsupported
+// state is retained for operator recovery.
+func (store *Store) Clear() error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.ensureOpen(); err != nil {
+		return err
+	}
+	if err := store.verifyDirectory(); err != nil {
+		return err
+	}
+	if _, err := store.loadLocked(); err != nil {
+		return fmt.Errorf("refuse to clear unsupported attempt state: %w", err)
+	}
+	if err := validateLeaf(store.path); err != nil {
+		return fmt.Errorf("unsafe attempt state path: %w", err)
+	}
+	if err := os.Remove(store.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear attempt state: %w", err)
+	} else if err == nil {
+		if err := store.fs.syncDir(filepath.Dir(store.path)); err != nil {
+			return fmt.Errorf("sync cleared attempt state directory: %w", err)
+		}
+	}
+	return nil
+}
+
+// Close releases the supervisor lock. It is safe to call more than once.
+func (store *Store) Close() error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return nil
+	}
+	store.closed = true
+	lockErr := unlockAndClose(store.lockFile)
+	directoryErr := store.directory.Close()
+	if lockErr != nil {
+		return fmt.Errorf("release attempt state lock: %w", lockErr)
+	}
+	if directoryErr != nil {
+		return fmt.Errorf("close attempt state directory: %w", directoryErr)
+	}
+	return nil
+}
+
+func (store *Store) ensureOpen() error {
+	if store.closed {
+		return errors.New("attempt state store is closed")
+	}
+	return nil
+}
+
+func (store *Store) verifyDirectory() error {
+	opened, err := store.directory.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect opened attempt state directory: %w", err)
+	}
+	current, err := os.Stat(filepath.Dir(store.path))
+	if err != nil {
+		return fmt.Errorf("inspect attempt state directory: %w", err)
+	}
+	if !current.IsDir() || !os.SameFile(opened, current) {
+		return errors.New("attempt state directory changed during store lifetime")
+	}
+	return nil
+}
+
+func (store *Store) loadLocked() (*State, error) {
+	if err := validateLeaf(store.path); err != nil {
+		return nil, fmt.Errorf("unsafe attempt state path: %w", err)
+	}
+	file, err := openReadNoFollow(store.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open attempt state: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect attempt state: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("attempt state is not a regular file")
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, maxStateBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read attempt state: %w", err)
+	}
+	if len(contents) > maxStateBytes {
+		return nil, errors.New("attempt state exceeded its byte limit")
+	}
+	decoded, err := protocol.Decode(contents, maxStateBytes)
+	if err != nil {
+		return nil, fmt.Errorf("decode attempt state: %w", err)
+	}
+	object, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, errors.New("attempt state must be a JSON object")
+	}
+	for key := range object {
+		if _, ok := stateFields[key]; !ok {
+			return nil, fmt.Errorf("attempt state contains unsupported field %q", key)
+		}
+	}
+	state, err := stateFromObject(object)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateState(state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func stateFromObject(object map[string]any) (State, error) {
+	var state State
+	var ok bool
+	if state.RunID, ok = object["run_id"].(string); !ok {
+		return State{}, errors.New("attempt state run_id is invalid")
+	}
+	if state.AttemptID, ok = object["attempt_id"].(string); !ok {
+		return State{}, errors.New("attempt state attempt_id is invalid")
+	}
+	fenceNumber, ok := object["fence"].(json.Number)
+	if !ok {
+		return State{}, errors.New("attempt state fence is invalid")
+	}
+	fence, err := fenceNumber.Int64()
+	if err != nil {
+		return State{}, errors.New("attempt state fence is invalid")
+	}
+	state.Fence = fence
+	if value, exists := object["profile_id"]; exists && value != nil {
+		profileID, ok := value.(string)
+		if !ok {
+			return State{}, errors.New("attempt state profile_id is invalid")
+		}
+		state.ProfileID = &profileID
+	}
+	if value, exists := object["sandbox_id"]; exists && value != nil {
+		sandboxID, ok := value.(string)
+		if !ok {
+			return State{}, errors.New("attempt state sandbox_id is invalid")
+		}
+		state.SandboxID = &sandboxID
+	}
+	leaseText, ok := object["lease_expires_at"].(string)
+	if !ok {
+		return State{}, errors.New("attempt state lease_expires_at is invalid")
+	}
+	leaseExpiresAt, err := parseDateAtom(leaseText)
+	if err != nil {
+		return State{}, errors.New("attempt state lease_expires_at is invalid")
+	}
+	state.LeaseExpiresAt = leaseExpiresAt
+	deadlineText, ok := object["deadline"].(string)
+	if !ok {
+		return State{}, errors.New("attempt state deadline is invalid")
+	}
+	deadline, err := parseDateAtom(deadlineText)
+	if err != nil {
+		return State{}, errors.New("attempt state deadline is invalid")
+	}
+	state.Deadline = deadline
+	if state.Workspace, ok = object["workspace"].(string); !ok {
+		return State{}, errors.New("attempt state workspace is invalid")
+	}
+	return state, nil
+}
+
+func validateState(state State) error {
+	if strings.TrimSpace(state.RunID) == "" || strings.TrimSpace(state.AttemptID) == "" {
+		return errors.New("attempt state identity is invalid")
+	}
+	if state.Fence < 1 || state.Fence > protocol.MaxSafeInteger {
+		return errors.New("attempt state fence is invalid")
+	}
+	if state.LeaseExpiresAt.IsZero() || state.Deadline.IsZero() || state.Workspace == "" {
+		return errors.New("attempt state recovery context is invalid")
+	}
+	return nil
+}
+
+func parseDateAtom(value string) (time.Time, error) {
+	var parsed time.Time
+	var err error
+	if strings.HasSuffix(value, "Z") {
+		parsed, err = time.Parse(time.RFC3339, value)
+	} else {
+		parsed, err = time.Parse(phpDateAtom, value)
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	canonical := parsed.Format(phpDateAtom)
+	if strings.HasSuffix(value, "Z") {
+		canonical = parsed.UTC().Format(time.RFC3339)
+	}
+	if canonical != value {
+		return time.Time{}, errors.New("non-canonical DATE_ATOM timestamp")
+	}
+	_, offset := parsed.Zone()
+	if offset != 0 {
+		return time.Time{}, errors.New("attempt timestamps must be UTC")
+	}
+	return parsed.UTC(), nil
+}
+
+func marshalState(state State) ([]byte, error) {
+	object := struct {
+		RunID          string  `json:"run_id"`
+		AttemptID      string  `json:"attempt_id"`
+		Fence          int64   `json:"fence"`
+		ProfileID      *string `json:"profile_id"`
+		SandboxID      *string `json:"sandbox_id"`
+		LeaseExpiresAt string  `json:"lease_expires_at"`
+		Deadline       string  `json:"deadline"`
+		Workspace      string  `json:"workspace"`
+	}{
+		RunID:          state.RunID,
+		AttemptID:      state.AttemptID,
+		Fence:          state.Fence,
+		ProfileID:      state.ProfileID,
+		SandboxID:      state.SandboxID,
+		LeaseExpiresAt: state.LeaseExpiresAt.UTC().Format(phpDateAtom),
+		Deadline:       state.Deadline.UTC().Format(phpDateAtom),
+		Workspace:      state.Workspace,
+	}
+	contents, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("encode attempt state: %w", err)
+	}
+	return contents, nil
+}
+
+func (store *Store) createTemporary(contents []byte) (string, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		var suffix [12]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			return "", fmt.Errorf("generate attempt state temporary name: %w", err)
+		}
+		temporary := store.path + ".tmp-" + hex.EncodeToString(suffix[:])
+		file, err := createPrivateFile(temporary)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("create attempt state temporary file: %w", err)
+		}
+		createdInfo, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			_ = os.Remove(temporary)
+			return "", fmt.Errorf("inspect attempt state temporary file: %w", statErr)
+		}
+		writeErr := writeAll(file, contents)
+		if writeErr == nil {
+			writeErr = file.Chmod(0600)
+		}
+		if writeErr == nil {
+			writeErr = store.fs.syncFile(file)
+		}
+		closeErr := file.Close()
+		if writeErr != nil {
+			_ = os.Remove(temporary)
+			return "", fmt.Errorf("write attempt state durably: %w", writeErr)
+		}
+		if closeErr != nil {
+			_ = os.Remove(temporary)
+			return "", fmt.Errorf("close attempt state temporary file: %w", closeErr)
+		}
+		currentInfo, statErr := os.Lstat(temporary)
+		if statErr != nil || !os.SameFile(createdInfo, currentInfo) || !currentInfo.Mode().IsRegular() {
+			_ = os.Remove(temporary)
+			if statErr != nil {
+				return "", fmt.Errorf("inspect attempt state temporary path: %w", statErr)
+			}
+			return "", errors.New("attempt state temporary path changed during write")
+		}
+		return temporary, nil
+	}
+	return "", errors.New("unable to allocate attempt state temporary file")
+}
+
+func writeAll(file *os.File, contents []byte) error {
+	for len(contents) > 0 {
+		written, err := file.Write(contents)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		contents = contents[written:]
+	}
+	return nil
+}
