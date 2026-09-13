@@ -1,3 +1,0 @@
-[submodule "shipmunk-server-contracts"]
-	path = contracts-source
-	url = https://github.com/ianrodrigues/shipmunk-server.git

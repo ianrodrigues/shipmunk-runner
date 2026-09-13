@@ -1,0 +1,16 @@
+{
+  "contract": "result",
+  "document": {
+    "protocol_version": "1.0",
+    "run_id": "01k4w000000000000000000001",
+    "attempt_id": "01k4w000000000000000000002",
+    "fence": 1,
+    "summary": "No actionable findings.",
+    "outcome": "no_findings",
+    "findings": [],
+    "patch_artifact": null,
+    "tests": [],
+    "usage": null,
+    "state": "succeeded"
+  }
+}

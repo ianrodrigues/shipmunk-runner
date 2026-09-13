@@ -1,0 +1,102 @@
+{
+  "repository": "https://github.com/ianrodrigues/shipmunk-server",
+  "commit": "6fba1a6502caf7843e41aefbc35f7548fd6ec6be",
+  "files": {
+    "contracts/v1/event-batch.schema.json": {
+      "source": "contracts/v1/event-batch.schema.json",
+      "sha256": "2efef78e09c12a6ecb5b3da106bc872f8076b3be6c2a2fc4c48a3455790658a8"
+    },
+    "testdata/contracts/v1/fixtures/invalid/credential-in-config.json": {
+      "source": "contracts/v1/fixtures/invalid/credential-in-config.json",
+      "sha256": "d06fa654bbf7df0f4766d1fb3cc0d89e6732119a74c210d6fb65642610b5914e"
+    },
+    "testdata/contracts/v1/fixtures/invalid/fetch-url.json": {
+      "source": "contracts/v1/fixtures/invalid/fetch-url.json",
+      "sha256": "1f5fde21b9f35d70686ca66931dbf9f7b3d5addc0afaa2e06c0b870910c8a4fb"
+    },
+    "testdata/contracts/v1/fixtures/invalid/invalid-outcome.json": {
+      "source": "contracts/v1/fixtures/invalid/invalid-outcome.json",
+      "sha256": "10c83e431a3d2bb65e7f3c5e2c69f6549b533800595b84f412641f51ebb86430"
+    },
+    "testdata/contracts/v1/fixtures/invalid/invented-cost.json": {
+      "source": "contracts/v1/fixtures/invalid/invented-cost.json",
+      "sha256": "2f42bd066bfb9085498daaae56267741fedb49464a47ba2d214c73eb84978540"
+    },
+    "testdata/contracts/v1/fixtures/invalid/major-version.json": {
+      "source": "contracts/v1/fixtures/invalid/major-version.json",
+      "sha256": "02a280035740d1309278e6eeba3d9990aef36ecc1734897f48bfc88d63cea4d1"
+    },
+    "testdata/contracts/v1/fixtures/invalid/missing-findings.json": {
+      "source": "contracts/v1/fixtures/invalid/missing-findings.json",
+      "sha256": "9576a9aec7681914ec54e4e67459afac445bdda8885baef262a80c8dad8ea1bc"
+    },
+    "testdata/contracts/v1/fixtures/invalid/oversize-event.json": {
+      "source": "contracts/v1/fixtures/invalid/oversize-event.json",
+      "sha256": "913b42cbd4a901521ff347bd2c4fff26934ea9f9279d4a15dd314b98d13bfb73"
+    },
+    "testdata/contracts/v1/fixtures/invalid/patch-required.json": {
+      "source": "contracts/v1/fixtures/invalid/patch-required.json",
+      "sha256": "52166637e98ee0835140f7681ccaf426fbd46fbdd321113e337290ef7e87adf1"
+    },
+    "testdata/contracts/v1/fixtures/invalid/secret-in-run-config.json": {
+      "source": "contracts/v1/fixtures/invalid/secret-in-run-config.json",
+      "sha256": "90ad6c96cd7fbbb2d786b3b6e9a6287d641ac76672fb0accaa92e13bfa63303d"
+    },
+    "testdata/contracts/v1/fixtures/invalid/too-many-events.json": {
+      "source": "contracts/v1/fixtures/invalid/too-many-events.json",
+      "sha256": "932cb54ae37a882bbacfdba61335858ffbc255b74f9ccd1437c0c676595a5bd0"
+    },
+    "testdata/contracts/v1/fixtures/invalid/unknown-field.json": {
+      "source": "contracts/v1/fixtures/invalid/unknown-field.json",
+      "sha256": "b3792561e7abcb3952998452392000f117077a65aa14b6c8f56c73eab7b59534"
+    },
+    "testdata/contracts/v1/fixtures/invalid/zero-sequence.json": {
+      "source": "contracts/v1/fixtures/invalid/zero-sequence.json",
+      "sha256": "1c11b4a7508a7311efad86a8c56025e6d4a4cac7fc51e3320b3a706953ff4f8b"
+    },
+    "testdata/contracts/v1/fixtures/valid/event-batch.json": {
+      "source": "contracts/v1/fixtures/valid/event-batch.json",
+      "sha256": "42446af1299f3e3514c6e883c3ee5f3a9628824d0c737c455a5762d9f31d3cc8"
+    },
+    "testdata/contracts/v1/fixtures/valid/manifest.json": {
+      "source": "contracts/v1/fixtures/valid/manifest.json",
+      "sha256": "625f042978c4aee293afb20f1351caf9af2415ab416633ef9af01409258efce4"
+    },
+    "testdata/contracts/v1/fixtures/valid/patch-artifact.json": {
+      "source": "contracts/v1/fixtures/valid/patch-artifact.json",
+      "sha256": "ec24143d2b82381d6178afa7e9db540dc9de009b8b372fd05c32b6e0aacbc67d"
+    },
+    "testdata/contracts/v1/fixtures/valid/result.json": {
+      "source": "contracts/v1/fixtures/valid/result.json",
+      "sha256": "03e5f023399f4ad149cd4a0e3d6f16156f59f4f014e834f6425400d995b30624"
+    },
+    "testdata/contracts/v1/fixtures/valid/run-input.json": {
+      "source": "contracts/v1/fixtures/valid/run-input.json",
+      "sha256": "753181d1a872299d8a0890756c3fa129640c8459aef8c004d179b5ed6d28feb4"
+    },
+    "testdata/contracts/v1/fixtures/valid/worker-event.json": {
+      "source": "contracts/v1/fixtures/valid/worker-event.json",
+      "sha256": "659c56dcc3441974e4c148e1674227d1f5446b3fe18bee539219ed8678460d06"
+    },
+    "contracts/v1/manifest.schema.json": {
+      "source": "contracts/v1/manifest.schema.json",
+      "sha256": "54b908e5c7e79743ae209b9997fd69dc21989e999c3a48acc94bbc1bb0e43f76"
+    },
+    "contracts/v1/patch-artifact.schema.json": {
+      "source": "contracts/v1/patch-artifact.schema.json",
+      "sha256": "aa3005f8bc81865efd2a9d980c09686c259c17a3392c88044885374c87a0a651"
+    },
+    "contracts/v1/result.schema.json": {
+      "source": "contracts/v1/result.schema.json",
+      "sha256": "1256b905c4fe645603bb544f2e040ececcc4f20f63d23e98ad99e365a0605eb7"
+    },
+    "contracts/v1/run-input.schema.json": {
+      "source": "contracts/v1/run-input.schema.json",
+      "sha256": "e4b77effcf012ae96486a52e1510223a3cb46812a6fe83cb35a24cb823c2901a"
+    },
+    "contracts/v1/worker-event.schema.json": {
+      "source": "contracts/v1/worker-event.schema.json",
+      "sha256": "6e2d4a7b34c15947226e0002f096b9a129cd05eb471dc3e551d223c7f7912c4f"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "kind": "review",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "profile_id": "01k4w000000000000000000003",
+  "runtime_version": "fixture-1",
+  "source_artifacts": [
+    {
+      "artifact_id": "01k4w000000000000000000003",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "instruction_artifacts": [
+    {
+      "artifact_id": "01k4w000000000000000000003",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "repository_id": "01k4w000000000000000000003",
+  "configuration": {
+    "model": "fixture-model",
+    "max_turns": 10,
+    "network": "disabled",
+    "review_path_rules": [
+      [
+        "**"
+      ]
+    ],
+    "pull_request_reviews": true,
+    "mentions": true,
+    "comment_limit": 20,
+    "instructions": "Review carefully.",
+    "dashboard_version": 1,
+    "trusted_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "repository_configuration_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "instructions_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "effective_configuration_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "actor_github_id": 123,
+  "target_ref": "refs/heads/main",
+  "dedupe_key": "fixture-review"
+}

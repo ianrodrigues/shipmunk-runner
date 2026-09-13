@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shipmunk.local/contracts/v1/event-batch.schema.json",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "protocol_version": {
+        "const": "1.0"
+      },
+      "attempt_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 26,
+        "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+      },
+      "fence": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "sequence": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "type": {
+        "enum": [
+          "progress",
+          "tool_started",
+          "tool_finished",
+          "diagnostic",
+          "usage"
+        ]
+      },
+      "timestamp": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "format": "date-time",
+        "pattern": "Z$"
+      },
+      "payload": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "protocol_version",
+      "attempt_id",
+      "fence",
+      "sequence",
+      "type",
+      "timestamp",
+      "payload"
+    ],
+    "additionalProperties": false
+  },
+  "maxItems": 100,
+  "minItems": 1
+}

@@ -1,0 +1,13 @@
+[
+  {
+    "protocol_version": "1.0",
+    "attempt_id": "01k4w000000000000000000002",
+    "fence": 1,
+    "sequence": 1,
+    "type": "progress",
+    "timestamp": "2026-09-10T17:00:00Z",
+    "payload": {
+      "message": "Reading diff."
+    }
+  }
+]

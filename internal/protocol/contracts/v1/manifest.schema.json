@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shipmunk.local/contracts/v1/manifest.schema.json",
+  "type": "object",
+  "properties": {
+    "protocol_version": {
+      "const": "1.0"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+    },
+    "fence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "kind": {
+      "enum": [
+        "review",
+        "implement",
+        "fix"
+      ]
+    },
+    "repository_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "base_sha": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "source_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 26,
+            "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+          },
+          "sha256": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 20,
+      "minItems": 1
+    },
+    "instruction_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 26,
+            "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+          },
+          "sha256": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 20,
+      "minItems": 1
+    },
+    "profile_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+    },
+    "agent": {
+      "enum": [
+        "claude_code",
+        "codex"
+      ]
+    },
+    "effective_config": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "network": {
+          "enum": [
+            "disabled",
+            "restricted"
+          ]
+        },
+        "review_path_rules": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "minItems": 1,
+          "maxItems": 4
+        },
+        "pull_request_reviews": {
+          "type": "boolean"
+        },
+        "mentions": {
+          "type": "boolean"
+        },
+        "comment_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 50000
+        },
+        "dashboard_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trusted_revision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 40,
+              "maxLength": 64,
+              "pattern": "^[a-f0-9]{40,64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repository_configuration_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instructions_sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "effective_configuration_sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "model",
+        "max_turns",
+        "network",
+        "review_path_rules",
+        "pull_request_reviews",
+        "mentions",
+        "comment_limit",
+        "instructions",
+        "dashboard_version",
+        "trusted_revision",
+        "repository_configuration_sha256",
+        "instructions_sha256",
+        "effective_configuration_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "runtime_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "deadline": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "task_context": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    },
+    "supervisor": {
+      "type": "object",
+      "properties": {
+        "credential_reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^credential:[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "credential_reference"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "protocol_version",
+    "run_id",
+    "attempt_id",
+    "fence",
+    "kind",
+    "repository_id",
+    "base_sha",
+    "head_sha",
+    "source_artifacts",
+    "instruction_artifacts",
+    "profile_id",
+    "agent",
+    "effective_config",
+    "runtime_version",
+    "deadline",
+    "task_context",
+    "supervisor"
+  ],
+  "additionalProperties": false
+}
