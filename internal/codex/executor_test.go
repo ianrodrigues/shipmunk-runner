@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,9 +16,10 @@ import (
 )
 
 type executorTransport struct {
-	calls    [][]string
-	stopped  bool
-	startErr error
+	calls           [][]string
+	stopped         bool
+	startErr        error
+	executionResult *CommandResult
 }
 
 func (t *executorTransport) Start(context.Context) error                  { return t.startErr }
@@ -34,8 +36,51 @@ func (t *executorTransport) RunNative(_ context.Context, argv []string, _ []byte
 	case strings.Contains(joined, "--ephemeral"):
 		return CommandResult{Stdout: "{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"auth\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n"}, nil
 	default:
+		if t.executionResult != nil {
+			return *t.executionResult, nil
+		}
 		return CommandResult{Stdout: "{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"result\",\"type\":\"agent_message\",\"text\":\"{\\\"summary\\\":\\\"Review complete.\\\",\\\"outcome\\\":\\\"no_findings\\\",\\\"findings\\\":[],\\\"tests\\\":[]}\"}}\n{\"type\":\"turn.completed\"}\n"}, nil
 	}
+}
+
+func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
+	for name, test := range map[string]struct {
+		stream, outcome, reason string
+		wantError               bool
+	}{
+		"approval":   {`{"type":"error","code":"approval_required","message":"private"}` + "\n", "needs_input", "approval_required", false},
+		"rate limit": {`{"type":"turn.failed","error":{"code":"rate_limit_exceeded","message":"private"}}` + "\n", "incomplete", "rate_limited", false},
+		"unknown":    {`{"type":"error","code":"future_code","message":"private"}` + "\n", "", "", true},
+		"malformed":  {`{"type":"error","code":"approval_required"}`, "", "", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			executor, transport, _, claim := setupFailureExecutor(t, nil)
+			claim.Manifest = executionManifest()
+			transport.executionResult = &CommandResult{ExitCode: 1, Stdout: test.stream, Stderr: "private stderr"}
+			execution, err := executor.Execute(context.Background(), claim, nil, setupFailureWorkspace(t))
+			if test.wantError {
+				if err == nil || execution.Result != nil {
+					t.Fatalf("untrusted failure was normalized: %#v err=%v", execution, err)
+				}
+				return
+			}
+			if err != nil || execution.Result["outcome"] != test.outcome || len(execution.Events) != 1 || len(execution.Artifacts) != 0 {
+				t.Fatalf("classified failure was not normalized: %#v err=%v", execution, err)
+			}
+			resultJSON, marshalErr := json.Marshal(execution.Result)
+			if marshalErr != nil || protocol.Validate("result", resultJSON) != nil || protocol.Validate("worker-event", execution.Events[0]) != nil {
+				t.Fatalf("classified failure violated publication contracts: result=%s event=%s marshal=%v", resultJSON, execution.Events[0], marshalErr)
+			}
+			summary, _ := execution.Result["summary"].(string)
+			if !strings.Contains(summary, "Reason: "+test.reason+".") || strings.Contains(summary, "private") {
+				t.Fatalf("unsafe or incomplete summary: %q", summary)
+			}
+		})
+	}
+}
+
+func executionManifest() map[string]any {
+	return map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."}}
 }
 
 type executorWatchdogLease struct {

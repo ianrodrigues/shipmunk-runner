@@ -112,6 +112,39 @@ func TestParseClassifiesOnlyCompletedPreTurnErrorItemAsNativeFailure(t *testing.
 	}
 }
 
+func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
+	for name, test := range map[string]struct {
+		event  string
+		reason FailureReason
+	}{
+		"approval code":      {`{"type":"error","code":"approval_required","message":"private"}` + "\n", FailureApprovalRequired},
+		"rate limit message": {`{"type":"error","message":"usage limit reached"}` + "\n", FailureRateLimited},
+		"nested model code":  {`{"type":"error","message":"{\"error\":{\"code\":\"model_not_found\",\"message\":\"private\"}}"}` + "\n", FailureModelUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(test.event), nil)
+			var failure *ClassifiedFailure
+			if !errors.As(err, &failure) || failure.Reason != test.reason || !errors.Is(err, ErrNativeFailure) {
+				t.Fatalf("failure = %#v (%v), want %q", failure, err, test.reason)
+			}
+		})
+	}
+
+	for name, event := range map[string]string{
+		"unknown code":    `{"type":"error","code":"future_code","message":"private"}` + "\n",
+		"unknown message": `{"type":"error","message":"private provider diagnostic"}` + "\n",
+		"loose envelope":  `{"type":"error","message":"{\"error\":{\"code\":\"approval_required\"},\"extra\":true}"}` + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(event), nil)
+			var failure *ClassifiedFailure
+			if !errors.Is(err, ErrNativeFailure) || errors.As(err, &failure) {
+				t.Fatalf("unclassified diagnostic became publishable: %#v (%v)", failure, err)
+			}
+		})
+	}
+}
+
 func TestParseUsesLastCompletedMessageAndRequiresItToBeStructured(t *testing.T) {
 	commentary := `{"type":"item.completed","item":{"id":"commentary","type":"agent_message","text":"private commentary"}}` + "\n"
 	stream := strings.Replace(validStream(validResult), `{"type":"item.completed","item":{"id":"message-1"`, commentary+`{"type":"item.completed","item":{"id":"message-1"`, 1)

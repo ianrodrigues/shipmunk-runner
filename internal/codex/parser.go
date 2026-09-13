@@ -24,6 +24,23 @@ var (
 	ErrNativeFailure   = errors.New("Codex reported a native failure")
 )
 
+type FailureReason string
+
+const (
+	FailureAuthExpired         FailureReason = "auth_expired"
+	FailureRateLimited         FailureReason = "rate_limited"
+	FailureApprovalRequired    FailureReason = "approval_required"
+	FailureModelUnavailable    FailureReason = "model_unavailable"
+	FailureInvalidOutputSchema FailureReason = "invalid_output_schema"
+)
+
+// ClassifiedFailure carries only a closed failure reason. Raw provider text is
+// deliberately excluded so callers can safely turn it into protocol output.
+type ClassifiedFailure struct{ Reason FailureReason }
+
+func (f *ClassifiedFailure) Error() string { return "Codex reported a classified native failure" }
+func (f *ClassifiedFailure) Unwrap() error { return ErrNativeFailure }
+
 // Event is sanitized transport metadata. Provider text and tool arguments are
 // deliberately excluded so they cannot be published as runner diagnostics.
 type Event struct {
@@ -136,7 +153,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			// Codex may report a completed startup error after allocating a
 			// thread but before a turn starts. No other pre-turn item is valid.
 			if state == "thread" && typeName == "item.completed" && kind == "error" {
-				return Stream{}, ErrNativeFailure
+				return Stream{}, nativeFailure(item)
 			}
 			if state != "turn" {
 				return Stream{}, ErrMalformedOutput
@@ -149,7 +166,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
 			if kind == "error" {
 				state = "failed"
-				return Stream{}, ErrNativeFailure
+				return Stream{}, nativeFailure(item)
 			}
 			if kind == "agent_message" && typeName == "item.completed" {
 				message, ok := boundedString(item["text"], MaxLineBytes)
@@ -167,8 +184,14 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 				return Stream{}, err
 			}
 			stream.Usage, state = usage, "complete"
-		case "error", "turn.failed":
-			return Stream{}, ErrNativeFailure
+		case "error":
+			return Stream{}, nativeFailure(event)
+		case "turn.failed":
+			failure, ok := event["error"].(map[string]any)
+			if !ok {
+				return Stream{}, ErrNativeFailure
+			}
+			return Stream{}, nativeFailure(failure)
 		default:
 			return Stream{}, ErrMalformedOutput
 		}
@@ -183,6 +206,62 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	}
 	stream.Result = result
 	return stream, nil
+}
+
+func nativeFailure(value map[string]any) error {
+	if reason, ok := failureCode(value["code"]); ok {
+		return &ClassifiedFailure{Reason: reason}
+	}
+	message, _ := value["message"].(string)
+	message = strings.TrimSpace(message)
+	if strings.HasPrefix(message, "{") {
+		decoded, err := protocol.Decode([]byte(message), MaxLineBytes)
+		body, bodyOK := decoded.(map[string]any)
+		if err != nil || !bodyOK || len(body) != 1 {
+			return ErrNativeFailure
+		}
+		nested, nestedOK := body["error"].(map[string]any)
+		if !nestedOK {
+			return ErrNativeFailure
+		}
+		if reason, ok := failureCode(nested["code"]); ok {
+			return &ClassifiedFailure{Reason: reason}
+		}
+		return ErrNativeFailure
+	}
+	var reason FailureReason
+	switch strings.ToLower(message) {
+	case "authentication expired", "not logged in", "unauthorized":
+		reason = FailureAuthExpired
+	case "rate limit exceeded", "usage limit reached":
+		reason = FailureRateLimited
+	case "approval required":
+		reason = FailureApprovalRequired
+	default:
+		return ErrNativeFailure
+	}
+	return &ClassifiedFailure{Reason: reason}
+}
+
+func failureCode(value any) (FailureReason, bool) {
+	code, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	switch code {
+	case "token_expired", "auth_expired", "unauthorized", "refresh_token_expired":
+		return FailureAuthExpired, true
+	case "rate_limit_exceeded", "usage_limit_reached":
+		return FailureRateLimited, true
+	case "approval_required", "approval_request":
+		return FailureApprovalRequired, true
+	case "model_not_found":
+		return FailureModelUnavailable, true
+	case "invalid_json_schema":
+		return FailureInvalidOutputSchema, true
+	default:
+		return "", false
+	}
 }
 
 func knownItemType(kind string) bool {
