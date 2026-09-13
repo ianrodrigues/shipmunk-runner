@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	ulidPattern   = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
-	sha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	ulidPattern         = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
+	sha256Pattern       = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	utcTimestampPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`)
 )
 
 // Claim holds a validated, fenced response to a successful claim request.
@@ -104,8 +105,8 @@ func positiveInteger(value any) (int64, error) {
 }
 
 func utcTime(value string) (time.Time, error) {
-	if len(value) == 0 || value[len(value)-1] != 'Z' {
-		return time.Time{}, fmt.Errorf("timestamp must use UTC Z notation")
+	if !utcTimestampPattern.MatchString(value) {
+		return time.Time{}, fmt.Errorf("timestamp must use strict RFC3339 UTC syntax")
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil || parsed.Location() != time.UTC {
