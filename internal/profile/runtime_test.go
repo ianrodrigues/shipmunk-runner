@@ -41,6 +41,7 @@ type fakeCommand struct {
 	execDelay           time.Duration
 	execStdin           string
 	blockCreate         bool
+	blockReservation    bool
 	createNotDispatched bool
 	homeMountSource     string
 	afterImage          func() error
@@ -119,7 +120,7 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 		if fake.createNotDispatched {
 			return false, fakeExitError(1)
 		}
-		if fake.blockCreate && !isReservation {
+		if (fake.blockCreate && !isReservation) || (fake.blockReservation && isReservation) {
 			<-ctx.Done()
 			return true, ctx.Err()
 		}
@@ -662,5 +663,18 @@ func TestReconcileCreateRemovesLateOwnedContainerBeforeReservingName(t *testing.
 	}
 	if fake.reservation {
 		t.Fatal("reconciliation removed the late container but left the reservation behind")
+	}
+}
+
+func TestReconcileCreateRetainsUncertaintyAfterDispatchedReservationTimeout(t *testing.T) {
+	fake := newFakeCommand()
+	fake.blockReservation = true
+	runtime := newTestRuntime(t, fake)
+	runtime.config.dockerTimeout = 20 * time.Millisecond
+	if err := runtime.ReconcileCreate(context.Background(), testProfileName); !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("ReconcileCreate() = %v, want ErrCreateUncertain", err)
+	}
+	if fake.present {
+		t.Fatal("timed-out reservation unexpectedly became visible")
 	}
 }
