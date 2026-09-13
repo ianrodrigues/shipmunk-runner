@@ -1,12 +1,15 @@
 package codex
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -36,7 +39,10 @@ type Patch struct {
 	ChangedFiles []FileChange
 }
 
-type fileState struct{ hash, mode string }
+type fileState struct {
+	hash, mode string
+	data       []byte
+}
 
 // CollectPatch verifies independently collected patch bytes against protected
 // original and frozen snapshot trees. Generating the diff remains a collector-
@@ -70,7 +76,7 @@ func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 	for _, path := range paths {
 		old, oldOK := before[path]
 		current, currentOK := after[path]
-		if oldOK && currentOK && old == current {
+		if oldOK && currentOK && old.hash == current.hash && old.mode == current.mode {
 			continue
 		}
 		change := FileChange{Path: path}
@@ -91,29 +97,44 @@ func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 	if len(patch) == 0 {
 		return nil, nil
 	}
-	digest := sha256.Sum256(patch)
-	return &Patch{Bytes: append([]byte(nil), patch...), SHA256: hex.EncodeToString(digest[:]), ChangedFiles: changes}, nil
+	generated, err := generatePatch(before, after)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(patch, generated) {
+		return nil, errors.New("repository patch does not completely represent verified changes")
+	}
+	digest := sha256.Sum256(generated)
+	return &Patch{Bytes: generated, SHA256: hex.EncodeToString(digest[:]), ChangedFiles: changes}, nil
 }
 
 func snapshot(root string) (map[string]fileState, error) {
-	rootInfo, err := os.Lstat(root)
+	rootHandle, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("root must be a real directory")
+	}
+	defer rootHandle.Close()
+	return snapshotRoot(rootHandle, nil)
+}
+
+func snapshotRoot(rootHandle *os.Root, beforeOpen func(string)) (map[string]fileState, error) {
+	rootInfo, err := rootHandle.Lstat(".")
 	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("root must be a real directory")
 	}
 	states := make(map[string]fileState)
 	var total int64
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(rootHandle.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return errors.New("cannot inspect snapshot")
 		}
-		if path == root {
+		if path == "." {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil || !safeRepositoryPath(relative) {
+		if !safeRepositoryPath(path) {
 			return errors.New("repository snapshot path is invalid")
 		}
-		info, err := os.Lstat(path)
+		info, err := rootHandle.Lstat(path)
 		if err != nil {
 			return errors.New("cannot inspect snapshot")
 		}
@@ -137,7 +158,10 @@ func snapshot(root string) (map[string]fileState, error) {
 		if len(states) >= MaxSnapshotFiles || info.Size() < 0 || info.Size() > MaxSnapshotBytes-total {
 			return errors.New("repository snapshot limits exceeded")
 		}
-		file, err := os.Open(path)
+		if beforeOpen != nil {
+			beforeOpen(path)
+		}
+		file, err := rootHandle.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 		if err != nil {
 			return errors.New("cannot read snapshot file")
 		}
@@ -146,26 +170,122 @@ func snapshot(root string) (map[string]fileState, error) {
 			file.Close()
 			return errors.New("repository snapshot changed while opening")
 		}
-		hash := sha256.New()
-		read, copyErr := io.Copy(hash, io.LimitReader(file, info.Size()+1))
+		contents, readErr := io.ReadAll(io.LimitReader(file, info.Size()+1))
 		finished, finishErr := file.Stat()
 		closeErr := file.Close()
-		if copyErr != nil || finishErr != nil || closeErr != nil || read != info.Size() ||
+		if readErr != nil || finishErr != nil || closeErr != nil || int64(len(contents)) != info.Size() ||
 			!os.SameFile(info, finished) || finished.Size() != info.Size() || !finished.ModTime().Equal(info.ModTime()) {
 			return errors.New("cannot hash snapshot file")
 		}
-		total += read
+		total += int64(len(contents))
 		mode := "100644"
 		if permissions&0100 != 0 {
 			mode = "100755"
 		}
-		states[filepath.ToSlash(relative)] = fileState{hash: hex.EncodeToString(hash.Sum(nil)), mode: mode}
+		digest := sha256.Sum256(contents)
+		states[filepath.ToSlash(path)] = fileState{hash: hex.EncodeToString(digest[:]), mode: mode, data: contents}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return states, nil
+}
+
+func generatePatch(before, after map[string]fileState) ([]byte, error) {
+	temporary, err := os.MkdirTemp("", "shipmunk-patch-")
+	if err != nil {
+		return nil, errors.New("cannot create trusted patch workspace")
+	}
+	defer os.RemoveAll(temporary)
+	work := filepath.Join(temporary, "work")
+	if err := os.Mkdir(work, 0700); err != nil {
+		return nil, errors.New("cannot create trusted patch workspace")
+	}
+	if err := materialize(work, before); err != nil {
+		return nil, err
+	}
+	commands := [][]string{
+		{"init", "-q"},
+		{"-c", "core.hooksPath=/dev/null", "add", "--all"},
+		{"-c", "core.hooksPath=/dev/null", "-c", "user.name=Shipmunk", "-c", "user.email=runner@shipmunk.local", "commit", "-qm", "baseline", "--allow-empty"},
+	}
+	for _, arguments := range commands {
+		if err := runGit(temporary, work, nil, arguments...); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := os.ReadDir(work)
+	if err != nil {
+		return nil, errors.New("cannot reset trusted patch workspace")
+	}
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(work, entry.Name())); err != nil {
+			return nil, errors.New("cannot reset trusted patch workspace")
+		}
+	}
+	if err := materialize(work, after); err != nil {
+		return nil, err
+	}
+	if err := runGit(temporary, work, nil, "-c", "core.hooksPath=/dev/null", "add", "-N", "--all"); err != nil {
+		return nil, err
+	}
+	output := &boundedWriter{remaining: MaxPatchBytes + 1}
+	if err := runGit(temporary, work, output, "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
+		return nil, err
+	}
+	if output.buffer.Len() > MaxPatchBytes {
+		return nil, errors.New("repository patch exceeds its byte limit")
+	}
+	return append([]byte(nil), output.buffer.Bytes()...), nil
+}
+
+func materialize(root string, states map[string]fileState) error {
+	for path, state := range states {
+		target := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+			return errors.New("cannot materialize trusted snapshot")
+		}
+		mode := os.FileMode(0600)
+		if state.mode == "100755" {
+			mode = 0700
+		}
+		if err := os.WriteFile(target, state.data, mode); err != nil {
+			return errors.New("cannot materialize trusted snapshot")
+		}
+	}
+	return nil
+}
+
+type boundedWriter struct {
+	buffer    bytes.Buffer
+	remaining int
+}
+
+func (writer *boundedWriter) Write(data []byte) (int, error) {
+	if len(data) > writer.remaining {
+		return 0, errors.New("output limit exceeded")
+	}
+	writer.remaining -= len(data)
+	return writer.buffer.Write(data)
+}
+
+func runGit(home, work string, stdout *boundedWriter, arguments ...string) error {
+	command := exec.Command("git", arguments...)
+	command.Dir = work
+	command.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "LANG=C"}
+	if stdout != nil {
+		command.Stdout = stdout
+	}
+	stderr := &boundedWriter{remaining: 4096}
+	command.Stderr = stderr
+	if err := command.Run(); err != nil {
+		return errors.New("trusted patch generation failed")
+	}
+	return nil
 }
 
 func safeRepositoryPath(path string) bool {
