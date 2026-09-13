@@ -25,7 +25,9 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	if image == "" {
 		t.Fatal("SHIPMUNK_PROFILE_IMAGE is required")
 	}
-	serverOS, err := exec.Command("docker", "version", "--format", "{{.Server.Os}}").Output()
+	dockerContext, dockerCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	serverOS, err := exec.CommandContext(dockerContext, "docker", "version", "--format", "{{.Server.Os}}").Output()
+	dockerCancel()
 	if err != nil || strings.TrimSpace(string(serverOS)) != "linux" {
 		t.Fatalf("a Linux Docker engine is required: %q %v", serverOS, err)
 	}
@@ -48,8 +50,8 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
 		if cleanupErr := profileRuntime.Stop(cleanupContext, sandboxName, false); cleanupErr != nil {
 			t.Errorf("clean up profile fixture: %v", cleanupErr)
@@ -74,7 +76,9 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	if strings.Contains(string(environment), "SYNTHETIC_SECRET_MUST_NOT_ENTER_CONTAINER") {
 		t.Fatal("host credential or configuration environment entered the profile container")
 	}
-	inspectionOutput, err := exec.Command("docker", "inspect", sandboxName).Output()
+	dockerContext, dockerCancel = context.WithTimeout(context.Background(), 15*time.Second)
+	inspectionOutput, err := exec.CommandContext(dockerContext, "docker", "inspect", sandboxName).Output()
+	dockerCancel()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +102,7 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	inspection := inspections[0]
 	if inspection.Config.User != strconv.Itoa(os.Geteuid())+":"+strconv.Itoa(os.Getegid()) ||
 		!inspection.HostConfig.ReadonlyRootfs || !contains(inspection.HostConfig.CapDrop, "ALL") ||
-		!contains(inspection.HostConfig.SecurityOpt, "no-new-privileges") || inspection.HostConfig.NetworkMode != "bridge" ||
+		!contains(inspection.HostConfig.SecurityOpt, "no-new-privileges:true") || inspection.HostConfig.NetworkMode != "bridge" ||
 		inspection.HostConfig.PidsLimit != 64 {
 		t.Fatalf("profile container hardening was not applied: %#v", inspection)
 	}
@@ -159,7 +163,10 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 			t.Fatalf("protected path %s mode = %#o, want %#o", path, info.Mode().Perm(), wantMode)
 		}
 	}
-	if output, inspectErr := exec.Command("docker", "inspect", sandboxName).CombinedOutput(); inspectErr == nil || !strings.Contains(string(output), "No such object") {
+	dockerContext, dockerCancel = context.WithTimeout(context.Background(), 15*time.Second)
+	output, inspectErr := exec.CommandContext(dockerContext, "docker", "inspect", sandboxName).CombinedOutput()
+	dockerCancel()
+	if inspectErr == nil || !strings.Contains(string(output), "No such object") {
 		t.Fatalf("profile container survived cleanup: %q %v", output, inspectErr)
 	}
 }
@@ -176,7 +183,9 @@ func TestDockerRuntimeRejectsForeignOwnedNativeEntryWithoutMutation(t *testing.T
 		t.Fatal(err)
 	}
 	foreign := filepath.Join(home, "foreign")
-	command := exec.Command("docker", "run", "--rm", "--network", "none", "--mount", "type=bind,src="+home+",dst=/profile", "alpine:3.20", "/bin/sh", "-c", "umask 000; printf foreign > /profile/foreign; chmod 0666 /profile/foreign")
+	dockerContext, dockerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dockerCancel()
+	command := exec.CommandContext(dockerContext, "docker", "run", "--rm", "--network", "none", "--mount", "type=bind,src="+home+",dst=/profile", "alpine:3.20", "/bin/sh", "-c", "umask 000; printf foreign > /profile/foreign; chmod 0666 /profile/foreign")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("create foreign-owned fixture: %q %v", output, err)
 	}
