@@ -399,6 +399,110 @@ func TestRunWatchdogTreatsPipeClosureAsParentDeathAndRemovesOwnedSandbox(t *test
 	}
 }
 
+func TestProfileWatchdogRemovesOnlyProfileOwnedSandbox(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		label     string
+		wantError bool
+	}{
+		{name: "owned profile container", label: "true"},
+		{name: "unrelated profile container", label: "false", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			name := "shipmunk-profile-01k4w000000000000000000001"
+			present := filepath.Join(root, "present")
+			running := filepath.Join(root, "running")
+			docker := filepath.Join(root, "docker-fixture")
+			script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  inspect)
+    if [ -f %q ]; then
+      state=false
+      if [ -f %q ]; then state=true; fi
+      cat <<JSON
+[{"Id":"%s","Name":"/%s","Config":{"Labels":{"shipmunk.profile-runtime":"%s","shipmunk.profile-sandbox":"%s"}},"State":{"Running":$state}}]
+JSON
+      exit 0
+    fi
+    echo "Error: No such object: $2" >&2
+    exit 1
+    ;;
+  stop) rm -f %q; exit 0 ;;
+  kill) rm -f %q; exit 0 ;;
+  rm) rm -f %q %q; exit 0 ;;
+  *) exit 0 ;;
+esac
+`, present, running, testContainer, name, test.label, name, running, running, present, running)
+			if err := os.WriteFile(docker, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(present, []byte("present"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(running, []byte("running"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			arguments := []string{
+				"--docker", docker, "--name", name, "--profile-mode", "true",
+				"--lease", fmt.Sprint(time.Now().Add(time.Minute).UnixNano()),
+				"--deadline", fmt.Sprint(time.Now().Add(2 * time.Minute).UnixNano()),
+				"--poll-interval", "1ms",
+			}
+			reader, writer := io.Pipe()
+			done := make(chan error, 1)
+			go func() { done <- RunWatchdog(arguments, reader) }()
+			_ = writer.Close()
+			select {
+			case err := <-done:
+				if (err != nil) != test.wantError {
+					t.Fatalf("RunWatchdog() error = %v, wantError %v", err, test.wantError)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("profile watchdog did not complete cleanup")
+			}
+			_, statErr := os.Stat(present)
+			if test.wantError && statErr != nil {
+				t.Fatal("profile watchdog removed an unrelated container")
+			}
+			if !test.wantError && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("profile watchdog left its owned container: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestArmProfileLaunchesWatchdogInExplicitProfileOwnershipMode(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	root := t.TempDir()
+	watchdogBinary := filepath.Join(root, "watchdog-fixture")
+	argumentsPath := filepath.Join(root, "watchdog-arguments")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" > %q\nprintf 'READY\\n'\ncat >/dev/null\n", argumentsPath)
+	if err := os.WriteFile(watchdogBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(Config{
+		DockerExecutable:   fixture.executable,
+		WatchdogExecutable: watchdogBinary,
+		CommandTimeout:     time.Second,
+	})
+	name := "shipmunk-profile-01k4w000000000000000000001"
+	lease, err := watchdog.ArmProfile(name, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Disarm(); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "--profile-mode true") || !strings.Contains(string(arguments), "--name "+name) {
+		t.Fatalf("watchdog arguments omitted explicit profile ownership: %q", arguments)
+	}
+}
+
 func TestRunWatchdogWaitsThroughAbsentBeforeCreateWindow(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	arguments := watchdogTestArguments(fixture.executable, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
