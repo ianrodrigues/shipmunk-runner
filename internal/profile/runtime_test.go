@@ -672,3 +672,24 @@ func TestReconcileCreateRetainsUncertaintyAfterDispatchedReservationTimeout(t *t
 		t.Fatal("timed-out reservation unexpectedly became visible")
 	}
 }
+
+func TestReconcileCreateAcceptsRetainedTombstoneAcrossImageUpdates(t *testing.T) {
+	fake := newFakeCommand()
+	fake.present = true
+	fake.containerName = testProfileName
+	fake.nameLabel = testProfileName
+	fake.label = "true"
+	fake.reservation = true
+	fake.imageRef = "sha256:" + strings.Repeat("b", 64)
+	fake.imageID = "image-no-longer-installed"
+	runtime := newTestRuntime(t, fake)
+	if err := runtime.ReconcileCreate(context.Background(), testProfileName); err != nil {
+		t.Fatalf("ReconcileCreate() = %v", err)
+	}
+	if !fake.present || !fake.reservation {
+		t.Fatal("retained tombstone was changed during image migration")
+	}
+	if len(fake.commands) != 1 || fake.commands[0][1] != "inspect" {
+		t.Fatalf("recovery resolved the current image before accepting the tombstone: %v", fake.commands)
+	}
+}
