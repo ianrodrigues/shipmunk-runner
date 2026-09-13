@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,9 @@ var stateFields = map[string]struct{}{
 	"sandbox_id": {}, "lease_expires_at": {}, "deadline": {}, "workspace": {},
 }
 
+var stateULIDPattern = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
+var safeSandboxIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
 // State is the durable identity and recovery context for one fenced attempt.
 type State struct {
 	RunID          string
@@ -39,7 +44,7 @@ type State struct {
 	Workspace      string
 }
 
-// Store holds the exclusive process-lifetime supervisor lock for one state path.
+// Store holds the exclusive process-lifetime supervisor lock for one state directory.
 type Store struct {
 	mu        sync.Mutex
 	path      string
@@ -54,9 +59,9 @@ type fileOps struct {
 	syncDir  func(string) error
 }
 
-// Open resolves and prepares the state directory, then exclusively locks the
-// journal until Close. A second supervisor receives an error instead of
-// sharing mutable recovery state.
+// Open resolves and prepares the state directory, then exclusively locks it
+// until Close. A second supervisor receives an error instead of sharing
+// mutable recovery state or replacing the lock inode.
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("attempt state path is empty")
@@ -78,8 +83,17 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open attempt state directory: %w", err)
 	}
+	if err := verifyPrivateDirectory(directory, parent); err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	if err := lockDirectory(directory); err != nil {
+		_ = directory.Close()
+		return nil, fmt.Errorf("lock attempt state directory: %w", err)
+	}
 	lock, err := openAndLock(statePath + ".lock")
 	if err != nil {
+		_ = unlockDirectory(directory)
 		_ = directory.Close()
 		return nil, fmt.Errorf("lock attempt state: %w", err)
 	}
@@ -94,6 +108,7 @@ func Open(path string) (*Store, error) {
 	}
 	if err := store.verifyDirectory(); err != nil {
 		_ = unlockAndClose(lock)
+		_ = unlockDirectory(directory)
 		_ = directory.Close()
 		return nil, err
 	}
@@ -201,9 +216,13 @@ func (store *Store) Close() error {
 	}
 	store.closed = true
 	lockErr := unlockAndClose(store.lockFile)
+	directoryLockErr := unlockDirectory(store.directory)
 	directoryErr := store.directory.Close()
 	if lockErr != nil {
 		return fmt.Errorf("release attempt state lock: %w", lockErr)
+	}
+	if directoryLockErr != nil {
+		return fmt.Errorf("release attempt state directory lock: %w", directoryLockErr)
 	}
 	if directoryErr != nil {
 		return fmt.Errorf("close attempt state directory: %w", directoryErr)
@@ -219,18 +238,7 @@ func (store *Store) ensureOpen() error {
 }
 
 func (store *Store) verifyDirectory() error {
-	opened, err := store.directory.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect opened attempt state directory: %w", err)
-	}
-	current, err := os.Stat(filepath.Dir(store.path))
-	if err != nil {
-		return fmt.Errorf("inspect attempt state directory: %w", err)
-	}
-	if !current.IsDir() || !os.SameFile(opened, current) {
-		return errors.New("attempt state directory changed during store lifetime")
-	}
-	return nil
+	return verifyPrivateDirectory(store.directory, filepath.Dir(store.path))
 }
 
 func (store *Store) loadLocked() (*State, error) {
@@ -251,6 +259,9 @@ func (store *Store) loadLocked() (*State, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("attempt state is not a regular file")
+	}
+	if err := validatePrivateOwnedFile(info); err != nil {
+		return nil, err
 	}
 	contents, err := io.ReadAll(io.LimitReader(file, maxStateBytes+1))
 	if err != nil {
@@ -339,14 +350,43 @@ func stateFromObject(object map[string]any) (State, error) {
 }
 
 func validateState(state State) error {
-	if strings.TrimSpace(state.RunID) == "" || strings.TrimSpace(state.AttemptID) == "" {
+	if !stateULIDPattern.MatchString(state.RunID) || !stateULIDPattern.MatchString(state.AttemptID) {
 		return errors.New("attempt state identity is invalid")
 	}
 	if state.Fence < 1 || state.Fence > protocol.MaxSafeInteger {
 		return errors.New("attempt state fence is invalid")
 	}
-	if state.LeaseExpiresAt.IsZero() || state.Deadline.IsZero() || state.Workspace == "" {
+	if state.ProfileID != nil && protocol.ValidateProfileID(*state.ProfileID) != nil {
+		return errors.New("attempt state profile_id is invalid")
+	}
+	if state.SandboxID != nil && !safeSandboxIDPattern.MatchString(*state.SandboxID) {
+		return errors.New("attempt state sandbox_id is invalid")
+	}
+	workspaceName := state.AttemptID + "-" + strconv.FormatInt(state.Fence, 10)
+	validWorkspace := filepath.IsAbs(state.Workspace) && filepath.Clean(state.Workspace) == state.Workspace && filepath.Base(state.Workspace) == workspaceName
+	if state.LeaseExpiresAt.IsZero() || state.Deadline.IsZero() || !validWorkspace {
 		return errors.New("attempt state recovery context is invalid")
+	}
+	return nil
+}
+
+func verifyPrivateDirectory(directory *os.File, path string) error {
+	opened, err := directory.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect opened attempt state directory: %w", err)
+	}
+	if err := validatePrivateDirectory(opened); err != nil {
+		return err
+	}
+	current, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("inspect attempt state directory: %w", err)
+	}
+	if err := validatePrivateDirectory(current); err != nil {
+		return err
+	}
+	if !os.SameFile(opened, current) {
+		return errors.New("attempt state directory changed during store lifetime")
 	}
 	return nil
 }
@@ -446,6 +486,10 @@ func (store *Store) createTemporary(contents []byte) (string, error) {
 				return "", fmt.Errorf("inspect attempt state temporary path: %w", statErr)
 			}
 			return "", errors.New("attempt state temporary path changed during write")
+		}
+		if err := validatePrivateOwnedFile(currentInfo); err != nil {
+			_ = os.Remove(temporary)
+			return "", fmt.Errorf("validate attempt state temporary file: %w", err)
 		}
 		return temporary, nil
 	}

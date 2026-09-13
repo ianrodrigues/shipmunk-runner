@@ -1,8 +1,10 @@
 package attemptstate
 
 import (
+	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,7 +13,7 @@ import (
 
 func TestStoreSaveReloadAndClearUsesPHPCompatibleState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "active.json")
-	profileID := "profile-1"
+	profileID := "01k4w000000000000000000009"
 	sandboxID := "sandbox-1"
 	state := testState()
 	state.ProfileID = &profileID
@@ -28,7 +30,7 @@ func TestStoreSaveReloadAndClearUsesPHPCompatibleState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{`"run_id"`, `"attempt_id"`, `"fence":7`, `"profile_id":"profile-1"`, `"sandbox_id":"sandbox-1"`, `"lease_expires_at":"2026-09-13T10:11:12+00:00"`} {
+	for _, expected := range []string{`"run_id"`, `"attempt_id"`, `"fence":7`, `"profile_id":"01k4w000000000000000000009"`, `"sandbox_id":"sandbox-1"`, `"lease_expires_at":"2026-09-13T10:11:12+00:00"`} {
 		if !strings.Contains(string(contents), expected) {
 			t.Fatalf("state file does not contain %s: %s", expected, contents)
 		}
@@ -64,8 +66,8 @@ func TestStoreSaveReloadAndClearUsesPHPCompatibleState(t *testing.T) {
 }
 
 func TestStoreSupportsNullableIDsAndPHPUTCVariants(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "active.json")
-	contents := `{"run_id":"run","attempt_id":"attempt","fence":1,"profile_id":null,"sandbox_id":null,"lease_expires_at":"2026-09-13T10:11:12Z","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace"}`
+	path := filepath.Join(privateTempDir(t), "active.json")
+	contents := `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"profile_id":null,"sandbox_id":null,"lease_expires_at":"2026-09-13T10:11:12Z","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1"}`
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -85,13 +87,18 @@ func TestStoreSupportsNullableIDsAndPHPUTCVariants(t *testing.T) {
 
 func TestStoreRejectsUnsupportedStateWithoutMutation(t *testing.T) {
 	for name, contents := range map[string]string{
-		"malformed":   `{"run_id":`,
-		"duplicate":   `{"run_id":"run","run_id":"other"}`,
-		"unsupported": `{"run_id":"run","attempt_id":"attempt","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace","future":true}`,
-		"oversized":   strings.Repeat(" ", maxStateBytes+1),
+		"malformed":            `{"run_id":`,
+		"duplicate":            `{"run_id":"run","run_id":"other"}`,
+		"unsupported":          `{"run_id":"run","attempt_id":"attempt","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace","future":true}`,
+		"oversized":            strings.Repeat(" ", maxStateBytes+1),
+		"invalid IDs":          `{"run_id":"run","attempt_id":"attempt","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/attempt-1"}`,
+		"relative workspace":   `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"workspaces/01k4w000000000000000000002-1"}`,
+		"mismatched workspace": `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/another-attempt-1"}`,
+		"unsafe sandbox id":    `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"sandbox_id":"../other","lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1"}`,
+		"invalid profile id":   `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"profile_id":"profile","lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "active.json")
+			path := filepath.Join(privateTempDir(t), "active.json")
 			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +128,7 @@ func TestStoreRejectsUnsupportedStateWithoutMutation(t *testing.T) {
 }
 
 func TestOpenRejectsSymlinkLeafAndNonDirectoryAncestor(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	target := filepath.Join(root, "target.json")
 	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {
 		t.Fatal(err)
@@ -209,7 +216,7 @@ func TestStoreRefusesReplacementOfResolvedDirectory(t *testing.T) {
 }
 
 func TestStoreLockIsExclusiveForItsLifetime(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "active.json")
+	path := filepath.Join(privateTempDir(t), "active.json")
 	first, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -229,8 +236,172 @@ func TestStoreLockIsExclusiveForItsLifetime(t *testing.T) {
 	}
 }
 
+func TestStoreLockCannotBeReplacedWhileHeld(t *testing.T) {
+	path := filepath.Join(privateTempDir(t), "active.json")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("second supervisor acquired a replacement lock inode")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("lock was not released by Close after unlink: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreLockDescriptorsAreCloseOnExec(t *testing.T) {
+	if os.Getenv("ATTEMPT_STATE_CLOEXEC_HELPER") == "1" {
+		path := os.Getenv("ATTEMPT_STATE_CLOEXEC_PATH")
+		ready := os.Getenv("ATTEMPT_STATE_CLOEXEC_READY")
+		release := os.Getenv("ATTEMPT_STATE_CLOEXEC_RELEASE")
+		if err := os.WriteFile(ready, []byte("ready"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(release); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for parent to release the lock")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("inherited descriptors kept the attempt lock held: %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	root := privateTempDir(t)
+	path := filepath.Join(root, "active.json")
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	command := exec.Command(os.Args[0], "-test.run=^TestStoreLockDescriptorsAreCloseOnExec$")
+	command.Env = append(os.Environ(),
+		"ATTEMPT_STATE_CLOEXEC_HELPER=1",
+		"ATTEMPT_STATE_CLOEXEC_PATH="+path,
+		"ATTEMPT_STATE_CLOEXEC_READY="+ready,
+		"ATTEMPT_STATE_CLOEXEC_RELEASE="+release,
+	)
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for subprocess readiness")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Closing descriptors without issuing LOCK_UN simulates abrupt supervisor death.
+	if err := first.lockFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	first.closed = true
+	if err := os.WriteFile(release, []byte("go"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = command.Wait()
+	finished = true
+	if err != nil {
+		t.Fatalf("subprocess could not acquire released lock: %v\n%s", err, output.String())
+	}
+}
+
+func TestOpenRejectsInsecureDirectoryAndLeavesItsModeUntouched(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(root, "active.json")); err == nil {
+		t.Fatal("Open accepted a state directory accessible to group or other users")
+	}
+	if mode := fileMode(t, root); mode != 0755 {
+		t.Fatalf("Open changed pre-existing directory mode to %#o", mode)
+	}
+}
+
+func TestOpenRejectsInsecureExistingLeavesWithoutChangingThem(t *testing.T) {
+	for _, name := range []string{"active.json", "active.json.lock"} {
+		t.Run(name, func(t *testing.T) {
+			root := privateTempDir(t)
+			path := filepath.Join(root, "active.json")
+			leaf := path
+			if name == "active.json.lock" {
+				leaf += ".lock"
+			}
+			if err := os.WriteFile(leaf, []byte("pre-existing"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(path); err == nil {
+				t.Fatal("Open accepted a pre-existing public state leaf")
+			}
+			if mode := fileMode(t, leaf); mode != 0644 {
+				t.Fatalf("Open changed pre-existing leaf mode to %#o", mode)
+			}
+		})
+	}
+}
+
+func TestOpenRejectsHardLinkedLockWithoutChangingTargetMode(t *testing.T) {
+	root := privateTempDir(t)
+	path := filepath.Join(root, "active.json")
+	target := filepath.Join(root, "unrelated.txt")
+	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, path+".lock"); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open accepted a hard-linked lock file")
+	} else if !strings.Contains(err.Error(), "multiple hard links") {
+		t.Fatalf("hard-linked lock failed for an unexpected reason: %v", err)
+	}
+	if mode := fileMode(t, target); mode != 0600 {
+		t.Fatalf("Open changed unrelated hard-link target mode to %#o", mode)
+	}
+}
+
 func TestStoreSyncFailureDoesNotReplacePreviousState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "active.json")
+	path := filepath.Join(privateTempDir(t), "active.json")
 	store, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +416,7 @@ func TestStoreSyncFailureDoesNotReplacePreviousState(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.fs.syncFile = func(*os.File) error { return errors.New("injected sync failure") }
-	if err := store.Save(testStateWithRunID("replacement")); err == nil {
+	if err := store.Save(testStateWithRunID("01k4w000000000000000000003")); err == nil {
 		t.Fatal("Save succeeded despite the injected file sync failure")
 	}
 	newBytes, err := os.ReadFile(path)
@@ -258,7 +429,7 @@ func TestStoreSyncFailureDoesNotReplacePreviousState(t *testing.T) {
 }
 
 func TestStoreDirectorySyncFailureReportsPostRenameCommit(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "active.json")
+	path := filepath.Join(privateTempDir(t), "active.json")
 	store, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +446,7 @@ func TestStoreDirectorySyncFailureReportsPostRenameCommit(t *testing.T) {
 }
 
 func TestStoreUsesBoundedReads(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "active.json")
+	path := filepath.Join(privateTempDir(t), "active.json")
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxStateBytes+1)), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +467,7 @@ func testState() State {
 		Fence:          7,
 		LeaseExpiresAt: time.Date(2026, 9, 13, 10, 11, 12, 0, time.UTC),
 		Deadline:       time.Date(2026, 9, 13, 10, 15, 0, 0, time.UTC),
-		Workspace:      "/workspace/run",
+		Workspace:      filepath.Join("/workspace", "01k4w000000000000000000002-7"),
 	}
 }
 
@@ -313,4 +484,13 @@ func fileMode(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return info.Mode().Perm()
+}
+
+func privateTempDir(t *testing.T) string {
+	t.Helper()
+	directory := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }
