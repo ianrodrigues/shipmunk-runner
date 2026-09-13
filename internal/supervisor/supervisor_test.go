@@ -190,6 +190,33 @@ type fixtureProcess struct {
 	starts int
 }
 
+type fixtureExecutor struct {
+	execution       Execution
+	executeError    error
+	cleanupError    error
+	executes        int
+	cleanups        int
+	input           map[string]any
+	cleanupCanceled bool
+	cleanupDeadline bool
+}
+
+func (e *fixtureExecutor) Execute(ctx context.Context, _ protocol.Claim, input map[string]any, _ string) (Execution, error) {
+	e.executes++
+	e.input = input
+	if err := ctx.Err(); err != nil {
+		return Execution{}, err
+	}
+	return e.execution, e.executeError
+}
+
+func (e *fixtureExecutor) Cleanup(ctx context.Context, _ protocol.Claim) error {
+	e.cleanups++
+	e.cleanupCanceled = ctx.Err() != nil
+	_, e.cleanupDeadline = ctx.Deadline()
+	return e.cleanupError
+}
+
 func (p *fixtureProcess) ContainerID() string {
 	return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }
@@ -343,6 +370,68 @@ func TestRunOnceJournalsBeforeCreationAndReportsOnlyAfterCleanup(t *testing.T) {
 	}
 	if saved, _ := state.Load(); saved != nil {
 		t.Fatal("journal retained after confirmed cleanup")
+	}
+}
+
+func TestCompositeExecutorPublishesAndCleansBeforeAcknowledgement(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	execution, err := DecodeExecution(*c.claim, 0, normalizedOutput(t, *c.claim, "no_findings"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &fixtureExecutor{execution: execution}
+	s.Executor = executor
+	s.Sandbox = nil
+	s.Watchdog = nil
+
+	out, err := s.RunOnce(context.Background())
+	if err != nil || !out.Worked || out.Result != "no_findings" {
+		t.Fatalf("composite execution failed: %+v %v", out, err)
+	}
+	if executor.executes != 1 || executor.cleanups != 1 || executor.cleanupCanceled || !executor.cleanupDeadline || c.completions != 1 || c.acks != 1 || w.removes != 1 {
+		t.Fatalf("incorrect composite lifecycle: executor=%+v completions=%d acks=%d removes=%d", executor, c.completions, c.acks, w.removes)
+	}
+	if _, ok := executor.input["supervisor"]; ok {
+		t.Fatal("supervisor metadata escaped to composite executor")
+	}
+	if saved, _ := state.Load(); saved != nil {
+		t.Fatal("journal retained after composite cleanup")
+	}
+}
+
+func TestCompositeExecutorFailureStillCleansWithRevokedContext(t *testing.T) {
+	s, c, state, _, _, _ := fixtureSupervisor(t)
+	executor := &fixtureExecutor{executeError: errors.New("synthetic native failure")}
+	s.Executor = executor
+	s.Sandbox = nil
+	s.Watchdog = nil
+
+	_, err := s.RunOnce(context.Background())
+	if err == nil || executor.executes != 1 || executor.cleanups != 1 || executor.cleanupCanceled || !executor.cleanupDeadline || c.completions != 0 || c.acks != 1 {
+		t.Fatalf("composite failure cleanup failed: executor=%+v completions=%d acks=%d err=%v", executor, c.completions, c.acks, err)
+	}
+	if saved, _ := state.Load(); saved != nil {
+		t.Fatal("journal retained after confirmed composite cleanup")
+	}
+}
+
+func TestCompositeCleanupFailureRetainsJournalAndPreventsAcknowledgement(t *testing.T) {
+	s, c, state, _, _, _ := fixtureSupervisor(t)
+	execution, err := DecodeExecution(*c.claim, 0, normalizedOutput(t, *c.claim, "no_findings"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &fixtureExecutor{execution: execution, cleanupError: errors.New("synthetic cleanup uncertainty")}
+	s.Executor = executor
+	s.Sandbox = nil
+	s.Watchdog = nil
+
+	out, err := s.RunOnce(context.Background())
+	if !errors.Is(err, ErrCleanupUnconfirmed) || out.Worked || executor.cleanups != 1 || c.acks != 0 {
+		t.Fatalf("unconfirmed composite cleanup was released: %+v executor=%+v acks=%d err=%v", out, executor, c.acks, err)
+	}
+	if saved, _ := state.Load(); saved == nil {
+		t.Fatal("journal lost after unconfirmed composite cleanup")
 	}
 }
 
