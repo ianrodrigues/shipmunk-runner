@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,41 +22,60 @@ const (
 )
 
 type fakeCommand struct {
-	mu            sync.Mutex
-	commands      [][]string
-	environments  [][]string
-	imageID       string
-	containerID   string
-	containerName string
-	imageRef      string
-	running       bool
-	present       bool
-	label         string
-	commandError  error
-	commandOut    string
-	commandErr    string
-	blockExec     bool
-	execDelay     time.Duration
-	execStdin     string
+	mu                  sync.Mutex
+	commands            [][]string
+	environments        [][]string
+	imageID             string
+	containerID         string
+	containerName       string
+	imageRef            string
+	running             bool
+	present             bool
+	label               string
+	nameLabel           string
+	commandError        error
+	commandOut          string
+	commandErr          string
+	blockExec           bool
+	execDelay           time.Duration
+	execStdin           string
+	blockCreate         bool
+	createNotDispatched bool
+	homeMountSource     string
+	afterImage          func() error
 }
 
 func newFakeCommand() *fakeCommand {
 	return &fakeCommand{imageID: testImageID, containerID: testContainerID, label: "true"}
 }
 
-func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+func prepareRunningProfile(fake *fakeCommand) {
+	fake.present = true
+	fake.containerName = testProfileName
+	fake.nameLabel = testProfileName
+	fake.imageRef = testImageID
+	fake.homeMountSource = "/private/profile/home"
+	fake.running = true
+}
+
+func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io.Reader, stdout, stderr io.Writer, args ...string) (bool, error) {
 	fake.mu.Lock()
 	fake.commands = append(fake.commands, append([]string(nil), args...))
 	fake.environments = append(fake.environments, append([]string(nil), environment...))
 	fake.mu.Unlock()
 	if len(args) < 2 || args[0] != "docker" {
-		return errors.New("unexpected executable")
+		return false, errors.New("unexpected executable")
 	}
 	args = args[1:]
 	switch args[0] {
 	case "image":
 		_, _ = io.WriteString(stdout, fake.imageID+"\n")
-		return nil
+		if fake.afterImage != nil {
+			if err := fake.afterImage(); err != nil {
+				return true, err
+			}
+		}
+		return true, nil
 	case "inspect":
 		identifier := args[len(args)-1]
 		fake.mu.Lock()
@@ -62,12 +84,19 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 		fake.mu.Unlock()
 		if !present {
 			_, _ = io.WriteString(stderr, "Error: No such object: "+identifier)
-			return fakeExitError(1)
+			return true, fakeExitError(1)
 		}
 		encoded, _ := json.Marshal(inspection)
 		_, _ = stdout.Write(encoded)
-		return nil
+		return true, nil
 	case "create":
+		if fake.createNotDispatched {
+			return false, fakeExitError(1)
+		}
+		if fake.blockCreate {
+			<-ctx.Done()
+			return true, ctx.Err()
+		}
 		fake.mu.Lock()
 		fake.present = true
 		fake.running = false
@@ -78,8 +107,15 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 			if args[index] == "--label" && strings.HasPrefix(args[index+1], profileUIDLabel+"=") {
 				fake.label = strings.TrimPrefix(args[index+1], profileUIDLabel+"=")
 			}
+			if args[index] == "--label" && strings.HasPrefix(args[index+1], profileNameLabel+"=") {
+				fake.nameLabel = strings.TrimPrefix(args[index+1], profileNameLabel+"=")
+			}
 		}
 		for index := 0; index+1 < len(args); index++ {
+			if args[index] == "--mount" && strings.HasPrefix(args[index+1], "type=bind,") {
+				fields := strings.Split(args[index+1], ",")
+				fake.homeMountSource = strings.TrimPrefix(fields[1], "src=")
+			}
 			if args[index] == "--entrypoint" {
 				fake.imageRef = args[index+2]
 				break
@@ -87,23 +123,23 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 		}
 		fake.mu.Unlock()
 		_, _ = io.WriteString(stdout, fake.containerID+"\n")
-		return nil
+		return true, nil
 	case "start":
 		fake.mu.Lock()
 		fake.running = true
 		fake.mu.Unlock()
-		return nil
+		return true, nil
 	case "exec":
 		if fake.blockExec {
 			<-ctx.Done()
-			return ctx.Err()
+			return true, ctx.Err()
 		}
 		if fake.execDelay > 0 {
 			timer := time.NewTimer(fake.execDelay)
 			defer timer.Stop()
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return true, ctx.Err()
 			case <-timer.C:
 			}
 		}
@@ -113,19 +149,19 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 		}
 		_, _ = io.WriteString(stdout, fake.commandOut)
 		_, _ = io.WriteString(stderr, fake.commandErr)
-		return fake.commandError
+		return true, fake.commandError
 	case "stop", "kill":
 		fake.mu.Lock()
 		fake.running = false
 		fake.mu.Unlock()
-		return nil
+		return true, nil
 	case "rm":
 		fake.mu.Lock()
 		fake.present = false
 		fake.mu.Unlock()
-		return nil
+		return true, nil
 	default:
-		return errors.New("unexpected docker operation: " + args[0])
+		return true, errors.New("unexpected docker operation: " + args[0])
 	}
 }
 
@@ -135,9 +171,10 @@ func (fake *fakeCommand) inspection() map[string]any {
 		"Name": "/" + fake.containerName,
 		"Config": map[string]any{
 			"Image":  fake.imageRef,
-			"Labels": map[string]string{profileUIDLabel: fake.label},
+			"Labels": map[string]string{profileUIDLabel: fake.label, profileNameLabel: fake.nameLabel},
 		},
-		"State": map[string]bool{"Running": fake.running},
+		"State":  map[string]bool{"Running": fake.running},
+		"Mounts": []map[string]string{{"Type": "bind", "Source": fake.homeMountSource, "Destination": "/profile"}},
 	}
 }
 
@@ -162,10 +199,19 @@ func newTestRuntime(t *testing.T, fake *fakeCommand) *dockerRuntime {
 	return runtime
 }
 
+func protectedHome(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "home")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestStartUsesResolvedImageAndCredentialOnlyIsolation(t *testing.T) {
 	fake := newFakeCommand()
 	runtime := newTestRuntime(t, fake)
-	home := t.TempDir()
+	home := protectedHome(t)
 	checkpoints := 0
 	if err := runtime.Start(context.Background(), testProfileName, home, func() error {
 		checkpoints++
@@ -207,8 +253,21 @@ func TestStartUsesResolvedImageAndCredentialOnlyIsolation(t *testing.T) {
 			t.Errorf("create command missing %q: %v", expected, create)
 		}
 	}
-	if strings.Contains(joined, "--env") || strings.Contains(joined, "docker.sock") || strings.Contains(joined, "repository") {
+	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "repository") {
 		t.Fatalf("create command exposed an environment variable or unrelated mount: %v", create)
+	}
+	proxyVariables := []string{"HTTP_PROXY=", "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "FTP_PROXY=", "ftp_proxy=", "ALL_PROXY=", "all_proxy=", "NO_PROXY=", "no_proxy="}
+	environmentFlags := 0
+	for index, argument := range create {
+		if argument == "--env" {
+			environmentFlags++
+			if index+1 >= len(create) || !slices.Contains(proxyVariables, create[index+1]) {
+				t.Errorf("container create contains an unexpected environment value near %d: %v", index, create)
+			}
+		}
+	}
+	if environmentFlags != len(proxyVariables) {
+		t.Fatalf("proxy environment count = %d, want %d: %v", environmentFlags, len(proxyVariables), create)
 	}
 	bindMounts := 0
 	for _, argument := range create {
@@ -235,7 +294,7 @@ func TestStartRejectsMutableImageResponseAndRootAccount(t *testing.T) {
 	fake := newFakeCommand()
 	fake.imageID = "shipmunk-profile-native:local"
 	runtime := newTestRuntime(t, fake)
-	if err := runtime.Start(context.Background(), testProfileName, t.TempDir(), func() error { return nil }); err == nil {
+	if err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }); err == nil {
 		t.Fatal("accepted a mutable image inspect result")
 	}
 	if len(fake.commands) != 1 {
@@ -246,11 +305,82 @@ func TestStartRejectsMutableImageResponseAndRootAccount(t *testing.T) {
 	}
 }
 
+func TestStartRejectsInsecureProfileHomeAndPathReplacement(t *testing.T) {
+	fake := newFakeCommand()
+	runtime := newTestRuntime(t, fake)
+	unsafeHome := protectedHome(t)
+	if err := os.Chmod(unsafeHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Start(context.Background(), testProfileName, unsafeHome, func() error { return nil }); err == nil {
+		t.Fatal("accepted a profile home with broad permissions")
+	}
+	if len(fake.commands) != 0 {
+		t.Fatalf("Docker commands ran for an insecure home: %v", fake.commands)
+	}
+
+	home := protectedHome(t)
+	target := protectedHome(t)
+	backup := home + ".original"
+	fake.afterImage = func() error {
+		if err := os.Rename(home, backup); err != nil {
+			return err
+		}
+		if err := os.Symlink(target, home); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := runtime.Start(context.Background(), testProfileName, home, func() error { return nil }); err == nil {
+		t.Fatal("accepted a profile home path replaced before container creation")
+	}
+	for _, command := range fake.commands {
+		if len(command) > 1 && command[1] == "create" {
+			t.Fatalf("Docker create ran after mount path replacement: %v", command)
+		}
+	}
+}
+
+func TestStartMarksOnlyDispatchedCreatesUncertain(t *testing.T) {
+	t.Run("pre-dispatch failure", func(t *testing.T) {
+		fake := newFakeCommand()
+		fake.createNotDispatched = true
+		runtime := newTestRuntime(t, fake)
+		err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil })
+		if err == nil || errors.Is(err, ErrCreateUncertain) {
+			t.Fatalf("Start error = %v, want ordinary pre-dispatch failure", err)
+		}
+		if err := runtime.Stop(context.Background(), testProfileName, false); err != nil {
+			t.Fatalf("Stop after pre-dispatch failure = %v", err)
+		}
+	})
+
+	t.Run("timed out after dispatch and late container", func(t *testing.T) {
+		fake := newFakeCommand()
+		fake.blockCreate = true
+		runtime := newTestRuntime(t, fake)
+		runtime.config.dockerTimeout = 20 * time.Millisecond
+		err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil })
+		if !errors.Is(err, ErrCreateUncertain) {
+			t.Fatalf("Start error = %v, want ErrCreateUncertain", err)
+		}
+		if err := runtime.Stop(context.Background(), testProfileName, true); !errors.Is(err, ErrCreateUncertain) {
+			t.Fatalf("Stop while uncertain name is absent = %v", err)
+		}
+		fake.blockCreate = false
+		prepareRunningProfile(fake)
+		if err := runtime.Stop(context.Background(), testProfileName, true); err != nil {
+			t.Fatalf("Stop after late owned container appeared = %v", err)
+		}
+		if fake.present {
+			t.Fatal("late container remained after uncertainty reconciliation")
+		}
+	})
+}
+
 func TestRunUsesAllowlistedCommandAndBoundedCapturedOutput(t *testing.T) {
 	fake := newFakeCommand()
-	fake.present = true
-	fake.containerName = testProfileName
-	fake.imageRef = testImageID
+	prepareRunningProfile(fake)
 	fake.commandOut = "version output"
 	fake.commandErr = "diagnostic"
 	runtime := newTestRuntime(t, fake)
@@ -284,11 +414,35 @@ func TestRunUsesAllowlistedCommandAndBoundedCapturedOutput(t *testing.T) {
 	}
 }
 
+func TestRunRejectsWrongImageStoppedOrUnownedContainerBeforeExec(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*fakeCommand)
+	}{
+		{name: "wrong image", mutate: func(fake *fakeCommand) { fake.imageRef = "sha256:" + strings.Repeat("b", 64) }},
+		{name: "stopped", mutate: func(fake *fakeCommand) { fake.running = false }},
+		{name: "unowned", mutate: func(fake *fakeCommand) { fake.nameLabel = "shipmunk-profile-01k4w000000000000000000002" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeCommand()
+			prepareRunningProfile(fake)
+			test.mutate(fake)
+			runtime := newTestRuntime(t, fake)
+			if _, err := runtime.Run(context.Background(), testProfileName, AgentCodex, "probe", func() error { return nil }); err == nil {
+				t.Fatal("executed against an unexpected profile container")
+			}
+			for _, command := range fake.commands {
+				if len(command) > 1 && command[1] == "exec" {
+					t.Fatalf("native command executed before container validation: %v", command)
+				}
+			}
+		})
+	}
+}
+
 func TestRunRejectsOutputOverflowAndPreservesNativeExitCode(t *testing.T) {
 	fake := newFakeCommand()
-	fake.present = true
-	fake.containerName = testProfileName
-	fake.imageRef = testImageID
+	prepareRunningProfile(fake)
 	fake.commandOut = strings.Repeat("x", nativeOutputLimit+1)
 	runtime := newTestRuntime(t, fake)
 	if _, err := runtime.Run(context.Background(), testProfileName, "codex", "probe", func() error { return nil }); err == nil {
@@ -304,9 +458,7 @@ func TestRunRejectsOutputOverflowAndPreservesNativeExitCode(t *testing.T) {
 
 func TestInteractiveRunPassesStreamsThroughAndCheckpointsWhileRunning(t *testing.T) {
 	fake := newFakeCommand()
-	fake.present = true
-	fake.containerName = testProfileName
-	fake.imageRef = testImageID
+	prepareRunningProfile(fake)
 	fake.commandOut = strings.Repeat("login prompt\n", 3000)
 	fake.execDelay = 30 * time.Millisecond
 	var terminalOut, terminalErr bytes.Buffer
@@ -342,9 +494,7 @@ func TestInteractiveRunPassesStreamsThroughAndCheckpointsWhileRunning(t *testing
 
 func TestRunCheckpointFailureCancelsSubprocess(t *testing.T) {
 	fake := newFakeCommand()
-	fake.present = true
-	fake.containerName = testProfileName
-	fake.imageRef = testImageID
+	prepareRunningProfile(fake)
 	fake.blockExec = true
 	runtime := newTestRuntime(t, fake)
 	checkpoints := 0
@@ -363,9 +513,7 @@ func TestRunCheckpointFailureCancelsSubprocess(t *testing.T) {
 
 func TestRunAppliesNativeCommandTimeout(t *testing.T) {
 	fake := newFakeCommand()
-	fake.present = true
-	fake.containerName = testProfileName
-	fake.imageRef = testImageID
+	prepareRunningProfile(fake)
 	fake.blockExec = true
 	runtime := newTestRuntime(t, fake)
 	runtime.config.commandTimeout = 20 * time.Millisecond
@@ -377,11 +525,9 @@ func TestRunAppliesNativeCommandTimeout(t *testing.T) {
 
 func TestStopConfirmsContainerAbsenceAndRefusesUnownedName(t *testing.T) {
 	fake := newFakeCommand()
-	fake.present = true
-	fake.containerName = testProfileName
-	fake.imageRef = testImageID
+	prepareRunningProfile(fake)
 	runtime := newTestRuntime(t, fake)
-	if err := runtime.Stop(context.Background(), testProfileName); err != nil {
+	if err := runtime.Stop(context.Background(), testProfileName, false); err != nil {
 		t.Fatal(err)
 	}
 	if fake.present {
@@ -389,7 +535,7 @@ func TestStopConfirmsContainerAbsenceAndRefusesUnownedName(t *testing.T) {
 	}
 	fake.present = true
 	fake.label = "false"
-	if err := runtime.Stop(context.Background(), testProfileName); err == nil {
+	if err := runtime.Stop(context.Background(), testProfileName, false); err == nil {
 		t.Fatal("stopped a container without the runtime ownership label")
 	}
 }
@@ -397,7 +543,39 @@ func TestStopConfirmsContainerAbsenceAndRefusesUnownedName(t *testing.T) {
 func TestStopAcceptsAlreadyAbsentContainer(t *testing.T) {
 	fake := newFakeCommand()
 	runtime := newTestRuntime(t, fake)
-	if err := runtime.Stop(context.Background(), testProfileName); err != nil {
+	if err := runtime.Stop(context.Background(), testProfileName, false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStopUsesIndependentCleanupContext(t *testing.T) {
+	fake := newFakeCommand()
+	prepareRunningProfile(fake)
+	runtime := newTestRuntime(t, fake)
+
+	operationContext, cancelOperation := context.WithCancel(context.Background())
+	cancelOperation()
+	if operationContext.Err() == nil {
+		t.Fatal("operation context was not canceled")
+	}
+
+	cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	if err := runtime.Stop(cleanupContext, testProfileName, false); err != nil {
+		t.Fatalf("Stop with an independent cleanup context = %v", err)
+	}
+	if fake.present {
+		t.Fatal("Stop did not remove the profile container")
+	}
+}
+
+func TestStopDoesNotAcknowledgeAbsenceForAnUncertainCreate(t *testing.T) {
+	fake := newFakeCommand()
+	runtime := newTestRuntime(t, fake)
+	if err := runtime.Stop(context.Background(), testProfileName, true); !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("Stop error = %v, want ErrCreateUncertain", err)
+	}
+	if err := runtime.Stop(context.Background(), testProfileName, false); err != nil {
+		t.Fatalf("idempotent Stop without create uncertainty = %v", err)
 	}
 }
