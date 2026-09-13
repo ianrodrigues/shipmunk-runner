@@ -55,7 +55,6 @@ func newFakeProfileControlPlane() *fakeProfileControlPlane {
 			"stopped":              false,
 			"lease_expires_at":     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
 		},
-		response: map[string]any{"profile_id": testProfileID, "active": true, "stopped": true, "health": HealthReady},
 	}
 }
 
@@ -97,7 +96,14 @@ func (control *fakeProfileControlPlane) ProfileRequest(_ context.Context, profil
 			return nil, control.completionErr
 		}
 		response := cloneMap(control.response)
+		if control.response == nil {
+			response = map[string]any{
+				"active": payload["health"] == HealthReady, "stopped": true,
+				"health": payload["health"], "reason": payload["reason"],
+			}
+		}
 		response["profile_id"] = profileID
+		response["operation_id"] = control.operationIDForSuffix(suffix)
 		return response, nil
 	default:
 		return nil, fmt.Errorf("unexpected profile suffix %q", suffix)
@@ -594,7 +600,7 @@ func TestLifecycleRetainsReadyRecoveryUntilInactiveAcknowledgement(t *testing.T)
 	if err := store.Invalidate(); err != nil {
 		t.Fatal(err)
 	}
-	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": true, "stopped": true, "health": HealthReady})
+	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": true, "stopped": true, "health": HealthReady, "reason": nil})
 	if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "probe", operationTwo); err == nil {
 		t.Fatal("ready replay response incorrectly acknowledged a missing home")
 	}
@@ -605,7 +611,7 @@ func TestLifecycleRetainsReadyRecoveryUntilInactiveAcknowledgement(t *testing.T)
 	if _, statErr := os.Stat(store.Home()); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("failed ready home was not invalidated: %v", statErr)
 	}
-	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": false, "stopped": true, "health": HealthError})
+	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": false, "stopped": true, "health": HealthError, "reason": "operation_stopped"})
 	control.operationID = operationThree
 	control.binding["operation_id"] = operationThree
 	if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "disconnect", operationThree); err != nil {
@@ -626,7 +632,7 @@ func TestLifecycleDisconnectIsLocalAndServerMustAcceptInactiveState(t *testing.T
 	}
 	control.operationID = operationTwo
 	control.binding["operation_id"] = operationTwo
-	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": true, "stopped": true, "health": "disconnected"})
+	control.setCompletion(map[string]any{"profile_id": testProfileID, "active": false, "stopped": true, "health": "disconnected", "reason": "disconnected"})
 	outcome, err := lifecycle.Operate(context.Background(), store, testProfileID, "disconnect", operationTwo)
 	if err != nil || outcome.Health != "disconnected" || outcome.Reason != "disconnected" {
 		t.Fatalf("disconnect = (%#v, %v)", outcome, err)
@@ -636,6 +642,29 @@ func TestLifecycleDisconnectIsLocalAndServerMustAcceptInactiveState(t *testing.T
 	}
 	if got := len(runtime.commands); got != 5 {
 		t.Fatalf("disconnect launched native commands; total = %d", got)
+	}
+}
+
+func TestLifecycleRetainsPendingForInvalidCompletionResponses(t *testing.T) {
+	responses := []map[string]any{
+		{"profile_id": testProfileID, "active": true, "health": HealthReady, "reason": nil},
+		{"profile_id": testProfileID, "active": true, "stopped": false, "health": HealthReady, "reason": nil},
+		{"profile_id": testProfileID, "active": "yes", "stopped": true, "health": HealthReady, "reason": nil},
+		{"profile_id": testProfileID, "active": true, "stopped": true, "health": HealthError, "reason": "operation_failed"},
+		{"profile_id": testProfileID, "active": false, "stopped": true, "health": "future_health", "reason": nil},
+	}
+	for index, response := range responses {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			store, lifecycle, control, _, _ := newLifecycleFixture(t)
+			control.setCompletion(response)
+			if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne); err == nil {
+				t.Fatal("invalid completion response cleared recovery state")
+			}
+			pending, err := store.Read("pending")
+			if err != nil || pending == nil {
+				t.Fatalf("pending recovery state = %#v, %v", pending, err)
+			}
+		})
 	}
 }
 

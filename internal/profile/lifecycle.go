@@ -188,6 +188,9 @@ func (lifecycle *Lifecycle) Operate(
 		if err != nil {
 			return err
 		}
+		if err := validateCompletionResponse(response, pending, outcome); err != nil {
+			return err
+		}
 		if outcome.Health == HealthReady && isTrue(response["active"]) {
 			if err := locked.Write("active", identityJournal(binding)); err != nil {
 				return err
@@ -498,7 +501,13 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 		if !errors.As(err, &responseError) || responseError.StatusCode != 404 {
 			return err
 		}
-		response = map[string]any{"stopped": true, "active": false, "health": "disconnected"}
+		response = map[string]any{
+			"profile_id": profileID, "operation_id": operationID, "stopped": true,
+			"active": false, "health": "disconnected", "reason": "disconnected",
+		}
+	}
+	if err := validateCompletionResponse(response, pending, outcome); err != nil {
+		return err
 	}
 	responseHealth, _ := response["health"].(string)
 	if recoveryFailed && (!isTrue(response["stopped"]) || isTrue(response["active"]) ||
@@ -550,10 +559,13 @@ func (lifecycle *Lifecycle) rejectBegin(
 	}
 	outcome := Health{Health: HealthError, Reason: "operation_stopped"}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), lifecycle.cleanupTimeout)
-	_, completionErr := lifecycle.complete(cleanupCtx, profileID, pending, outcome)
+	response, completionErr := lifecycle.complete(cleanupCtx, profileID, pending, outcome)
 	cleanupCancel()
 	if completionErr != nil {
 		return completionErr
+	}
+	if err := validateCompletionResponse(response, pending, outcome); err != nil {
+		return err
 	}
 	if err := store.Write("completed", map[string]any{"operation_id": operationID}); err != nil {
 		return err
@@ -817,6 +829,42 @@ func validHealthOutcome(outcome Health) bool {
 		return outcome.Reason == ReasonNativeProbeFailed || outcome.Reason == "operation_failed" || outcome.Reason == "operation_stopped"
 	case "disconnected":
 		return outcome.Reason == "disconnected"
+	default:
+		return false
+	}
+}
+
+func validateCompletionResponse(response, pending map[string]any, submitted Health) error {
+	operationID, _ := pending["operation_id"].(string)
+	responseOperationID, operationOK := response["operation_id"].(string)
+	stopped, stoppedOK := response["stopped"].(bool)
+	active, activeOK := response["active"].(bool)
+	health, healthOK := response["health"].(string)
+	reasonValue, reasonExists := response["reason"]
+	reason, reasonOK := reasonValue.(string)
+	if reasonValue == nil {
+		reasonOK = true
+		reason = ""
+	}
+	if !operationOK || responseOperationID != operationID || !stoppedOK || !stopped || !activeOK ||
+		!healthOK || !reasonExists || !reasonOK || !validCompletionHealth(Health{Health: health, Reason: reason}) {
+		return errors.New("profile completion response is invalid")
+	}
+	if active && (submitted.Health != HealthReady || health != HealthReady || reason != "") {
+		return errors.New("profile completion response is inconsistent")
+	}
+	return nil
+}
+
+func validCompletionHealth(outcome Health) bool {
+	if validHealthOutcome(outcome) {
+		return true
+	}
+	switch outcome.Health {
+	case HealthError:
+		return outcome.Reason == "lease_expired"
+	case "disconnected":
+		return outcome.Reason == "profile_revoked" || outcome.Reason == "operation_stopped"
 	default:
 		return false
 	}
