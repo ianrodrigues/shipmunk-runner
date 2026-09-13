@@ -12,12 +12,14 @@ import (
 	"regexp"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/attemptstate"
 	"github.com/ianrodrigues/shipmunk-runner/internal/codex"
 	"github.com/ianrodrigues/shipmunk-runner/internal/codexsession"
 	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 	"github.com/ianrodrigues/shipmunk-runner/internal/supervisor"
 	"github.com/ianrodrigues/shipmunk-runner/internal/workspace"
 )
@@ -51,6 +53,10 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 	if err != nil {
 		return nil, nil, err
 	}
+	watchdogExecutable, err := adjacentWatchdogExecutable()
+	if err != nil {
+		return nil, nil, err
+	}
 	platform, err := dockerPreflight(ctx, dockerExecutable, "version", "--format", "{{.Server.Os}}")
 	if err != nil || platform != "linux" {
 		return nil, nil, errors.New("a Linux Docker engine is required")
@@ -74,12 +80,13 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 	if options.SessionMode == "resume" {
 		mode = codexsession.Resume
 	}
-	router := &codexProfileRouter{profilesDir: options.ProfilesDir, nativeImage: options.Image, repositoryImage: options.RepositoryImage, dockerExecutable: dockerExecutable, active: make(map[string]supervisor.Executor), sessionMode: mode}
+	router := &codexProfileRouter{profilesDir: options.ProfilesDir, nativeImage: options.Image, repositoryImage: options.RepositoryImage, dockerExecutable: dockerExecutable, watchdogExecutable: watchdogExecutable, active: make(map[string]supervisor.Executor), sessionMode: mode}
 	return &supervisor.Supervisor{Client: client, State: state, Workspaces: workspaces, Executor: router}, state.Close, nil
 }
 
 type codexProfileRouter struct {
 	profilesDir, nativeImage, repositoryImage, dockerExecutable string
+	watchdogExecutable                                          string
 	mu                                                          sync.Mutex
 	active                                                      map[string]supervisor.Executor
 	sessionMode                                                 codexsession.Mode
@@ -98,7 +105,8 @@ func (r *codexProfileRouter) build(claim protocol.Claim) (supervisor.Executor, e
 	if err != nil {
 		return nil, err
 	}
-	delegate, err := codex.NewExecutor(codex.ExecutorConfig{ProfileHome: store.Home(), NativeImage: r.nativeImage, RepositoryImage: r.repositoryImage, DockerExecutable: r.dockerExecutable, Sessions: sessions, SessionMode: r.sessionMode})
+	watchdog := sandbox.NewWatchdog(sandbox.Config{DockerExecutable: r.dockerExecutable, WatchdogExecutable: r.watchdogExecutable})
+	delegate, err := codex.NewExecutor(codex.ExecutorConfig{ProfileHome: store.Home(), NativeImage: r.nativeImage, RepositoryImage: r.repositoryImage, DockerExecutable: r.dockerExecutable, Sessions: sessions, SessionMode: r.sessionMode, Watchdog: watchdog})
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +141,15 @@ func (r *codexProfileRouter) Cleanup(ctx context.Context, claim protocol.Claim) 
 	r.mu.Lock()
 	delete(r.active, key)
 	r.mu.Unlock()
+	return nil
+}
+func (r *codexProfileRouter) Renew(claim protocol.Claim, expiry time.Time) error {
+	r.mu.Lock()
+	executor := r.active[executionKey(claim)]
+	r.mu.Unlock()
+	if lease, ok := executor.(supervisor.ExecutorLease); ok {
+		return lease.Renew(claim, expiry)
+	}
 	return nil
 }
 func executionKey(c protocol.Claim) string { return fmt.Sprintf("%s-%d", c.AttemptID, c.Fence) }

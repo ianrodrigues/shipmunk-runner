@@ -35,6 +35,7 @@ var (
 	containerIDPattern   = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 	containerNamePattern = regexp.MustCompile(`^shipmunk-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
 	profileNamePattern   = regexp.MustCompile(`^shipmunk-profile-[0-7][0-9a-hjkmnp-tv-z]{25}$`)
+	codexNamePattern     = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
 )
 
 // Config controls the Docker sandbox and the executable used by the independent
