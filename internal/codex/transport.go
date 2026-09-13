@@ -123,6 +123,8 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 			stable := handle.Name()
 			if runtime.GOOS == "linux" {
 				stable = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
+			} else if runtime.GOOS == "darwin" {
+				stable = fmt.Sprintf("/dev/fd/%d", handle.Fd())
 			}
 			cfg.Source = stable
 			continue
@@ -160,6 +162,8 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 		stable := resolved
 		if runtime.GOOS == "linux" {
 			stable = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
+		} else if index == 1 && runtime.GOOS == "darwin" {
+			stable = fmt.Sprintf("/dev/fd/%d", handle.Fd())
 		}
 		if index == 0 {
 			cfg.ProfileHome = stable
