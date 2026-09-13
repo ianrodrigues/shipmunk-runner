@@ -27,7 +27,9 @@ type TarExtractor struct {
 	MaxBytes int64
 }
 
-// Extract expands archive into an existing real directory.
+// Extract expands a tar or gzip-compressed tar archive into an existing real
+// directory. Extraction is not transactional; entries written before an error
+// remain in the destination.
 func (extractor TarExtractor) Extract(ctx context.Context, archive []byte, destination string) error {
 	maxFiles, maxBytes := extractor.limits()
 	decoded, err := decompress(ctx, archive, maxBytes)

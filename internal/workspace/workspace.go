@@ -79,7 +79,9 @@ func (workspace *Workspace) EnsureWritable() error {
 }
 
 // Prepare downloads and safely extracts source and trusted instruction inputs.
-// The caller's context controls cancellation and is passed to every download.
+// It returns the attempt-fenced directory and removes that directory if
+// preparation fails. The caller's context controls cancellation and is passed
+// to every download.
 func (workspace *Workspace) Prepare(ctx context.Context, claim protocol.Claim, client Downloader) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("artifact downloader is required")
@@ -283,7 +285,8 @@ func (workspace *Workspace) removeLocked(path string) error {
 	return nil
 }
 
-// Sanitize removes supervisor-only credentials and callback fields recursively.
+// Sanitize returns a recursive copy of manifest with supervisor-only
+// credentials and callback fields removed, leaving manifest unchanged.
 func Sanitize(manifest map[string]any) map[string]any {
 	return filterMap(manifest)
 }

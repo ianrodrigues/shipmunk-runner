@@ -67,8 +67,9 @@ func (process *Process) Start(ctx context.Context) error {
 }
 
 // Wait waits for the container command to finish and returns its exit code and
-// bounded combined output. Context cancellation does not remove the sandbox;
-// the caller must stop and remove it before disarming the watchdog.
+// bounded output, with stdout followed by stderr. Context cancellation does not
+// remove the sandbox; the caller must stop and remove it before disarming the
+// watchdog.
 func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	if _, err := process.inspectOwned(ctx); err != nil {
 		return 0, nil, fmt.Errorf("verify sandbox before wait: %w", err)

@@ -98,8 +98,10 @@ type Outcome struct {
 	Result    string
 }
 
-// RunOnce reconciles old state before claiming. It serializes calls in this
-// process; the journal's lifetime lock additionally excludes other processes.
+// RunOnce reconciles old state, claims and executes at most one attempt, and
+// returns a worked outcome only after result acceptance and confirmed cleanup.
+// It serializes calls in this process; the journal's lifetime lock additionally
+// excludes other processes.
 func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

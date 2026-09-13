@@ -329,6 +329,7 @@ func RunWatchdog(arguments []string, input io.Reader) error {
 
 // RunWatchdogCommand writes a readiness line before monitoring the control
 // channel so the supervisor knows cleanup is armed before creating a container.
+// It reconciles the owned container when the lease expires or the input closes.
 func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) error {
 	options, err := parseWatchdogArguments(arguments)
 	if err != nil {

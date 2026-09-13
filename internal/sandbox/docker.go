@@ -116,6 +116,8 @@ func (docker *Docker) Name(claim protocol.Claim) (string, error) {
 
 // Create reserves the already-journaled deterministic name and creates a
 // stopped container. The caller must arm a watchdog before this operation.
+// Errors wrapping ErrCreateUncertain mean Docker may still have created the
+// container, so the caller must retain the name for reconciliation.
 func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInput map[string]any, workspace string) (*Process, error) {
 	name, err := docker.Name(claim)
 	if err != nil {
@@ -216,7 +218,8 @@ func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInp
 
 // Reconcile stops and removes a Shipmunk-owned container, then verifies that
 // Docker confirms its absence. Both deterministic names and legacy hex IDs are
-// accepted for the persisted identifier.
+// accepted for the persisted identifier. An absent name returns
+// ErrCreateUncertain, while an absent immutable ID is already reconciled.
 func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	if !containerNamePattern.MatchString(identifier) && !containerIDPattern.MatchString(identifier) {
 		return errors.New("unsafe sandbox identifier")
