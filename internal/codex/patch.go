@@ -215,10 +215,19 @@ func generatePatch(before, after map[string]fileState) (patch []byte, returnedEr
 	if err := materialize(work, before); err != nil {
 		return nil, err
 	}
+	if err := runGit(ctx, temporary, work, nil, "init", "-q"); err != nil {
+		return nil, err
+	}
+	// Repository attributes are untrusted input. Info attributes have higher
+	// precedence than worktree .gitattributes files and keep index/diff bytes
+	// identical to the independently read snapshots.
+	attributes := []byte("** -text -filter -ident -working-tree-encoding !eol !diff\n")
+	if err := os.WriteFile(filepath.Join(work, ".git", "info", "attributes"), attributes, 0600); err != nil {
+		return nil, errors.New("cannot protect trusted patch attributes")
+	}
 	commands := [][]string{
-		{"init", "-q"},
-		{"-c", "core.hooksPath=/dev/null", "add", "--all"},
-		{"-c", "core.hooksPath=/dev/null", "-c", "user.name=Shipmunk", "-c", "user.email=runner@shipmunk.local", "commit", "-qm", "baseline", "--allow-empty"},
+		{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "add", "--all"},
+		{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Shipmunk", "-c", "user.email=runner@shipmunk.local", "commit", "-qm", "baseline", "--allow-empty"},
 	}
 	for _, arguments := range commands {
 		if err := runGit(ctx, temporary, work, nil, arguments...); err != nil {
@@ -240,11 +249,11 @@ func generatePatch(before, after map[string]fileState) (patch []byte, returnedEr
 	if err := materialize(work, after); err != nil {
 		return nil, err
 	}
-	if err := runGit(ctx, temporary, work, nil, "-c", "core.hooksPath=/dev/null", "add", "-N", "--all"); err != nil {
+	if err := runGit(ctx, temporary, work, nil, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "add", "-N", "--all"); err != nil {
 		return nil, err
 	}
 	output := &boundedWriter{remaining: MaxPatchBytes + 1}
-	if err := runGit(ctx, temporary, work, output, "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
+	if err := runGit(ctx, temporary, work, output, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
 		return nil, err
 	}
 	if output.buffer.Len() > MaxPatchBytes {

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -103,6 +104,22 @@ func TestCollectPatchRejectsIncompleteOrMismatchedPatch(t *testing.T) {
 	writeFile(t, partialAfter, "two.txt", "old two\n", 0644)
 	if _, err := CollectPatch(before, after, trustedPatch(t, before, partialAfter)); err == nil {
 		t.Fatal("accepted patch omitting a verified change")
+	}
+}
+
+func TestGeneratePatchIgnoresUntrustedAttributesAndPreservesCRLF(t *testing.T) {
+	before, after := t.TempDir(), t.TempDir()
+	attributes := "*.txt text eol=lf\n*.txt filter=attacker diff=attacker\n"
+	writeFile(t, before, ".gitattributes", attributes, 0644)
+	writeFile(t, after, ".gitattributes", attributes, 0644)
+	writeFile(t, before, "message.txt", "before\r\n", 0644)
+	writeFile(t, after, "message.txt", "after\r\n", 0644)
+	patch := trustedPatch(t, before, after)
+	if !bytes.Contains(patch, []byte("+after\r\n")) || bytes.Contains(patch, []byte("+after\n")) {
+		t.Fatalf("patch altered CRLF snapshot bytes:\n%s", patch)
+	}
+	if _, err := CollectPatch(before, after, patch); err != nil {
+		t.Fatal(err)
 	}
 }
 
