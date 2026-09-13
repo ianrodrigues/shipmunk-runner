@@ -98,7 +98,9 @@ type Outcome struct {
 	Result    string
 }
 
-// RunOnce reconciles old state before claiming. It serializes calls in this
+// RunOnce reconciles old state, then claims and supervises at most one attempt.
+// It returns an empty Outcome when the queue is idle and a worked Outcome only
+// after accepted completion and confirmed cleanup. Calls are serialized in this
 // process; the journal's lifetime lock additionally excludes other processes.
 func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	s.mu.Lock()

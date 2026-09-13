@@ -24,8 +24,9 @@ type Execution struct {
 	Result    map[string]any
 }
 
-// DecodeExecution implements the normalized fixture boundary. Native subscription
-// drivers remain a separate migration slice and must not bypass this validation.
+// DecodeExecution decodes and validates normalized fixture output for claim. A
+// nonzero exit code normalizes the result to incomplete and discards patch
+// artifacts so partial changes cannot be published.
 func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Execution, error) {
 	value, err := protocol.Decode(output, protocol.ResultMaxBytes)
 	if err != nil {

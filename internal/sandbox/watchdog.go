@@ -321,14 +321,16 @@ func (lease *Lease) writeMessageLocked(message string) error {
 	}
 }
 
-// RunWatchdog is the command body for cmd/shipmunk-watchdog. EOF is treated as
-// parent death. Cleanup retries until the exact owned container is absent.
+// RunWatchdog monitors the parent control channel while discarding protocol
+// responses. EOF or expiry triggers cleanup retries until the exact owned
+// container is absent.
 func RunWatchdog(arguments []string, input io.Reader) error {
 	return RunWatchdogCommand(arguments, input, io.Discard)
 }
 
-// RunWatchdogCommand writes a readiness line before monitoring the control
-// channel so the supervisor knows cleanup is armed before creating a container.
+// RunWatchdogCommand writes readiness and phase acknowledgments to output while
+// monitoring the parent control channel. EOF or expiry triggers cleanup retries
+// until the exact owned container is absent.
 func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) error {
 	options, err := parseWatchdogArguments(arguments)
 	if err != nil {
