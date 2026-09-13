@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -16,7 +17,11 @@ func validStream(result string) string {
 }
 
 func quote(value string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 const validResult = `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[]}`
@@ -87,6 +92,26 @@ func TestParseEnforcesLineAndEventLimits(t *testing.T) {
 	}
 }
 
+func TestParseClassifiesOnlyCompletedPreTurnErrorItemAsNativeFailure(t *testing.T) {
+	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n"
+	startupError := `{"type":"item.completed","item":{"id":"startup","type":"error","message":"private provider diagnostic"}}` + "\n"
+	if _, err := Parse([]byte(prefix+startupError), nil); !errors.Is(err, ErrNativeFailure) {
+		t.Fatalf("completed startup error = %v, want native failure", err)
+	}
+
+	for name, item := range map[string]string{
+		"ordinary completed item": `{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"hello"}}`,
+		"started error item":      `{"type":"item.started","item":{"id":"startup","type":"error"}}`,
+		"updated error item":      `{"type":"item.updated","item":{"id":"startup","type":"error"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(prefix+item+"\n"), nil); !errors.Is(err, ErrMalformedOutput) {
+				t.Fatalf("pre-turn item error = %v, want malformed output", err)
+			}
+		})
+	}
+}
+
 func TestParseUsesLastCompletedMessageAndRequiresItToBeStructured(t *testing.T) {
 	commentary := `{"type":"item.completed","item":{"id":"commentary","type":"agent_message","text":"private commentary"}}` + "\n"
 	stream := strings.Replace(validStream(validResult), `{"type":"item.completed","item":{"id":"message-1"`, commentary+`{"type":"item.completed","item":{"id":"message-1"`, 1)
@@ -117,5 +142,29 @@ func TestParseRejectsInvalidStructuredResults(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestParseAcceptsSchemaAuthorizedFindingsAndEnums(t *testing.T) {
+	finding := `{"path":"internal/codex/parser.go","line":1,"side":"RIGHT","severity":"info","explanation":"context","evidence":"evidence"}`
+	for _, outcome := range []string{"findings", "changes_proposed", "incomplete", "needs_input"} {
+		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[` + finding + `],"tests":[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]}`
+		stream, err := Parse([]byte(validStream(result)), nil)
+		if err != nil {
+			t.Fatalf("outcome %q rejected schema-authorized result: %v", outcome, err)
+		}
+		if stream.Result.Findings[0].Severity != "info" || stream.Result.Tests[0].Status != "error" {
+			t.Fatalf("outcome %q changed result: %#v", outcome, stream.Result)
+		}
+	}
+}
+
+func TestParseRejectsEveryC0ControlInFindingPath(t *testing.T) {
+	for control := rune(0); control <= 0x1f; control++ {
+		name := "src/a" + string(control) + "b.go"
+		result := `{"summary":"Done.","outcome":"findings","findings":[{"path":` + quote(name) + `,"line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`
+		if _, err := Parse([]byte(validStream(result)), nil); !errors.Is(err, ErrInvalidResult) {
+			t.Fatalf("control U+%04X path error = %v", control, err)
+		}
 	}
 }
