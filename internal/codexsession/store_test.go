@@ -232,6 +232,28 @@ func TestStoreConcurrentReadsAndWritesRemainComplete(t *testing.T) {
 
 func TestStoreConcurrentConflictingBindingsCannotReplaceEachOther(t *testing.T) {
 	store := openTestStore(t)
+	assertConflictingBindingsSerialized(t, store, store)
+}
+
+func TestIndependentlyOpenedStoresSerializeConflictingBindings(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionRoot := filepath.Join(root, "sessions")
+	firstStore, err := Open(sessionRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStore, err := Open(sessionRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertConflictingBindingsSerialized(t, firstStore, secondStore)
+}
+
+func assertConflictingBindingsSerialized(t *testing.T, firstStore, secondStore *Store) {
+	t.Helper()
 	firstClaim := testClaim()
 	secondClaim := testClaim()
 	secondClaim.Manifest["repository_id"] = 999
@@ -243,13 +265,14 @@ func TestStoreConcurrentConflictingBindingsCannotReplaceEachOther(t *testing.T) 
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	for _, candidate := range []struct {
+		store   *Store
 		claim   protocol.Claim
 		session Session
-	}{{firstClaim, first}, {secondClaim, second}} {
+	}{{firstStore, firstClaim, first}, {secondStore, secondClaim, second}} {
 		candidate := candidate
 		go func() {
 			<-start
-			results <- store.Persist(candidate.claim, candidate.session)
+			results <- candidate.store.Persist(candidate.claim, candidate.session)
 		}()
 	}
 	close(start)
@@ -263,7 +286,7 @@ func TestStoreConcurrentConflictingBindingsCannotReplaceEachOther(t *testing.T) 
 	if successes != 1 {
 		t.Fatalf("successful conflicting writes = %d, want exactly 1", successes)
 	}
-	persisted, err := store.Read(testRun)
+	persisted, err := firstStore.Read(testRun)
 	if err != nil || persisted == nil {
 		t.Fatalf("read winning session = %#v, %v", persisted, err)
 	}
