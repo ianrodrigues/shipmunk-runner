@@ -419,7 +419,7 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 			if !runtime.ownsReservation(inspection, sandboxName, image) {
 				return errors.New("profile create reservation has unexpected identity")
 			}
-			return runtime.removeReservation(ctx, inspection.ID, sandboxName, image)
+			return nil
 		}
 
 		inspection, inspectErr := runtime.inspect(ctx, sandboxName, checkpoint)
@@ -443,10 +443,7 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 			return fmt.Errorf("inspect profile sandbox during create reconciliation (%v): %w", createErr, inspectErr)
 		}
 		if runtime.ownsReservation(inspection, sandboxName, image) {
-			if err := runtime.removeReservation(ctx, inspection.ID, sandboxName, image); err != nil {
-				return err
-			}
-			continue
+			return nil
 		}
 		if !runtime.ownsRuntimeContainer(inspection, sandboxName) {
 			return errors.New("refusing to reconcile a profile sandbox not owned by Shipmunk")
@@ -463,32 +460,6 @@ func (runtime *dockerRuntime) ownsReservation(inspection dockerInspection, sandb
 		inspection.Config.Labels[profileNameLabel] == sandboxName &&
 		inspection.Config.Labels[profileReservationLabel] == "true" &&
 		inspection.Config.Image == image && !inspection.State.Running && len(inspection.Mounts) == 0
-}
-
-func (runtime *dockerRuntime) removeReservation(ctx context.Context, identifier, sandboxName, image string) error {
-	checkpoint := func() error { return nil }
-	inspection, err := runtime.inspect(ctx, identifier, checkpoint)
-	if errors.Is(err, errContainerAbsent) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect profile create reservation before removal: %w", err)
-	}
-	if !runtime.ownsReservation(inspection, sandboxName, image) {
-		return errors.New("refusing to remove a profile create reservation with unexpected identity")
-	}
-	if _, _, err := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, []string{"rm", "--force", inspection.ID}, true, nil); err != nil {
-		if _, inspectErr := runtime.inspect(ctx, inspection.ID, checkpoint); !errors.Is(inspectErr, errContainerAbsent) {
-			return fmt.Errorf("remove profile create reservation: %w", err)
-		}
-	}
-	if _, err := runtime.inspect(ctx, sandboxName, checkpoint); !errors.Is(err, errContainerAbsent) {
-		if err == nil {
-			return errors.New("Docker did not confirm profile create reservation absence")
-		}
-		return fmt.Errorf("confirm profile create reservation absence: %w", err)
-	}
-	return nil
 }
 
 func (runtime *dockerRuntime) resolveImage(ctx context.Context, checkpoint Checkpoint) (string, error) {

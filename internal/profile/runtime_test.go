@@ -628,20 +628,17 @@ func TestReconcileCreateReservesAbsentNameBeforeReleasingIt(t *testing.T) {
 	if err := runtime.ReconcileCreate(context.Background(), testProfileName); err != nil {
 		t.Fatalf("ReconcileCreate() = %v", err)
 	}
-	if fake.present {
-		t.Fatal("create reservation was not removed after reconciliation")
+	if !fake.present || !fake.reservation {
+		t.Fatal("create reservation was not retained as a name tombstone")
 	}
-	var reservationCreate, reservationRemove int
+	var reservationCreate int
 	for _, command := range fake.commands {
 		if len(command) > 1 && command[1] == "create" && slices.Contains(command, profileReservationLabel+"=true") {
 			reservationCreate++
 		}
-		if len(command) > 1 && command[1] == "rm" {
-			reservationRemove++
-		}
 	}
-	if reservationCreate != 1 || reservationRemove != 1 {
-		t.Fatalf("reservation create/remove counts = %d/%d; commands=%v", reservationCreate, reservationRemove, fake.commands)
+	if reservationCreate != 1 {
+		t.Fatalf("reservation create count = %d; commands=%v", reservationCreate, fake.commands)
 	}
 }
 
@@ -658,11 +655,8 @@ func TestReconcileCreateRemovesLateOwnedContainerBeforeReservingName(t *testing.
 	if err := runtime.ReconcileCreate(context.Background(), testProfileName); err != nil {
 		t.Fatalf("ReconcileCreate() = %v", err)
 	}
-	if fake.present {
-		t.Fatal("late container or create reservation remained after reconciliation")
-	}
-	if fake.reservation {
-		t.Fatal("reconciliation removed the late container but left the reservation behind")
+	if !fake.present || !fake.reservation {
+		t.Fatal("reconciliation did not replace the late container with a name tombstone")
 	}
 }
 

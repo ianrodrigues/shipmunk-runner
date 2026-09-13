@@ -606,6 +606,10 @@ func (lifecycle *Lifecycle) stopAndDisarm(sandboxName string, createMayBeInFligh
 		if err := lifecycle.Runtime.ReconcileCreate(ctx, sandboxName); err != nil {
 			return fmt.Errorf("profile create reconciliation is unconfirmed: %w", err)
 		}
+		// Reconciliation leaves a stopped, mount-free name tombstone. The
+		// operation-scoped name is never reused, so retaining it permanently
+		// prevents any delayed create request from materializing credentials.
+		return nil
 	}
 	if err := lifecycle.Runtime.Stop(ctx, sandboxName, false); err != nil {
 		return fmt.Errorf("profile container cleanup is unconfirmed: %w", err)

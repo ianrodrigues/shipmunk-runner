@@ -597,6 +597,14 @@ func (docker *Docker) cleanupWatchdogSandboxWithOwner(
 			time.Sleep(docker.config.PollInterval)
 			continue
 		}
+		if inspection.Config.Labels["shipmunk.profile-create-reservation"] == "true" &&
+			inspection.Config.Labels["shipmunk.profile-runtime"] == "true" &&
+			inspection.Config.Labels["shipmunk.profile-sandbox"] == name &&
+			strings.TrimPrefix(inspection.Name, "/") == name {
+			// An uncertain-create tombstone must retain the operation-scoped
+			// name permanently so an older delayed create cannot commit later.
+			return nil
+		}
 		if !owns(inspection, identifier) || strings.TrimPrefix(inspection.Name, "/") != name {
 			return errors.New("watchdog refused to remove an unrelated container")
 		}
