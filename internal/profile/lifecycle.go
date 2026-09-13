@@ -164,7 +164,7 @@ func (lifecycle *Lifecycle) Operate(
 			}
 		}
 
-		if err := lifecycle.stopAndDisarm(pending["sandbox"].(string), isTrue(pending["create_attempted"]), watchdogLease); err != nil {
+		if err := lifecycle.stopPending(locked, pending, watchdogLease); err != nil {
 			return err
 		}
 		if outcome.Health != HealthReady {
@@ -449,7 +449,7 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 	if !ok || protocol.ValidateOperationID(operationID) != nil || !sandboxOK || sandboxName != "shipmunk-profile-"+operationID {
 		return errors.New("profile journal sandbox mismatch")
 	}
-	if err := lifecycle.stopAndDisarm(sandboxName, isTrue(pending["create_attempted"]), nil); err != nil {
+	if err := lifecycle.stopPending(store, pending, nil); err != nil {
 		return err
 	}
 	rawBinding, bindingExists := pending["binding"]
@@ -551,7 +551,7 @@ func (lifecycle *Lifecycle) rejectBegin(
 	if err := store.Write("pending", pending); err != nil {
 		return err
 	}
-	if err := lifecycle.stopAndDisarm(pending["sandbox"].(string), isTrue(pending["create_attempted"]), nil); err != nil {
+	if err := lifecycle.stopPending(store, pending, nil); err != nil {
 		return err
 	}
 	if err := store.Invalidate(); err != nil {
@@ -602,12 +602,31 @@ func (lifecycle *Lifecycle) complete(
 func (lifecycle *Lifecycle) stopAndDisarm(sandboxName string, createMayBeInFlight bool, lease WatchdogLease) error {
 	ctx, cancel := context.WithTimeout(context.Background(), lifecycle.cleanupTimeout)
 	defer cancel()
-	if err := lifecycle.Runtime.Stop(ctx, sandboxName, createMayBeInFlight); err != nil {
+	if createMayBeInFlight {
+		if err := lifecycle.Runtime.ReconcileCreate(ctx, sandboxName); err != nil {
+			return fmt.Errorf("profile create reconciliation is unconfirmed: %w", err)
+		}
+	}
+	if err := lifecycle.Runtime.Stop(ctx, sandboxName, false); err != nil {
 		return fmt.Errorf("profile container cleanup is unconfirmed: %w", err)
 	}
 	if lease != nil {
 		if err := lease.Disarm(); err != nil {
 			return fmt.Errorf("profile watchdog cleanup is unconfirmed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (lifecycle *Lifecycle) stopPending(store *Store, pending map[string]any, lease WatchdogLease) error {
+	createMayBeInFlight := isTrue(pending["create_attempted"])
+	if err := lifecycle.stopAndDisarm(pending["sandbox"].(string), createMayBeInFlight, lease); err != nil {
+		return err
+	}
+	if createMayBeInFlight {
+		pending["create_attempted"] = false
+		if err := store.Write("pending", pending); err != nil {
+			return err
 		}
 	}
 	return nil

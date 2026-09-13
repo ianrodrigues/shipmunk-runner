@@ -1,5 +1,5 @@
-// Package profile stores native subscription credentials in a protected,
-// PHP-compatible per-profile directory.
+// Package profile stores native subscription credentials in a protected
+// per-profile directory.
 package profile
 
 import (
@@ -121,6 +121,9 @@ func (store *Store) CreateHome() (string, error) {
 	if err := store.ensureOpen(); err != nil {
 		return "", err
 	}
+	if err := store.assertLocked(); err != nil {
+		return "", err
+	}
 	if err := ensureProfileDirectory(store.Home()); err != nil {
 		return "", fmt.Errorf("create protected profile home: %w", err)
 	}
@@ -128,7 +131,7 @@ func (store *Store) CreateHome() (string, error) {
 }
 
 // Read reads one fixed-name journal, rejecting unsafe files and inputs above
-// the PHP store's 16 KiB bound. Unknown object fields are preserved by callers.
+// the store's 16 KiB bound. Unknown object fields are preserved by callers.
 func (store *Store) Read(name string) (map[string]any, error) {
 	if err := store.ensureOpen(); err != nil {
 		return nil, err
@@ -344,7 +347,7 @@ func equalJournalIdentity(left, right map[string]any) bool {
 	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
 }
 
-// ValidateHome verifies every home entry uses the exact PHP-protected mode.
+// ValidateHome verifies every home entry uses the required protected mode.
 func (store *Store) ValidateHome() error {
 	if err := store.ensureOpen(); err != nil {
 		return err
@@ -371,6 +374,9 @@ func (store *Store) NormalizeNativeHome() error {
 // following symlinks. Pending/execution recovery journals remain untouched.
 func (store *Store) Invalidate() error {
 	if err := store.ensureOpen(); err != nil {
+		return err
+	}
+	if err := store.assertLocked(); err != nil {
 		return err
 	}
 	if err := store.verifyDirectories(); err != nil {

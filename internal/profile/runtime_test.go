@@ -33,6 +33,7 @@ type fakeCommand struct {
 	present             bool
 	label               string
 	nameLabel           string
+	reservation         bool
 	commandError        error
 	commandOut          string
 	commandErr          string
@@ -110,16 +111,22 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 		_, _ = stdout.Write(encoded)
 		return true, nil
 	case "create":
+		isReservation := slices.Contains(args, profileReservationLabel+"=true")
+		if fake.present {
+			_, _ = io.WriteString(stderr, "Conflict. The container name is already in use")
+			return true, fakeExitError(1)
+		}
 		if fake.createNotDispatched {
 			return false, fakeExitError(1)
 		}
-		if fake.blockCreate {
+		if fake.blockCreate && !isReservation {
 			<-ctx.Done()
 			return true, ctx.Err()
 		}
 		fake.mu.Lock()
 		fake.present = true
 		fake.running = false
+		fake.reservation = isReservation
 		for index := 0; index < len(args)-1; index++ {
 			if args[index] == "--name" {
 				fake.containerName = args[index+1]
@@ -178,6 +185,7 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 	case "rm":
 		fake.mu.Lock()
 		fake.present = false
+		fake.reservation = false
 		fake.mu.Unlock()
 		return true, nil
 	default:
@@ -186,15 +194,19 @@ func (fake *fakeCommand) Run(ctx context.Context, environment []string, stdin io
 }
 
 func (fake *fakeCommand) inspection() map[string]any {
+	var mounts []map[string]string
+	if !fake.reservation {
+		mounts = []map[string]string{{"Type": "bind", "Source": fake.homeMountSource, "Destination": "/profile"}}
+	}
 	return map[string]any{
 		"Id":   fake.containerID,
 		"Name": "/" + fake.containerName,
 		"Config": map[string]any{
 			"Image":  fake.imageRef,
-			"Labels": map[string]string{profileUIDLabel: fake.label, profileNameLabel: fake.nameLabel},
+			"Labels": map[string]string{profileUIDLabel: fake.label, profileNameLabel: fake.nameLabel, profileReservationLabel: map[bool]string{true: "true", false: ""}[fake.reservation]},
 		},
 		"State":  map[string]bool{"Running": fake.running},
-		"Mounts": []map[string]string{{"Type": "bind", "Source": fake.homeMountSource, "Destination": "/profile"}},
+		"Mounts": mounts,
 	}
 }
 
@@ -601,5 +613,54 @@ func TestStopDoesNotAcknowledgeAbsenceForAnUncertainCreate(t *testing.T) {
 	}
 	if err := runtime.Stop(context.Background(), testProfileName, false); err != nil {
 		t.Fatalf("idempotent Stop without create uncertainty = %v", err)
+	}
+}
+
+func TestReconcileCreateReservesAbsentNameBeforeReleasingIt(t *testing.T) {
+	fake := newFakeCommand()
+	fake.blockCreate = true
+	runtime := newTestRuntime(t, fake)
+	runtime.config.dockerTimeout = 20 * time.Millisecond
+	if err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }, noOpCreatePhase{}); !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("Start error = %v, want ErrCreateUncertain", err)
+	}
+	if err := runtime.ReconcileCreate(context.Background(), testProfileName); err != nil {
+		t.Fatalf("ReconcileCreate() = %v", err)
+	}
+	if fake.present {
+		t.Fatal("create reservation was not removed after reconciliation")
+	}
+	var reservationCreate, reservationRemove int
+	for _, command := range fake.commands {
+		if len(command) > 1 && command[1] == "create" && slices.Contains(command, profileReservationLabel+"=true") {
+			reservationCreate++
+		}
+		if len(command) > 1 && command[1] == "rm" {
+			reservationRemove++
+		}
+	}
+	if reservationCreate != 1 || reservationRemove != 1 {
+		t.Fatalf("reservation create/remove counts = %d/%d; commands=%v", reservationCreate, reservationRemove, fake.commands)
+	}
+}
+
+func TestReconcileCreateRemovesLateOwnedContainerBeforeReservingName(t *testing.T) {
+	fake := newFakeCommand()
+	fake.blockCreate = true
+	runtime := newTestRuntime(t, fake)
+	runtime.config.dockerTimeout = 20 * time.Millisecond
+	if err := runtime.Start(context.Background(), testProfileName, protectedHome(t), func() error { return nil }, noOpCreatePhase{}); !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("Start error = %v, want ErrCreateUncertain", err)
+	}
+	fake.blockCreate = false
+	prepareRunningProfile(fake)
+	if err := runtime.ReconcileCreate(context.Background(), testProfileName); err != nil {
+		t.Fatalf("ReconcileCreate() = %v", err)
+	}
+	if fake.present {
+		t.Fatal("late container or create reservation remained after reconciliation")
+	}
+	if fake.reservation {
+		t.Fatal("reconciliation removed the late container but left the reservation behind")
 	}
 }

@@ -272,6 +272,8 @@ type nativeProfileEntry struct {
 type nativeTreeHooks struct {
 	beforeDirectoryOpen func(parent *os.Root, name string)
 	beforeEntryChmod    func(entry nativeProfileEntry)
+	beforeHomeRemove    func(parent *os.Root, name string)
+	beforeEntryRemove   func(parent *os.Root, name string)
 }
 
 func inspectNativeProfileTree(home string, hooks nativeTreeHooks) ([]nativeProfileEntry, *os.Root, error) {
@@ -497,11 +499,21 @@ func removeProfileTree(path string, hooks nativeTreeHooks) error {
 		return err
 	}
 	if os.SameFile(rootInfo, current) {
+		if hooks.beforeHomeRemove != nil {
+			hooks.beforeHomeRemove(parent, name)
+		}
+		current, err = parent.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil || !os.SameFile(rootInfo, current) {
+			return errors.New("native home changed during invalidation")
+		}
 		return parent.Remove(name)
 	}
-	// If the home entry was replaced, remove only that entry. Root.Remove does
-	// not follow a symlink, so an outside target remains untouched.
-	return parent.Remove(name)
+	// The path now names an entry we did not open. Leave it untouched; even a
+	// symlink replacement may be meaningful to another owner of the parent.
+	return errors.New("native home changed during invalidation")
 }
 
 func removeProfileEntries(root *os.Root, directory string, hooks nativeTreeHooks) error {
@@ -525,26 +537,34 @@ func removeProfileEntries(root *os.Root, directory string, hooks nativeTreeHooks
 			}
 			childRoot, openErr := root.OpenRoot(entryPath)
 			if openErr != nil {
-				// Removing a replaced symlink is safe: Root.Remove never follows it.
-				if removeErr := root.Remove(entryPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
-					continue
-				}
-				return openErr
+				return fmt.Errorf("open native home entry during invalidation: %w", openErr)
 			}
 			openedInfo, statErr := childRoot.Stat(".")
 			_ = childRoot.Close()
 			if statErr != nil || !os.SameFile(info, openedInfo) {
-				// The name now denotes a replacement. Remove only the entry itself;
-				// never recurse through a path that was not the inspected directory.
-				if removeErr := root.Remove(entryPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
-					continue
-				}
 				return errors.New("native home changed during invalidation")
 			}
 			recurseErr := removeProfileEntries(root, entryPath, hooks)
 			if recurseErr != nil {
 				return recurseErr
 			}
+		}
+		current, err := root.Lstat(entryPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !os.SameFile(info, current) {
+			return errors.New("native home changed during invalidation")
+		}
+		if hooks.beforeEntryRemove != nil {
+			hooks.beforeEntryRemove(root, entryPath)
+		}
+		current, err = root.Lstat(entryPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !os.SameFile(info, current) {
+			return errors.New("native home changed during invalidation")
 		}
 		if err := root.Remove(entryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
