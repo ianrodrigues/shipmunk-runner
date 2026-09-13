@@ -123,6 +123,43 @@ func TestGeneratePatchIgnoresUntrustedAttributesAndPreservesCRLF(t *testing.T) {
 	}
 }
 
+func TestGeneratePatchIncludesChangedIgnoredFile(t *testing.T) {
+	before, after := t.TempDir(), t.TempDir()
+	writeFile(t, before, ".gitignore", "ignored.txt\n", 0644)
+	writeFile(t, after, ".gitignore", "ignored.txt\n", 0644)
+	writeFile(t, before, "ignored.txt", "before\n", 0644)
+	writeFile(t, after, "ignored.txt", "after\n", 0644)
+	patch := trustedPatch(t, before, after)
+	if !bytes.Contains(patch, []byte("diff --git a/ignored.txt b/ignored.txt")) || !bytes.Contains(patch, []byte("+after\n")) {
+		t.Fatalf("patch omitted changed ignored file:\n%s", patch)
+	}
+	if _, err := CollectPatch(before, after, patch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCollectPatchRejectsSymlinkRoots(t *testing.T) {
+	realBefore, realAfter := t.TempDir(), t.TempDir()
+	writeFile(t, realAfter, "changed", "after", 0644)
+	for name, beforeLink := range map[string]bool{"before root": true, "after root": false} {
+		t.Run(name, func(t *testing.T) {
+			parent := t.TempDir()
+			link := filepath.Join(parent, "root")
+			target := realAfter
+			before, after := realBefore, link
+			if beforeLink {
+				target, before, after = realBefore, link, realAfter
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := CollectPatch(before, after, []byte("diff")); err == nil {
+				t.Fatal("accepted symlink root")
+			}
+		})
+	}
+}
+
 func TestCollectPatchNoChangesReturnsNil(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "same", "x", 0600)
