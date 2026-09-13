@@ -37,11 +37,6 @@ func outputWithPatch(t *testing.T, claim protocol.Claim, outcome string) []byte 
 	body := "diff --git a/example b/example\n"
 	hash := sha256.Sum256([]byte(body))
 	hashText := hex.EncodeToString(hash[:])
-	result := envelope["result"].(map[string]any)
-	result["patch_artifact"] = map[string]any{
-		"artifact_id": "01k4w000000000000000000099",
-		"sha256":      hashText,
-	}
 	envelope["artifacts"] = []any{map[string]any{
 		"kind":   "patch",
 		"bytes":  body,
@@ -87,6 +82,34 @@ func TestDecodeExecutionNormalizesMissingTestsForFailedExit(t *testing.T) {
 	}
 }
 
+func TestDecodeExecutionDiscardsPatchArtifactsForFailedExit(t *testing.T) {
+	claim := fixtureClaim(t)
+	execution, err := DecodeExecution(claim, 1, outputWithPatch(t, claim, "changes_proposed"))
+	if err != nil {
+		t.Fatalf("failed native execution with a partial patch was not normalized: %v", err)
+	}
+	if execution.Result["outcome"] != "incomplete" || execution.Result["patch_artifact"] != nil {
+		t.Fatalf("failed native execution was not normalized without a patch: %#v", execution.Result)
+	}
+	if len(execution.Artifacts) != 0 {
+		t.Fatalf("failed native execution retained patch artifacts: %#v", execution.Artifacts)
+	}
+}
+
+func TestDecodeExecutionKeepsUnuploadedPatchReferenceNull(t *testing.T) {
+	claim := fixtureClaim(t)
+	execution, err := DecodeExecution(claim, 0, outputWithPatch(t, claim, "changes_proposed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Result["outcome"] != "changes_proposed" || execution.Result["patch_artifact"] != nil {
+		t.Fatal("pre-upload validation invented a published artifact reference")
+	}
+	if len(execution.Artifacts) != 1 || execution.Artifacts[0].Kind != "patch" {
+		t.Fatal("pre-upload validation lost the local patch")
+	}
+}
+
 func TestPatchPublicationRequiresProposedChangesAndUsesUploadedID(t *testing.T) {
 	t.Run("rejects incompatible outcome before upload", func(t *testing.T) {
 		s, client, _, _, _, _ := fixtureSupervisor(t)
@@ -118,6 +141,36 @@ func TestPatchPublicationRequiresProposedChangesAndUsesUploadedID(t *testing.T) 
 		}
 		if client.uploads != 1 || client.completions != 1 {
 			t.Fatalf("patch publication sequence mismatch: uploads=%d completions=%d", client.uploads, client.completions)
+		}
+	})
+
+	t.Run("validates final completion with the server-assigned ID", func(t *testing.T) {
+		s, client, _, _, _, _ := fixtureSupervisor(t)
+		claim := *client.claim
+		process := s.Sandbox.(*fixtureSandbox).process
+		process.output = outputWithPatch(t, claim, "changes_proposed")
+		client.uploadID = "not-a-valid-ulid"
+		_, err := s.RunOnce(t.Context())
+		if err == nil {
+			t.Fatal("completed with an invalid server-assigned artifact ID")
+		}
+		if client.uploads != 1 || client.completions != 0 {
+			t.Fatalf("invalid final reference was published: uploads=%d completions=%d", client.uploads, client.completions)
+		}
+	})
+
+	t.Run("failed exit publishes incomplete without uploading patch", func(t *testing.T) {
+		s, client, _, _, _, _ := fixtureSupervisor(t)
+		claim := *client.claim
+		process := s.Sandbox.(*fixtureSandbox).process
+		process.output = outputWithPatch(t, claim, "changes_proposed")
+		process.exit = 1
+		outcome, err := s.RunOnce(t.Context())
+		if err != nil || outcome.Result != "incomplete" {
+			t.Fatalf("failed native execution did not publish incomplete: %+v %v", outcome, err)
+		}
+		if client.uploads != 0 || client.completions != 1 || client.completed["outcome"] != "incomplete" || client.completed["patch_artifact"] != nil {
+			t.Fatalf("failed patch was uploaded or published: uploads=%d completions=%d result=%#v", client.uploads, client.completions, client.completed)
 		}
 	})
 }

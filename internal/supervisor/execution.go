@@ -44,7 +44,8 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 	if !ok || !sameIdentity(result, claim, true) {
 		return Execution{}, errors.New("native result does not match active attempt")
 	}
-	if exitCode != 0 {
+	failedExit := exitCode != 0
+	if failedExit {
 		result["outcome"] = "incomplete"
 		result["summary"] = "Native executable exited unsuccessfully."
 		result["findings"] = []any{}
@@ -53,9 +54,6 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 			result["tests"] = []any{}
 		}
 		result["usage"] = nil
-	}
-	if err := validateJSON("result", result); err != nil {
-		return Execution{}, err
 	}
 	execution := Execution{Result: result}
 	if raw, exists := envelope["events"]; exists {
@@ -80,7 +78,6 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 			execution.Events = append(execution.Events, encoded)
 		}
 	}
-	patches := 0
 	if raw, exists := envelope["artifacts"]; exists {
 		artifacts, ok := raw.([]any)
 		if !ok {
@@ -98,10 +95,18 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 			if !kindOK || !bodyOK || !hashOK || (kind != "patch" && kind != "native_output") || hex.EncodeToString(actual[:]) != hash || len(body) > protocol.ResultMaxBytes {
 				return Execution{}, errors.New("native artifact kind, size or hash is invalid")
 			}
-			if kind == "patch" {
-				patches++
+			if failedExit && kind == "patch" {
+				// A failed native process is normalized to incomplete. Never upload
+				// a patch produced by its partial or otherwise failed execution.
+				continue
 			}
 			execution.Artifacts = append(execution.Artifacts, Artifact{Kind: kind, Bytes: []byte(body), SHA256: hash})
+		}
+	}
+	patches := 0
+	for _, artifact := range execution.Artifacts {
+		if artifact.Kind == "patch" {
+			patches++
 		}
 	}
 	if patches > 1 || (patches == 0 && result["patch_artifact"] != nil) {
@@ -110,7 +115,36 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 	if patches != 0 && result["outcome"] != "changes_proposed" {
 		return Execution{}, errors.New("native patch is incompatible with result outcome")
 	}
+	if err := validatePreUploadResult(result, execution.Artifacts); err != nil {
+		return Execution{}, err
+	}
 	return execution, nil
+}
+
+// validatePreUploadResult validates the normalized result before publication.
+// A changes_proposed envelope may legitimately carry a null patch reference
+// because the control plane assigns the artifact ID only after upload. Validate
+// a detached copy using a contract-valid provisional reference; runClaim will
+// validate the final result again after replacing it with the real upload ID.
+func validatePreUploadResult(result map[string]any, artifacts []Artifact) error {
+	validationResult := result
+	if result["outcome"] == "changes_proposed" && result["patch_artifact"] == nil {
+		for _, artifact := range artifacts {
+			if artifact.Kind != "patch" {
+				continue
+			}
+			validationResult = make(map[string]any, len(result))
+			for key, value := range result {
+				validationResult[key] = value
+			}
+			validationResult["patch_artifact"] = map[string]any{
+				"artifact_id": "01k4w000000000000000000099",
+				"sha256":      artifact.SHA256,
+			}
+			break
+		}
+	}
+	return validateJSON("result", validationResult)
 }
 
 func sameIdentity(object map[string]any, claim protocol.Claim, run bool) bool {
