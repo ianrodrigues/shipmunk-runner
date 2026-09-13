@@ -18,6 +18,8 @@ The central tracker is [`ianrodrigues/shipmunk-tasks`](https://github.com/ianrod
 - Keep code, tests, and detailed durable evidence in the implementation repository.
 - Run the issue’s stated validation and distinguish fixture results from live validation.
 - Treat live validation as its own linked task when it needs designated infrastructure, credentials, coordination, or a separate pass/fail outcome. Keep ordinary validation as an acceptance or verification bullet in the implementation task.
+- In the implementation pull request body, use `Closes ianrodrigues/shipmunk-tasks#N` only when the pull request completes every acceptance criterion and all required validation. Use `Relates to ianrodrigues/shipmunk-tasks#N` when it delivers only part of the issue or required validation remains.
+- Do not use a closing keyword while live validation, another implementation slice, or a required dependency remains outstanding.
 
 ## Report
 
@@ -28,3 +30,5 @@ When updating the central issue, write only:
 - remaining blocker or next step.
 
 Do not paste logs, test matrices, command transcripts, frontmatter, credentials, provider output, or historical narrative. Use native GitHub fields, labels, milestones, and dependencies for metadata; do not recreate local task IDs or Markdown task files.
+
+After merge, verify that GitHub closed an issue referenced with `Closes`. If it remains open, inspect the pull request target branch and closing keyword before changing tracker state.
