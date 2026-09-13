@@ -63,6 +63,22 @@ func NewDockerTransport(cfg TransportConfig) (*DockerTransport, error) {
 	return newDockerTransport(cfg, execDockerCommand{executable: cfg.DockerExecutable})
 }
 
+// CleanupDockerTransport reconciles deterministic resources after a restart,
+// without reopening source or profile paths.
+func CleanupDockerTransport(ctx context.Context, cfg TransportConfig) error {
+	if !transportNamePattern.MatchString(cfg.Name) {
+		return errors.New("Codex transport name is invalid")
+	}
+	if cfg.DockerExecutable == "" {
+		cfg.DockerExecutable = "docker"
+	}
+	if cfg.CommandTimeout <= 0 {
+		cfg.CommandTimeout = 30 * time.Second
+	}
+	t := &DockerTransport{cfg: cfg, docker: execDockerCommand{executable: cfg.DockerExecutable}, workspaceVolume: cfg.Name + "-workspace"}
+	return t.cleanup(ctx)
+}
+
 func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTransport, error) {
 	if !transportNamePattern.MatchString(cfg.Name) || cfg.MaxCommands < 1 || docker == nil ||
 		cfg.NativeImage == "" || cfg.RepositoryImage == "" {
@@ -308,7 +324,7 @@ func decodeBridgeRequest(raw []byte) (bridgeRequest, error) {
 }
 
 func (t *DockerTransport) ExecuteRepositoryCommand(ctx context.Context, command string, limit int) (CommandResult, error) {
-	r, err := t.run(ctx, nil, t.repoExec("sh", "-c", command)...)
+	r, err := t.rawRun(ctx, nil, t.repoExec("sh", "-c", command)...)
 	if err != nil {
 		return CommandResult{}, err
 	}
@@ -385,6 +401,13 @@ func (t *DockerTransport) imageID(ctx context.Context, image string) (string, er
 	return id, nil
 }
 func (t *DockerTransport) run(ctx context.Context, stdin io.Reader, args ...string) (transportResult, error) {
+	r, err := t.rawRun(ctx, stdin, args...)
+	if err == nil && r.exitCode != 0 {
+		return r, errors.New("Docker administrative command failed")
+	}
+	return r, err
+}
+func (t *DockerTransport) rawRun(ctx context.Context, stdin io.Reader, args ...string) (transportResult, error) {
 	return t.docker.Run(ctx, t.cfg.CommandTimeout, transportCommandLimit, stdin, args...)
 }
 
@@ -397,16 +420,16 @@ func (t *DockerTransport) Stop(ctx context.Context) error {
 func (t *DockerTransport) cleanup(ctx context.Context) error {
 	var failed bool
 	for _, n := range []string{t.cfg.Name, t.cfg.Name + "-repo", t.cfg.Name + "-diff"} {
-		_, _ = t.run(ctx, nil, "stop", "--time", "2", n)
-		_, _ = t.run(ctx, nil, "rm", "--force", n)
-		r, e := t.run(ctx, nil, "inspect", n)
+		_, _ = t.rawRun(ctx, nil, "stop", "--time", "2", n)
+		_, _ = t.rawRun(ctx, nil, "rm", "--force", n)
+		r, e := t.rawRun(ctx, nil, "inspect", n)
 		if e != nil || r.exitCode == 0 || !strings.Contains(strings.ToLower(string(r.stdout)+string(r.stderr)), "no such") {
 			failed = true
 		}
 	}
 	if !failed {
-		_, _ = t.run(ctx, nil, "volume", "rm", t.workspaceVolume)
-		r, e := t.run(ctx, nil, "volume", "inspect", t.workspaceVolume)
+		_, _ = t.rawRun(ctx, nil, "volume", "rm", t.workspaceVolume)
+		r, e := t.rawRun(ctx, nil, "volume", "inspect", t.workspaceVolume)
 		if e != nil || r.exitCode == 0 || !strings.Contains(strings.ToLower(string(r.stdout)+string(r.stderr)), "no such") {
 			failed = true
 		} else if err := os.RemoveAll(t.bridge); err != nil {
