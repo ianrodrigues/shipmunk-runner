@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -58,7 +59,7 @@ func TestDecodeExecutionRejectsArtifactSubstitutionAndAmbiguity(t *testing.T) {
 	for name, mutate := range map[string]func(map[string]any){
 		"hash substitution": func(envelope map[string]any) {
 			envelope["artifacts"] = []any{artifact()}
-			envelope["artifacts"].([]any)[0].(map[string]any)["sha256"] = string(make([]byte, 64))
+			envelope["artifacts"].([]any)[0].(map[string]any)["sha256"] = strings.Repeat("0", 64)
 		},
 		"unsupported metadata": func(envelope map[string]any) {
 			value := artifact()
