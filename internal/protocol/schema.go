@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -369,8 +368,7 @@ func stringRules(schema map[string]any, value any, path string) error {
 		return fmt.Errorf("%s does not match its required pattern", path)
 	}
 	if format, ok := schema["format"].(string); ok && format == "date-time" {
-		parsed, err := time.Parse(time.RFC3339Nano, text)
-		if err != nil || !strings.HasSuffix(text, "Z") || parsed.Location() != time.UTC {
+		if _, err := utcTime(text); err != nil {
 			return fmt.Errorf("%s is not a UTC RFC3339 timestamp", path)
 		}
 	}
