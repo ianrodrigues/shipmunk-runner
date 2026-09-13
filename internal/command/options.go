@@ -22,6 +22,7 @@ type RunnerOptions struct {
 	Driver          string
 	ProfilesDir     string
 	RepositoryImage string
+	SessionMode     string
 }
 
 // ProfileOptions contains the validated command-line configuration for a
@@ -56,6 +57,7 @@ func parseRunnerOptions(args []string, output io.Writer) (parsedRunnerOptions, e
 	flags.String("driver", "fixture", "fixture or codex")
 	flags.String("profiles-dir", "", "protected profile directory")
 	flags.String("repository-image", "", "repository command image")
+	flags.String("session-mode", "fresh", "fresh or resume")
 	version := flags.Bool("version", false, "print version")
 	if err := flags.Parse(args); err != nil {
 		return parsedRunnerOptions{}, err
@@ -72,6 +74,7 @@ func parseRunnerOptions(args []string, output io.Writer) (parsedRunnerOptions, e
 		Driver:          flags.Lookup("driver").Value.String(),
 		ProfilesDir:     flags.Lookup("profiles-dir").Value.String(),
 		RepositoryImage: flags.Lookup("repository-image").Value.String(),
+		SessionMode:     flags.Lookup("session-mode").Value.String(),
 	}
 	return parsedRunnerOptions{options: options, version: *version}, nil
 }
@@ -104,6 +107,9 @@ func validateRunnerOptions(options *RunnerOptions) error {
 	}
 	if options.RepositoryImage == "" {
 		options.RepositoryImage = options.Image
+	}
+	if options.SessionMode != "fresh" && options.SessionMode != "resume" {
+		return errors.New("Unsupported Codex session mode.")
 	}
 	return nil
 }
