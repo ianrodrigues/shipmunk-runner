@@ -103,7 +103,8 @@ func Open(root string) (*Store, error) {
 }
 
 // Select returns nil for Fresh without consulting an existing record. Resume
-// requires an existing, valid record with exactly the requested binding.
+// selects an existing valid record only when it has exactly the requested
+// binding; an absent or incompatible record falls back to a fresh session.
 func (store *Store) Select(mode Mode, claim protocol.Claim) (*Session, error) {
 	binding, err := BindingFromClaim(claim)
 	if err != nil {
@@ -117,11 +118,8 @@ func (store *Store) Select(mode Mode, claim protocol.Claim) (*Session, error) {
 		if err != nil {
 			return nil, err
 		}
-		if session == nil {
-			return nil, errors.New("requested session does not exist")
-		}
-		if session.Binding != binding {
-			return nil, errors.New("requested session belongs to different execution context")
+		if session == nil || session.Binding != binding {
+			return nil, nil
 		}
 		return session, nil
 	default:
@@ -180,7 +178,9 @@ func (store *Store) Read(runID string) (*Session, error) {
 	return &session, nil
 }
 
-// Write atomically and durably replaces the named run's compatible record.
+// Write atomically and durably replaces the named run's valid record. A valid
+// record with a stale binding may be replaced after Resume selected a fresh
+// session; malformed or unsafe state is never overwritten.
 func (store *Store) write(runID, binding string, session Session) error {
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()
@@ -200,10 +200,8 @@ func (store *Store) write(runID, binding string, session Session) error {
 	if session.Binding != binding || !digestPattern.MatchString(binding) {
 		return errors.New("cannot persist a session with a different binding")
 	}
-	if existing, err := store.Read(runID); err != nil {
+	if _, err := store.Read(runID); err != nil {
 		return fmt.Errorf("refuse to replace invalid session record: %w", err)
-	} else if existing != nil && existing.Binding != binding {
-		return errors.New("refuse to replace a session from a different execution context")
 	}
 	raw, err := json.Marshal(session)
 	if err != nil || len(raw) > maxRecordBytes {

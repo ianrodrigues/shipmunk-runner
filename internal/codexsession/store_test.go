@@ -42,8 +42,9 @@ func TestStoreFreshAndExplicitResume(t *testing.T) {
 	}
 	missing := claim
 	missing.RunID = "01k4w000000000000000000009"
-	if _, err := store.Select(Resume, missing); err == nil {
-		t.Fatal("missing explicit run resumed")
+	selected, err = store.Select(Resume, missing)
+	if err != nil || selected != nil {
+		t.Fatalf("missing explicit run did not fall back to fresh: %#v, %v", selected, err)
 	}
 
 	info, err := os.Stat(filepath.Join(store.root, claim.RunID+".json"))
@@ -89,10 +90,35 @@ func TestBindingRejectsCrossContextResume(t *testing.T) {
 				// exercised by the missing-record assertion above.
 				return
 			}
-			if _, err := store.Select(Resume, changed); err == nil {
-				t.Fatal("cross-context resume accepted")
+			selected, err := store.Select(Resume, changed)
+			if err != nil || selected != nil {
+				t.Fatalf("cross-context record did not fall back to fresh: %#v, %v", selected, err)
 			}
 		})
+	}
+}
+
+func TestIncompatibleResumeFallsBackAndPersistsReplacement(t *testing.T) {
+	store := openTestStore(t)
+	original := testClaim()
+	originalSession, _ := New(testSession, mustBinding(t, original))
+	if err := store.Persist(original, originalSession); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := testClaim()
+	changed.Manifest["effective_config"] = map[string]any{"model": "different"}
+	selected, err := store.Select(Resume, changed)
+	if err != nil || selected != nil {
+		t.Fatalf("incompatible record did not select fresh: %#v, %v", selected, err)
+	}
+	replacement, _ := New("0299a213-81c0-7800-8aa1-bbab2a035a54", mustBinding(t, changed))
+	if err := store.Persist(changed, replacement); err != nil {
+		t.Fatalf("persist fresh replacement: %v", err)
+	}
+	selected, err = store.Select(Resume, changed)
+	if err != nil || selected == nil || *selected != replacement {
+		t.Fatalf("replacement was not resumable: %#v, %v", selected, err)
 	}
 }
 
@@ -197,6 +223,9 @@ func TestStoreRejectsOversizePartialDuplicateAndUnknownRecords(t *testing.T) {
 			if _, err := store.Read(testRun); err == nil {
 				t.Fatal("invalid record accepted")
 			}
+			if _, err := store.Select(Resume, testClaim()); err == nil {
+				t.Fatal("invalid record fell back to fresh")
+			}
 			binding := strings.Repeat("b", 64)
 			session, _ := New(testSession, binding)
 			if err := store.write(testRun, binding, session); err == nil {
@@ -230,7 +259,7 @@ func TestStoreConcurrentReadsAndWritesRemainComplete(t *testing.T) {
 	}
 }
 
-func TestStoreConcurrentConflictingBindingsCannotReplaceEachOther(t *testing.T) {
+func TestStoreConcurrentConflictingBindingsRemainAtomic(t *testing.T) {
 	store := openTestStore(t)
 	assertConflictingBindingsSerialized(t, store, store)
 }
@@ -277,14 +306,10 @@ func assertConflictingBindingsSerialized(t *testing.T, firstStore, secondStore *
 	}
 	close(start)
 
-	successes := 0
 	for range 2 {
-		if err := <-results; err == nil {
-			successes++
+		if err := <-results; err != nil {
+			t.Fatalf("persist conflicting valid binding: %v", err)
 		}
-	}
-	if successes != 1 {
-		t.Fatalf("successful conflicting writes = %d, want exactly 1", successes)
 	}
 	persisted, err := firstStore.Read(testRun)
 	if err != nil || persisted == nil {
