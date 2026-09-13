@@ -11,10 +11,10 @@ require dirname(__DIR__).'/runner/bootstrap.php';
 
 final class GoProtocolOracleTransport implements HttpTransport
 {
-    /** @var list<array{method: string, url: string, headers: array<string, string>, body: string}> */
+    /** @var list<array{method: string, path: string, headers: array<string, string>, body: string}> */
     public array $requests = [];
 
-    /** @param array<string, string> $headers */
+    /** @param array<string, string> $responseHeaders */
     public function __construct(
         private readonly int $status,
         private readonly array $responseHeaders,

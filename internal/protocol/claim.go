@@ -12,7 +12,9 @@ var (
 	sha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
-// Claim is the immutable, fenced response to a successful claim request.
+// Claim holds a validated, fenced response to a successful claim request.
+// Its exported fields and Manifest map remain mutable; callers must treat the
+// validated identity and manifest as immutable throughout the attempt.
 type Claim struct {
 	RunID          string
 	AttemptID      string
@@ -22,6 +24,8 @@ type Claim struct {
 	Manifest       map[string]any
 }
 
+// ParseClaim applies strict JSON and the full manifest schema, then initializes
+// a local 45-second lease from now. The supervisor owns deadline enforcement.
 func ParseClaim(raw []byte, now time.Time) (Claim, error) {
 	schema, err := schemaBytes("manifest")
 	if err != nil {
@@ -38,6 +42,8 @@ func ParseClaim(raw []byte, now time.Time) (Claim, error) {
 	return claimFromValidatedManifest(manifest, now)
 }
 
+// ClaimFromManifest validates a detached JSON copy of the supplied manifest.
+// It cannot bypass the complete schema checks used by ParseClaim.
 func ClaimFromManifest(manifest map[string]any, now time.Time) (Claim, error) {
 	raw, err := json.Marshal(manifest)
 	if err != nil {
