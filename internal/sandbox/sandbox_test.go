@@ -1,0 +1,703 @@
+package sandbox
+
+import (
+	"archive/tar"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+)
+
+const (
+	testRunID     = "01arz3ndektsv4rrffq69g5fav"
+	testAttemptID = "01arz3ndektsv4rrffq69g5faw"
+	testFence     = int64(7)
+	testName      = "shipmunk-01arz3ndektsv4rrffq69g5faw-7"
+	testContainer = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+func TestNameIsStableAndValidatesClaimIdentity(t *testing.T) {
+	docker, err := New(Config{Image: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := docker.Name(testClaim())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != testName {
+		t.Fatalf("Name() = %q, want %q", name, testName)
+	}
+
+	claim := testClaim()
+	claim.Fence = 0
+	if _, err := docker.Name(claim); err == nil {
+		t.Fatal("Name() accepted an invalid fence")
+	}
+}
+
+func TestDockerSandboxLifecycleUsesIsolationAndRemovesAfterConfirmation(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "synthetic-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "synthetic-secret")
+
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := docker.Create(context.Background(), testClaim(), map[string]any{"safe_marker": "copied"}, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.ID() != testName {
+		t.Fatalf("Process.ID() = %q, want durable name %q", process.ID(), testName)
+	}
+	if err := process.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, output, err := process.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitCode != 7 || string(output) != "synthetic output" {
+		t.Fatalf("Wait() = (%d, %q), want (7, synthetic output)", exitCode, output)
+	}
+	if err := process.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(fixture.marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("container remains after Remove(): stat error = %v", err)
+	}
+	if _, err := os.Stat(fixture.environmentLeak); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Docker CLI inherited credentials: stat error = %v", err)
+	}
+
+	arguments, err := os.ReadFile(fixture.arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"--read-only", "--user 65532:65532", "--cap-drop ALL", "--network none", "--memory-swap 268435456", "--pids-limit 64", "shipmunk.run=" + testRunID, "shipmunk.attempt=" + testAttemptID, "shipmunk.fence=7"} {
+		if !strings.Contains(string(arguments), expected) {
+			t.Errorf("Docker arguments do not contain %q", expected)
+		}
+	}
+}
+
+func TestCreateRejectsOccupiedUnrelatedNameBeforeDockerCreate(t *testing.T) {
+	fixture := newFakeDocker(t, true, false)
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docker.Create(context.Background(), testClaim(), nil, t.TempDir()); err == nil || !strings.Contains(err.Error(), "unrelated") {
+		t.Fatalf("Create() error = %v, want unrelated-name refusal", err)
+	}
+	arguments, err := os.ReadFile(fixture.arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(arguments), "create ") {
+		t.Fatal("Create() performed a Docker create after finding an unrelated object")
+	}
+}
+
+func TestReconcileRequiresOwnedLabelsForNameAndLegacyID(t *testing.T) {
+	fixture := newFakeDocker(t, true, false)
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identifier := range []string{testName, testContainer[:12]} {
+		if err := docker.Reconcile(context.Background(), identifier); err == nil || !strings.Contains(err.Error(), "not owned") {
+			t.Errorf("Reconcile(%q) error = %v, want ownership refusal", identifier, err)
+		}
+	}
+	arguments, err := os.ReadFile(fixture.arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(arguments), "stop ") || strings.Contains(string(arguments), "rm ") {
+		t.Fatal("Reconcile() operated on an unrelated container")
+	}
+}
+
+func TestReconcileRetainsUncertaintyWhenDockerStillReportsTheContainer(t *testing.T) {
+	fixture := newFakeDocker(t, true, true)
+	if err := os.WriteFile(fixture.keepOnRemove, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := docker.Reconcile(context.Background(), testName); err == nil || !strings.Contains(err.Error(), "did not confirm") {
+		t.Fatalf("Reconcile() error = %v, want removal uncertainty", err)
+	}
+	if _, err := os.Stat(fixture.marker); err != nil {
+		t.Fatalf("fixture removed the container despite the configured uncertain outcome: %v", err)
+	}
+}
+
+func TestStopEscalatesToKillAndVerifiesTheStoppedState(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	if err := os.WriteFile(fixture.ignoreStop, []byte("ignore"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := docker.Create(context.Background(), testClaim(), nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := os.ReadFile(fixture.arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "stop --time 2 "+testName) || !strings.Contains(string(arguments), "kill "+testName) {
+		t.Fatalf("stop did not escalate as expected: %s", arguments)
+	}
+	if err := process.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceArchiveRejectsSymlinkAndCopiesRegularFile(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	archiveBytes, err := workspaceArchive(workspace, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(strings.NewReader(string(archiveBytes)))
+	header, err := reader.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.Name != "fixture.txt" {
+		t.Fatalf("archive entry = %q, want fixture.txt", header.Name)
+	}
+	content, err := io.ReadAll(reader)
+	if err != nil || string(content) != "fixture" {
+		t.Fatalf("archive entry contents = %q, error = %v", content, err)
+	}
+	if err := os.Symlink("/etc/passwd", filepath.Join(workspace, "secret")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspaceArchive(workspace, 1024); err == nil || !strings.Contains(err.Error(), "unsupported file") {
+		t.Fatalf("workspaceArchive() error = %v, want symlink refusal", err)
+	}
+}
+
+func TestIndependentWatchdogSubprocessGetsRenewalAndDisarmWithoutCredentials(t *testing.T) {
+	fixture := newFakeDocker(t, false, false)
+	watchdogExecutable := filepath.Join(t.TempDir(), "watchdog-fixture")
+	watchdogLog := filepath.Join(t.TempDir(), "watchdog-input")
+	environmentLeak := filepath.Join(t.TempDir(), "watchdog-environment-leak")
+	watchdogScript := fmt.Sprintf("#!/bin/sh\nif [ -n \"${OPENAI_API_KEY+x}\" ] || [ -n \"${ANTHROPIC_API_KEY+x}\" ]; then touch %q; fi\nprintf 'READY\\n'\ncat > %q\n", environmentLeak, watchdogLog)
+	if err := os.WriteFile(watchdogExecutable, []byte(watchdogScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "synthetic-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "synthetic-secret")
+	watchdog := NewWatchdog(Config{
+		DockerExecutable:   fixture.executable,
+		WatchdogExecutable: watchdogExecutable,
+	})
+	lease, err := watchdog.Arm(testName, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Renew(time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Disarm(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(watchdogLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "renew:") || !strings.Contains(string(contents), "disarm") {
+		t.Fatalf("watchdog control stream = %q, want renewal and disarm", contents)
+	}
+	if _, err := os.Stat(environmentLeak); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("watchdog inherited credentials: stat error = %v", err)
+	}
+}
+
+func TestRunWatchdogTreatsPipeClosureAsParentDeathAndRemovesOwnedSandbox(t *testing.T) {
+	fixture := newFakeDocker(t, true, true)
+	if err := os.WriteFile(fixture.marker, []byte("present"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docker := fixture.executable
+	arguments := []string{
+		"--docker", docker,
+		"--name", testName,
+		"--lease", fmt.Sprint(time.Now().Add(time.Minute).UnixNano()),
+		"--deadline", fmt.Sprint(time.Now().Add(2 * time.Minute).UnixNano()),
+		"--create-timeout", "1ms",
+		"--poll-interval", "1ms",
+	}
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWatchdog(arguments, reader)
+	}()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watchdog did not complete cleanup after parent pipe closure")
+	}
+	if _, err := os.Stat(fixture.marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("watchdog left sandbox present: %v", err)
+	}
+}
+
+func TestRunWatchdogWaitsThroughAbsentBeforeCreateWindow(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	arguments := watchdogTestArguments(fixture.executable, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWatchdog(arguments, reader)
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("watchdog exited while the supervisor was alive and the name was absent: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := os.WriteFile(fixture.marker, []byte("late create"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watchdog did not remove the container created during the absent-before-create window")
+	}
+	if _, err := os.Stat(fixture.marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("watchdog left late-created sandbox present: %v", err)
+	}
+}
+
+func TestRunWatchdogRejectsDisarmUntilSandboxAbsence(t *testing.T) {
+	fixture := newFakeDocker(t, true, true)
+	arguments := watchdogTestArguments(fixture.executable, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWatchdog(arguments, reader)
+	}()
+	if _, err := io.WriteString(writer, "disarm\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("watchdog exited while its sandbox was present: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := os.Stat(fixture.marker); err != nil {
+		t.Fatalf("watchdog removed a sandbox before parent-death cleanup: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watchdog did not clean up after the control pipe closed")
+	}
+}
+
+func TestDockerSandboxLifecycleLive(t *testing.T) {
+	if os.Getenv("SHIPMUNK_SANDBOX_DOCKER_TEST") != "1" {
+		t.Skip("set SHIPMUNK_SANDBOX_DOCKER_TEST=1 to use the designated Linux Docker engine")
+	}
+	image := os.Getenv("SHIPMUNK_RUNNER_IMAGE")
+	watchdogExecutable := os.Getenv("SHIPMUNK_WATCHDOG_BINARY")
+	if image == "" || watchdogExecutable == "" {
+		t.Fatal("SHIPMUNK_RUNNER_IMAGE and SHIPMUNK_WATCHDOG_BINARY are required for the live sandbox test")
+	}
+	claim := liveTestClaim(t)
+	t.Setenv("OPENAI_API_KEY", "synthetic-test-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "synthetic-test-secret")
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docker, err := New(Config{
+		Image:              image,
+		DockerExecutable:   os.Getenv("SHIPMUNK_DOCKER_EXECUTABLE"),
+		WatchdogExecutable: watchdogExecutable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := docker.Name(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(docker.config)
+	lease, err := watchdog.Arm(name, time.Now().Add(2*time.Minute), time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var process *Process
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if process != nil {
+			_ = process.Remove(ctx)
+		}
+		_ = docker.Reconcile(ctx, name)
+		_ = lease.Disarm()
+	})
+	process, err = docker.Create(context.Background(), claim, map[string]any{
+		"fake_require_fixture": true,
+		"safe_marker":          "copied",
+	}, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := docker.inspect(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := inspection.Config.Labels
+	if labels["shipmunk.runner"] != "true" || labels["shipmunk.run"] != claim.RunID ||
+		labels["shipmunk.attempt"] != claim.AttemptID || labels["shipmunk.fence"] != fmt.Sprint(claim.Fence) {
+		t.Fatalf("live sandbox labels do not match claim: %#v", labels)
+	}
+	var liveInspection []struct {
+		Config struct {
+			User string   `json:"User"`
+			Env  []string `json:"Env"`
+		} `json:"Config"`
+		HostConfig struct {
+			ReadonlyRootfs bool     `json:"ReadonlyRootfs"`
+			NetworkMode    string   `json:"NetworkMode"`
+			CapDrop        []string `json:"CapDrop"`
+			SecurityOpt    []string `json:"SecurityOpt"`
+			Memory         int64    `json:"Memory"`
+			MemorySwap     int64    `json:"MemorySwap"`
+			PidsLimit      int64    `json:"PidsLimit"`
+			NanoCPUs       int64    `json:"NanoCpus"`
+			Binds          []string `json:"Binds"`
+		} `json:"HostConfig"`
+	}
+	inspectionResult, err := docker.run(context.Background(), docker.config.CommandTimeout, maxCommandOutputBytes, "inspect", name)
+	if err != nil {
+		t.Fatalf("inspect live sandbox: %v", err)
+	}
+	if err := json.Unmarshal([]byte(inspectionResult.stdout), &liveInspection); err != nil || len(liveInspection) != 1 {
+		t.Fatalf("decode live sandbox inspection: %v", err)
+	}
+	container := liveInspection[0]
+	if container.Config.User != "65532:65532" || !container.HostConfig.ReadonlyRootfs ||
+		container.HostConfig.NetworkMode != "none" || len(container.HostConfig.CapDrop) != 1 || container.HostConfig.CapDrop[0] != "ALL" ||
+		!contains(container.HostConfig.SecurityOpt, "no-new-privileges:true") || container.HostConfig.Memory != defaultMemoryBytes ||
+		container.HostConfig.MemorySwap != defaultMemoryBytes || container.HostConfig.PidsLimit != 64 ||
+		container.HostConfig.NanoCPUs != 1_000_000_000 || len(container.HostConfig.Binds) != 0 {
+		t.Fatalf("live sandbox isolation does not match the configured boundary: %#v", container)
+	}
+	if contains(container.Config.Env, "OPENAI_API_KEY=synthetic-test-secret") || contains(container.Config.Env, "ANTHROPIC_API_KEY=synthetic-test-secret") {
+		t.Fatalf("live sandbox inherited a provider credential: %#v", container.Config.Env)
+	}
+	if err := process.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	exitCode, output, err := process.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitCode != 0 || !strings.Contains(string(output), `"events":[]`) {
+		t.Fatalf("live fixture returned exit=%d output=%q", exitCode, output)
+	}
+	if err := process.Remove(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Disarm(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDockerSandboxWatchdogReapsKilledSupervisor(t *testing.T) {
+	if os.Getenv("SHIPMUNK_SANDBOX_WATCHDOG_HELPER") == "1" {
+		runKilledSupervisorFixture(t)
+		return
+	}
+	if os.Getenv("SHIPMUNK_SANDBOX_DOCKER_TEST") != "1" {
+		t.Skip("set SHIPMUNK_SANDBOX_DOCKER_TEST=1 to use the designated Linux Docker engine")
+	}
+	image := os.Getenv("SHIPMUNK_RUNNER_IMAGE")
+	watchdogExecutable := os.Getenv("SHIPMUNK_WATCHDOG_BINARY")
+	if image == "" || watchdogExecutable == "" {
+		t.Fatal("SHIPMUNK_RUNNER_IMAGE and SHIPMUNK_WATCHDOG_BINARY are required for the live watchdog test")
+	}
+	readyFile := filepath.Join(t.TempDir(), "watchdog-ready")
+	command := exec.Command(os.Args[0], "-test.run=^TestDockerSandboxWatchdogReapsKilledSupervisor$")
+	command.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"SHIPMUNK_SANDBOX_DOCKER_TEST=1",
+		"SHIPMUNK_SANDBOX_WATCHDOG_HELPER=1",
+		"SHIPMUNK_RUNNER_IMAGE=" + image,
+		"SHIPMUNK_WATCHDOG_BINARY=" + watchdogExecutable,
+		"SHIPMUNK_SANDBOX_READY_FILE=" + readyFile,
+	}
+	if dockerExecutable := os.Getenv("SHIPMUNK_DOCKER_EXECUTABLE"); dockerExecutable != "" {
+		command.Env = append(command.Env, "SHIPMUNK_DOCKER_EXECUTABLE="+dockerExecutable)
+	}
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	helperDone := make(chan error, 1)
+	go func() {
+		helperDone <- command.Wait()
+	}()
+	readyDeadline := time.Now().Add(60 * time.Second)
+	var sandboxName string
+	for time.Now().Before(readyDeadline) {
+		contents, err := os.ReadFile(readyFile)
+		if err == nil {
+			sandboxName = strings.TrimSpace(string(contents))
+			break
+		}
+		select {
+		case err := <-helperDone:
+			t.Fatalf("watchdog test helper exited before readiness: %v", err)
+		default:
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if sandboxName == "" {
+		_ = command.Process.Kill()
+		<-helperDone
+		t.Fatal("watchdog test helper did not start the sandbox before the deadline")
+	}
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-helperDone
+	docker, err := New(Config{Image: image, DockerExecutable: os.Getenv("SHIPMUNK_DOCKER_EXECUTABLE")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = docker.Reconcile(ctx, sandboxName)
+	})
+	absentDeadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(absentDeadline) {
+		_, err := docker.inspect(context.Background(), sandboxName)
+		if errors.Is(err, errContainerAbsent) {
+			return
+		}
+		if err != nil {
+			t.Logf("watchdog sandbox inspection is still uncertain: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("independent watchdog left sandbox %s present after supervisor SIGKILL", sandboxName)
+}
+
+func runKilledSupervisorFixture(t *testing.T) {
+	t.Helper()
+	image := os.Getenv("SHIPMUNK_RUNNER_IMAGE")
+	watchdogExecutable := os.Getenv("SHIPMUNK_WATCHDOG_BINARY")
+	readyFile := os.Getenv("SHIPMUNK_SANDBOX_READY_FILE")
+	if image == "" || watchdogExecutable == "" || readyFile == "" {
+		t.Fatal("live watchdog helper configuration is incomplete")
+	}
+	claim := liveTestClaim(t)
+	workspace := filepath.Dir(readyFile)
+	docker, err := New(Config{
+		Image:              image,
+		DockerExecutable:   os.Getenv("SHIPMUNK_DOCKER_EXECUTABLE"),
+		WatchdogExecutable: watchdogExecutable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := docker.Name(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(docker.config)
+	lease, err := watchdog.Arm(name, time.Now().Add(90*time.Second), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := docker.Create(context.Background(), claim, map[string]any{"fake_mode": "sleep"}, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readyFile, []byte(name), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = lease
+	select {}
+}
+
+func testClaim() protocol.Claim {
+	return protocol.Claim{RunID: testRunID, AttemptID: testAttemptID, Fence: testFence}
+}
+
+func watchdogTestArguments(docker string, lease, deadline time.Time) []string {
+	return []string{
+		"--docker", docker,
+		"--name", testName,
+		"--lease", fmt.Sprint(lease.UnixNano()),
+		"--deadline", fmt.Sprint(deadline.UnixNano()),
+		"--create-timeout", "1ms",
+		"--poll-interval", "1ms",
+	}
+}
+
+func liveTestClaim(t *testing.T) protocol.Claim {
+	t.Helper()
+	const alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+	bytes := make([]byte, 24)
+	if _, err := rand.Read(bytes); err != nil {
+		t.Fatal(err)
+	}
+	attemptID := "01"
+	for _, value := range bytes {
+		attemptID += string(alphabet[int(value)%len(alphabet)])
+	}
+	bytes = make([]byte, 24)
+	if _, err := rand.Read(bytes); err != nil {
+		t.Fatal(err)
+	}
+	runID := "01"
+	for _, value := range bytes {
+		runID += string(alphabet[int(value)%len(alphabet)])
+	}
+	fence := time.Now().UnixNano() % 1_000_000_000
+	if fence < 1 {
+		fence = 1
+	}
+	return protocol.Claim{RunID: runID, AttemptID: attemptID, Fence: fence}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+type fakeDockerFixture struct {
+	executable      string
+	marker          string
+	running         string
+	arguments       string
+	environmentLeak string
+	keepOnRemove    string
+	ignoreStop      string
+}
+
+func newFakeDocker(t *testing.T, present, owned bool) fakeDockerFixture {
+	t.Helper()
+	root := t.TempDir()
+	fixture := fakeDockerFixture{
+		executable:      filepath.Join(root, "docker-fixture"),
+		marker:          filepath.Join(root, "present"),
+		running:         filepath.Join(root, "running"),
+		arguments:       filepath.Join(root, "arguments"),
+		environmentLeak: filepath.Join(root, "environment-leak"),
+		keepOnRemove:    filepath.Join(root, "keep-on-remove"),
+		ignoreStop:      filepath.Join(root, "ignore-stop"),
+	}
+	runID, attemptID, fence := testRunID, testAttemptID, testFence
+	runnerLabel := "true"
+	if !owned {
+		runID, attemptID, fence = "01arz3ndektsv4rrffq69g5fax", "01arz3ndektsv4rrffq69g5fay", 8
+		runnerLabel = "false"
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> %q
+if [ -n "${OPENAI_API_KEY+x}" ] || [ -n "${ANTHROPIC_API_KEY+x}" ] || [ -n "${HOME+x}" ]; then touch %q; fi
+case "$1" in
+  inspect)
+    if [ -f %q ]; then
+      running=false
+      if [ -f %q ]; then running=true; fi
+      cat <<JSON
+[{"Id":"%s","Name":"/%s","Config":{"Image":"fixture","Labels":{"shipmunk.runner":"%s","shipmunk.run":"%s","shipmunk.attempt":"%s","shipmunk.fence":"%d"}},"State":{"Running":$running,"ExitCode":7}}]
+JSON
+      exit 0
+    fi
+    echo "Error: No such object: $2" >&2
+    exit 1
+    ;;
+  create) touch %q; printf '%%s\n' '%s'; exit 0 ;;
+  start) touch %q %q; exit 0 ;;
+  exec) cat >/dev/null; exit 0 ;;
+  wait) rm -f %q; printf '7\n'; exit 0 ;;
+  logs) printf 'synthetic output'; exit 0 ;;
+  stop) if [ ! -f %q ]; then rm -f %q; fi; exit 0 ;;
+  kill) rm -f %q; exit 0 ;;
+  rm) if [ ! -f %q ]; then rm -f %q %q; fi; exit 0 ;;
+  *) exit 0 ;;
+esac
+`, fixture.arguments, fixture.environmentLeak, fixture.marker, fixture.running, testContainer, testName, runnerLabel, runID, attemptID, fence, fixture.marker, testContainer, fixture.marker, fixture.running, fixture.running, fixture.ignoreStop, fixture.running, fixture.running, fixture.keepOnRemove, fixture.marker, fixture.running)
+	if err := os.WriteFile(fixture.executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		if err := os.WriteFile(fixture.marker, []byte("present"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return fixture
+}
