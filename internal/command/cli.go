@@ -9,7 +9,8 @@ import (
 
 const developmentVersion = "development"
 
-// RunRunner implements the fail-closed Go runner command contract.
+// RunRunner supports isolated fixture execution; native profile-backed drivers
+// remain unavailable until their separate lifecycle migration is complete.
 func RunRunner(args []string, stdout, stderr io.Writer) int {
 	parsed, err := parseRunnerOptions(args, stdout)
 	if errors.Is(err, flagHelpRequested) {
@@ -28,10 +29,11 @@ func RunRunner(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Durable supervision and cleanup are implemented in a later compatibility
-	// slice. Never reserve a claim until that implementation owns recovery.
-	fmt.Fprintln(stderr, "Go runner supervision is not available in this compatibility foundation.")
-	return 1
+	if parsed.options.Driver != "fixture" {
+		fmt.Fprintln(stderr, "Go native profile execution is not available yet.")
+		return 1
+	}
+	return runFixtureRunner(parsed.options, stdout, stderr)
 }
 
 // RunProfile implements the fail-closed profile command contract.
