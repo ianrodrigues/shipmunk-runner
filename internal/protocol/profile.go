@@ -10,7 +10,7 @@ import (
 
 const ProfileControlPlaneMaxBytes = 32 * 1024
 
-// ProfileRequest sends one fenced profile lifecycle request using the same
+// ProfileRequest sends one profile-scoped lifecycle request using the same
 // endpoint, headers, timeout, and response checks as the PHP control plane.
 // suffix is one of operations, operations/{operation-id}/heartbeat, or
 // operations/{operation-id}/completion.
