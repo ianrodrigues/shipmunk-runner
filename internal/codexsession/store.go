@@ -184,6 +184,11 @@ func (store *Store) Read(runID string) (*Session, error) {
 func (store *Store) write(runID, binding string, session Session) error {
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()
+	rootLock, err := lockSessionRoot(store.root, store.rootInfo)
+	if err != nil {
+		return fmt.Errorf("lock session root: %w", err)
+	}
+	defer unlockSessionRoot(rootLock)
 
 	path, err := store.path(runID)
 	if err != nil {

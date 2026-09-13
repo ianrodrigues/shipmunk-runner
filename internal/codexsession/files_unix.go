@@ -4,6 +4,7 @@ package codexsession
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,4 +101,32 @@ func syncDirectory(path string) error {
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func lockSessionRoot(path string, expected os.FileInfo) (*os.File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), path)
+	opened, statErr := directory.Stat()
+	current, pathErr := os.Lstat(path)
+	if statErr != nil || pathErr != nil || !os.SameFile(opened, current) || !os.SameFile(expected, opened) {
+		_ = directory.Close()
+		return nil, errors.New("session root changed during lock acquisition")
+	}
+	if err := validatePrivateDirectory(opened); err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
+		_ = directory.Close()
+		return nil, fmt.Errorf("acquire session root lock: %w", err)
+	}
+	return directory, nil
+}
+
+func unlockSessionRoot(directory *os.File) {
+	_ = syscall.Flock(int(directory.Fd()), syscall.LOCK_UN)
+	_ = directory.Close()
 }
