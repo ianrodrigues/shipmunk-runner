@@ -88,6 +88,12 @@ type Executor interface {
 	Cleanup(context.Context, protocol.Claim) error
 }
 
+// ExecutorLease is implemented by composite executors whose independent
+// cleanup watchdog must track control-plane lease renewal.
+type ExecutorLease interface {
+	Renew(protocol.Claim, time.Time) error
+}
+
 type Supervisor struct {
 	Client            Client
 	State             StateStore

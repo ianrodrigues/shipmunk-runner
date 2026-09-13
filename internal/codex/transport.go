@@ -196,10 +196,10 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		return err
 	}
 	uid, gid := os.Geteuid(), os.Getegid()
-	if _, err = t.run(ctx, nil, "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", fmt.Sprintf("o=size=256m,uid=%d,gid=%d,mode=0700,nosuid,nodev", uid, gid), t.workspaceVolume); err != nil {
+	if _, err = t.run(ctx, nil, "volume", "create", "--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner="+t.cfg.Name, "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", fmt.Sprintf("o=size=256m,uid=%d,gid=%d,mode=0700,nosuid,nodev", uid, gid), t.workspaceVolume); err != nil {
 		return errors.New("cannot create repository memory volume")
 	}
-	common := []string{"--label", "shipmunk.codex=true", "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2"}
+	common := []string{"--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner=" + t.cfg.Name, "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2"}
 	native := append([]string{"create", "--name", t.cfg.Name}, common...)
 	native = append(native, "--pids-limit", "128", "--network", "bridge", "--workdir", "/empty", "--mount", "type=bind,src="+t.cfg.ProfileHome+",dst=/profile", "--mount", "type=bind,src="+t.bridge+",dst=/bridge", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", nativeID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
 	if _, err = t.run(ctx, nil, native...); err != nil {
@@ -409,6 +409,7 @@ func (t *DockerTransport) CollectPatch(ctx context.Context) (_ *Patch, err error
 	}
 	uid, gid := os.Geteuid(), os.Getegid()
 	args := []string{"create", "--name", t.cfg.Name + "-diff", "--label", "shipmunk.codex=true", "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "64", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2", "--network", "none", "--workdir", "/empty", "--mount", "type=volume,src=" + t.workspaceVolume + ",dst=/snapshot-source,readonly", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800"}
+	args = append(args[:5], append([]string{"--label", "shipmunk.codex-owner=" + t.cfg.Name}, args[5:]...)...)
 	if _, err = t.run(ctx, nil, args...); err != nil {
 		return nil, errors.New("cannot create patch collector")
 	}

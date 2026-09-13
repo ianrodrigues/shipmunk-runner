@@ -17,6 +17,7 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/codexsession"
 	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 	"github.com/ianrodrigues/shipmunk-runner/internal/supervisor"
 )
 
@@ -36,6 +37,7 @@ type ExecutorConfig struct {
 	MaxCommands                                                 int
 	CommandTimeout                                              time.Duration
 	NewTransport                                                func(TransportConfig) (agentTransport, error)
+	Watchdog                                                    *sandbox.Watchdog
 }
 
 // Executor adapts the native Codex stream into the supervisor's bounded,
@@ -43,7 +45,12 @@ type ExecutorConfig struct {
 type Executor struct {
 	cfg    ExecutorConfig
 	mu     sync.Mutex
-	active map[string]agentTransport
+	active map[string]activeExecution
+}
+
+type activeExecution struct {
+	transport agentTransport
+	watchdog  *sandbox.Lease
 }
 
 func NewExecutor(cfg ExecutorConfig) (*Executor, error) {
@@ -63,9 +70,12 @@ func NewExecutor(cfg ExecutorConfig) (*Executor, error) {
 		return nil, errors.New("Codex command budget is invalid")
 	}
 	if cfg.NewTransport == nil {
+		if cfg.Watchdog == nil {
+			return nil, errors.New("Codex watchdog configuration is incomplete")
+		}
 		cfg.NewTransport = func(c TransportConfig) (agentTransport, error) { return NewDockerTransport(c) }
 	}
-	return &Executor{cfg: cfg, active: make(map[string]agentTransport)}, nil
+	return &Executor{cfg: cfg, active: make(map[string]activeExecution)}, nil
 }
 
 func executionKey(c protocol.Claim) string { return fmt.Sprintf("%s-%d", c.AttemptID, c.Fence) }
@@ -85,11 +95,26 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	if err != nil {
 		return supervisor.Execution{}, err
 	}
+	var watchdog *sandbox.Lease
+	if e.cfg.Watchdog != nil {
+		watchdog, err = e.cfg.Watchdog.ArmCodex("shipmunk-codex-"+claim.AttemptID+"-"+fmt.Sprint(claim.Fence), claim.LeaseExpiresAt, claim.Deadline)
+		if err != nil {
+			return supervisor.Execution{}, err
+		}
+		if err = watchdog.CreateStarted(); err != nil {
+			return supervisor.Execution{}, err
+		}
+	}
 	e.mu.Lock()
-	e.active[executionKey(claim)] = transport
+	e.active[executionKey(claim)] = activeExecution{transport: transport, watchdog: watchdog}
 	e.mu.Unlock()
 	if err = transport.Start(ctx); err != nil {
 		return supervisor.Execution{}, err
+	}
+	if watchdog != nil {
+		if err = watchdog.CreateFinished(""); err != nil {
+			return supervisor.Execution{}, err
+		}
 	}
 	versionCommand, _ := profile.Command(profile.AgentCodex, "version")
 	version, err := transport.RunNative(ctx, versionCommand, nil)
@@ -166,18 +191,33 @@ func (e *Executor) accountStatus(ctx context.Context, t agentTransport) error {
 
 func (e *Executor) Cleanup(ctx context.Context, claim protocol.Claim) error {
 	e.mu.Lock()
-	t := e.active[executionKey(claim)]
+	active := e.active[executionKey(claim)]
 	e.mu.Unlock()
-	if t == nil {
+	if active.transport == nil {
 		return CleanupDockerTransport(ctx, TransportConfig{Name: "shipmunk-codex-" + claim.AttemptID + "-" + fmt.Sprint(claim.Fence), DockerExecutable: e.cfg.DockerExecutable, CommandTimeout: e.cfg.CommandTimeout})
 	}
-	if err := t.Stop(ctx); err != nil {
+	if err := active.transport.Stop(ctx); err != nil {
 		return err
+	}
+	if active.watchdog != nil {
+		if err := active.watchdog.Disarm(); err != nil {
+			return err
+		}
 	}
 	e.mu.Lock()
 	delete(e.active, executionKey(claim))
 	e.mu.Unlock()
 	return nil
+}
+
+func (e *Executor) Renew(claim protocol.Claim, expiry time.Time) error {
+	e.mu.Lock()
+	watchdog := e.active[executionKey(claim)].watchdog
+	e.mu.Unlock()
+	if watchdog == nil {
+		return nil
+	}
+	return watchdog.Renew(expiry)
 }
 
 func executionCommand(claim protocol.Claim, session *codexsession.Session, trusted string) ([]string, string, error) {

@@ -151,6 +151,14 @@ func TestDockerTransportCreatesSeparatedBoundaries(t *testing.T) {
 	if !strings.Contains(all, "--name "+testTransportName+" --label shipmunk.codex=true") || !strings.Contains(all, "--network bridge") {
 		t.Fatal("native provider boundary was not created with network access")
 	}
+	for _, resource := range []string{testTransportName, testTransportName + "-repo"} {
+		if !strings.Contains(all, "--name "+resource) || !strings.Contains(all, "shipmunk.codex-owner="+testTransportName) {
+			t.Fatalf("Codex boundary %s omitted its watchdog ownership label", resource)
+		}
+	}
+	if !strings.Contains(all, "volume create --label shipmunk.codex=true --label shipmunk.codex-owner="+testTransportName) {
+		t.Fatal("Codex workspace volume omitted its watchdog ownership label")
+	}
 	if !strings.Contains(all, "--name "+testTransportName+"-repo") || !strings.Contains(all, "--network none") || !strings.Contains(all, "type=volume,src="+testTransportName+"-workspace,dst=/workspace") {
 		t.Fatal("repository boundary did not use an isolated memory volume")
 	}

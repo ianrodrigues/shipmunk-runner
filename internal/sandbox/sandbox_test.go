@@ -579,6 +579,73 @@ func TestArmProfileLaunchesWatchdogInExplicitProfileOwnershipMode(t *testing.T) 
 	}
 }
 
+func TestWatchdogParsesExclusiveCodexOwnershipMode(t *testing.T) {
+	name := "shipmunk-codex-01k4w000000000000000000001-7"
+	arguments := []string{"--docker", "docker", "--name", name, "--profile-mode", "false", "--codex-mode", "true", "--lease", fmt.Sprint(time.Now().Add(time.Minute).UnixNano()), "--deadline", fmt.Sprint(time.Now().Add(2 * time.Minute).UnixNano()), "--poll-interval", "100ms"}
+	options, err := parseWatchdogArguments(arguments)
+	if err != nil || !options.codex || options.profile || options.name != name {
+		t.Fatalf("Codex watchdog options = %+v, %v", options, err)
+	}
+	arguments[5] = "true"
+	if _, err := parseWatchdogArguments(arguments); err == nil {
+		t.Fatal("watchdog accepted overlapping profile and Codex ownership")
+	}
+}
+
+func TestCodexWatchdogParentDeathRemovesOwnedSiblingTopology(t *testing.T) {
+	root := t.TempDir()
+	name := "shipmunk-codex-01k4w000000000000000000001-7"
+	for _, suffix := range []string{"", "-repo", "-diff", "-workspace"} {
+		if err := os.WriteFile(filepath.Join(root, name+suffix), []byte("present"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	docker := filepath.Join(root, "docker")
+	log := filepath.Join(root, "docker.log")
+	script := fmt.Sprintf(`#!/bin/sh
+root=%q
+owner=%q
+printf '%%s\n' "$*" >> %q
+if [ "$1" = volume ]; then
+  target="$5"
+  if [ "$2" = inspect ]; then
+    [ -f "$root/$target" ] || { echo 'No such volume' >&2; exit 1; }
+    printf '%%s\n' "$owner"; exit 0
+  fi
+  [ "$2" = rm ] && { rm -f "$root/$3"; exit 0; }
+fi
+target="$2"
+if [ "$1" = inspect ]; then
+  case "$target" in
+    111111*) target="$owner" ;;
+    222222*) target="$owner-repo" ;;
+    333333*) target="$owner-diff" ;;
+  esac
+  [ -f "$root/$target" ] || { echo 'No such object' >&2; exit 1; }
+  id=1111111111111111111111111111111111111111111111111111111111111111
+  case "$target" in *-repo) id=2222222222222222222222222222222222222222222222222222222222222222 ;; *-diff) id=3333333333333333333333333333333333333333333333333333333333333333 ;; esac
+  printf '[{"Id":"%%s","Name":"/%%s","Config":{"Labels":{"shipmunk.codex":"true","shipmunk.codex-owner":"%%s"}},"State":{"Running":false}}]\n' "$id" "$target" "$owner"
+  exit 0
+fi
+[ "$1" = rm ] && { target="$3"; case "$target" in 111111*) target="$owner" ;; 222222*) target="$owner-repo" ;; 333333*) target="$owner-diff" ;; esac; rm -f "$root/$target"; exit 0; }
+[ "$1" = stop ] && exit 0
+exit 1
+`, root, name, log)
+	if err := os.WriteFile(docker, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	arguments := []string{"--docker", docker, "--name", name, "--profile-mode", "false", "--codex-mode", "true", "--lease", fmt.Sprint(time.Now().Add(time.Minute).UnixNano()), "--deadline", fmt.Sprint(time.Now().Add(2 * time.Minute).UnixNano()), "--poll-interval", "10ms"}
+	if err := RunWatchdog(arguments, strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "-repo", "-diff", "-workspace"} {
+		if _, err := os.Stat(filepath.Join(root, name+suffix)); !errors.Is(err, os.ErrNotExist) {
+			calls, _ := os.ReadFile(log)
+			t.Fatalf("watchdog left Codex resource %s present: %v\n%s", suffix, err, calls)
+		}
+	}
+}
+
 func TestRunWatchdogWaitsThroughAbsentBeforeCreateWindow(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	arguments := watchdogTestArguments(fixture.executable, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))

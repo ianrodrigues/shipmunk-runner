@@ -67,6 +67,13 @@ func (e *profileExecutor) Cleanup(ctx context.Context, claim protocol.Claim) err
 	})
 }
 
+func (e *profileExecutor) Renew(claim protocol.Claim, expiry time.Time) error {
+	if executor, ok := e.executor.(supervisor.ExecutorLease); ok {
+		return executor.Renew(claim, expiry)
+	}
+	return nil
+}
+
 func validateExecutionProfile(store *profile.Store, claim protocol.Claim) error {
 	active, err := store.Read("active")
 	if err != nil || active == nil {

@@ -101,6 +101,11 @@ func (g *leaseGuard) renew() error {
 			return err
 		}
 	}
+	if executor, ok := g.supervisor.Executor.(ExecutorLease); ok {
+		if err := executor.Renew(g.claim, lease); err != nil {
+			return err
+		}
+	}
 	if !g.timer.Stop() {
 		return ErrLeaseExpired
 	}

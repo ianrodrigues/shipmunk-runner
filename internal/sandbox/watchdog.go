@@ -40,20 +40,28 @@ func NewWatchdog(config Config) *Watchdog {
 // Arm starts the independent watchdog for an already-journaled deterministic
 // sandbox name. The returned lease is the sole renewal/disarm control channel.
 func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, error) {
-	return watchdog.arm(name, lease, deadline, false)
+	return watchdog.arm(name, lease, deadline, false, false)
 }
 
 // ArmProfile starts an independent watchdog for a profile credential
 // container. Its ownership checks use the dedicated profile-runtime label and
 // deterministic profile sandbox name rather than attempt labels.
 func (watchdog *Watchdog) ArmProfile(name string, lease, deadline time.Time) (*Lease, error) {
-	return watchdog.arm(name, lease, deadline, true)
+	return watchdog.arm(name, lease, deadline, true, false)
 }
 
-func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile bool) (*Lease, error) {
+// ArmCodex owns the deterministic native, repository, collector, and workspace
+// volume topology for one Codex attempt.
+func (watchdog *Watchdog) ArmCodex(name string, lease, deadline time.Time) (*Lease, error) {
+	return watchdog.arm(name, lease, deadline, false, true)
+}
+
+func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile, codex bool) (*Lease, error) {
 	validName := containerNamePattern.MatchString(name)
 	if profile {
 		validName = profileNamePattern.MatchString(name)
+	} else if codex {
+		validName = codexNamePattern.MatchString(name)
 	}
 	if !validName || deadline.IsZero() || lease.IsZero() ||
 		!time.Now().Before(deadline) || !time.Now().Before(lease) {
@@ -75,6 +83,7 @@ func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile bo
 		"--docker", dockerExecutable,
 		"--name", name,
 		"--profile-mode", strconv.FormatBool(profile),
+		"--codex-mode", strconv.FormatBool(codex),
 		"--lease", strconv.FormatInt(lease.UnixNano(), 10),
 		"--deadline", strconv.FormatInt(deadline.UnixNano(), 10),
 		"--poll-interval", pollInterval.String(),
@@ -94,7 +103,7 @@ func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile bo
 		return nil, fmt.Errorf("start independent watchdog: %w", err)
 	}
 	reader := bufio.NewReaderSize(stdout, 32)
-	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, profile: profile, stdin: control, done: make(chan struct{}), responses: make(chan string, 16)}
+	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, profile: profile, codex: codex, stdin: control, done: make(chan struct{}), responses: make(chan string, 16)}
 	go func() {
 		err := command.Wait()
 		leaseHandle.mu.Lock()
@@ -138,6 +147,7 @@ type Lease struct {
 	docker         *Docker
 	name           string
 	profile        bool
+	codex          bool
 	stdin          io.WriteCloser
 	done           chan struct{}
 	mu             sync.Mutex
@@ -225,7 +235,11 @@ func (lease *Lease) Disarm() error {
 	if identifier == "" {
 		identifier = lease.name
 	}
-	if _, err := lease.docker.inspect(ctx, identifier); !errors.Is(err, errContainerAbsent) {
+	if lease.codex {
+		if err := lease.docker.cleanupCodexWatchdog(lease.name, false); err != nil {
+			return fmt.Errorf("cannot disarm Codex watchdog: %w", err)
+		}
+	} else if _, err := lease.docker.inspect(ctx, identifier); !errors.Is(err, errContainerAbsent) {
 		if err == nil {
 			return errors.New("cannot disarm watchdog while its sandbox exists")
 		}
@@ -476,6 +490,7 @@ type watchdogOptions struct {
 	docker       string
 	name         string
 	profile      bool
+	codex        bool
 	lease        int64
 	deadline     int64
 	pollInterval time.Duration
@@ -516,6 +531,12 @@ func parseWatchdogArguments(arguments []string) (watchdogOptions, error) {
 				return watchdogOptions{}, errors.New("invalid watchdog ownership mode")
 			}
 			options.profile = parsed
+		case "--codex-mode":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return watchdogOptions{}, errors.New("invalid watchdog ownership mode")
+			}
+			options.codex = parsed
 		case "--lease":
 			options.lease, _ = strconv.ParseInt(value, 10, 64)
 		case "--deadline":
@@ -533,8 +554,10 @@ func parseWatchdogArguments(arguments []string) (watchdogOptions, error) {
 	validName := containerNamePattern.MatchString(options.name)
 	if options.profile {
 		validName = profileNamePattern.MatchString(options.name)
+	} else if options.codex {
+		validName = codexNamePattern.MatchString(options.name)
 	}
-	if options.docker == "" || !validName || options.lease == 0 || options.deadline == 0 {
+	if options.profile && options.codex || options.docker == "" || !validName || options.lease == 0 || options.deadline == 0 {
 		return watchdogOptions{}, errors.New("watchdog configuration is incomplete")
 	}
 	return options, nil
@@ -560,6 +583,9 @@ func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, c
 }
 
 func (docker *Docker) cleanupWatchdog(options watchdogOptions, createInFlight bool, confirmedID string) error {
+	if options.codex {
+		return docker.cleanupCodexWatchdog(options.name, createInFlight)
+	}
 	if options.profile {
 		return docker.cleanupProfileWatchdogSandbox(options.name, createInFlight, confirmedID)
 	}
@@ -568,6 +594,82 @@ func (docker *Docker) cleanupWatchdog(options watchdogOptions, createInFlight bo
 
 func (docker *Docker) cleanupProfileWatchdogSandbox(name string, createInFlight bool, confirmedID string) error {
 	return docker.cleanupWatchdogSandboxWithOwner(name, createInFlight, confirmedID, ownsProfileSandboxIdentifier)
+}
+
+func (docker *Docker) cleanupCodexWatchdog(name string, createInFlight bool) error {
+	for {
+		for _, suffix := range []string{"", "-repo", "-diff"} {
+			resource := name + suffix
+			owner := func(info containerInspection, identifier string) bool {
+				return info.Config.Labels["shipmunk.codex"] == "true" &&
+					info.Config.Labels["shipmunk.codex-owner"] == name &&
+					(identifier == resource || containerIDPattern.MatchString(identifier) &&
+						(info.ID == identifier || strings.HasPrefix(info.ID, identifier)))
+			}
+			if err := docker.cleanupWatchdogSandboxWithOwner(resource, false, "", owner); err != nil {
+				return err
+			}
+		}
+		volume := name + "-workspace"
+		ctx, cancel := context.WithTimeout(context.Background(), docker.config.CommandTimeout)
+		label, absent, err := docker.codexVolumeLabel(ctx, volume)
+		if err != nil {
+			cancel()
+			return err
+		}
+		if absent {
+			cancel()
+			if createInFlight {
+				time.Sleep(docker.config.PollInterval)
+				continue
+			}
+			return nil
+		}
+		if label != name {
+			cancel()
+			return errors.New("watchdog refused to remove an unrelated Codex volume")
+		}
+		if err := docker.runCodexDocker(ctx, "volume", "rm", volume); err != nil {
+			cancel()
+			return err
+		}
+		_, absent, err = docker.codexVolumeLabel(ctx, volume)
+		cancel()
+		if err != nil || !absent {
+			return errors.New("watchdog could not confirm Codex volume absence")
+		}
+		if createInFlight {
+			time.Sleep(docker.config.PollInterval)
+			continue
+		}
+		return nil
+	}
+}
+
+func (docker *Docker) codexVolumeLabel(ctx context.Context, name string) (string, bool, error) {
+	command := exec.CommandContext(ctx, docker.config.DockerExecutable, "volume", "inspect", "--format", `{{index .Labels "shipmunk.codex-owner"}}`, name)
+	command.Env = ClientEnvironment()
+	var stdout, stderr boundedBuffer
+	stdout.limit, stderr.limit = 4096, 4096
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	if exit := new(exec.ExitError); errors.As(err, &exit) && exit.ExitCode() != 0 && strings.Contains(strings.ToLower(stderr.String()), "no such volume") {
+		return "", true, nil
+	}
+	if err != nil {
+		return "", false, errors.New("watchdog could not inspect Codex volume")
+	}
+	return strings.TrimSpace(stdout.String()), false, nil
+}
+
+func (docker *Docker) runCodexDocker(ctx context.Context, arguments ...string) error {
+	command := exec.CommandContext(ctx, docker.config.DockerExecutable, arguments...)
+	command.Env = ClientEnvironment()
+	command.Stdout, command.Stderr = io.Discard, io.Discard
+	if err := command.Run(); err != nil {
+		return errors.New("watchdog could not remove Codex volume")
+	}
+	return nil
 }
 
 func (docker *Docker) cleanupWatchdogSandboxWithOwner(
