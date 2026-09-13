@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,11 +87,77 @@ func TestDockerConfiguredProxyCredentialsDoNotEnterSandbox(t *testing.T) {
 	if config.Image == "" || config.WatchdogExecutable == "" {
 		t.Fatal("synthetic image and watchdog executable are required")
 	}
+	if query("image", "inspect", "--format", "{{.Id}}", config.Image) == "" {
+		t.Fatal("synthetic runtime image is not available locally; refusing any pull")
+	}
+	claim := liveTestClaim(t)
+	controlName := fmt.Sprintf("shipmunk-proxy-control-%s-%d", claim.AttemptID, claim.Fence)
+	controlID := query("create", "--name", controlName, "--label", "shipmunk.proxy-test=true", "--label", "shipmunk.proxy-test-attempt="+claim.AttemptID, "--network", "none", config.Image)
+	if !containerIDPattern.MatchString(controlID) {
+		t.Fatal("Docker did not return an immutable ID for the positive-control container")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		inspect := exec.CommandContext(ctx, executable, "inspect", "--format", "{{json .}}", controlID)
+		inspect.Env = ClientEnvironment()
+		output, err := inspect.Output()
+		if err != nil {
+			t.Errorf("inspect positive-control container before cleanup: %v", err)
+			return
+		}
+		var owned struct {
+			ID     string `json:"Id"`
+			Name   string `json:"Name"`
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+		}
+		if err := json.Unmarshal(output, &owned); err != nil || owned.ID != controlID || owned.Name != "/"+controlName ||
+			owned.Config.Labels["shipmunk.proxy-test"] != "true" ||
+			owned.Config.Labels["shipmunk.proxy-test-attempt"] != claim.AttemptID {
+			t.Error("refusing cleanup because positive-control ownership could not be confirmed")
+			return
+		}
+		remove := exec.CommandContext(ctx, executable, "rm", "--force", controlID)
+		remove.Env = ClientEnvironment()
+		if err := remove.Run(); err != nil {
+			t.Errorf("remove positive-control container: %v", err)
+		}
+	})
+	var positiveControl struct {
+		ID     string `json:"Id"`
+		Name   string `json:"Name"`
+		Config struct {
+			Env    []string          `json:"Env"`
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if err := json.Unmarshal([]byte(query("inspect", "--format", "{{json .}}", controlID)), &positiveControl); err != nil {
+		t.Fatal("decode positive-control inspection")
+	}
+	if positiveControl.ID != controlID || positiveControl.Name != "/"+controlName ||
+		positiveControl.Config.Labels["shipmunk.proxy-test"] != "true" ||
+		positiveControl.Config.Labels["shipmunk.proxy-test-attempt"] != claim.AttemptID {
+		t.Fatal("positive-control container ownership could not be confirmed")
+	}
+	expectedProxy := map[string]string{
+		"HTTP_PROXY": proxy, "http_proxy": proxy,
+		"HTTPS_PROXY": proxy, "https_proxy": proxy,
+		"FTP_PROXY": proxy, "ftp_proxy": proxy,
+		"ALL_PROXY": proxy, "all_proxy": proxy,
+		"NO_PROXY": "private.synthetic.internal", "no_proxy": "private.synthetic.internal",
+	}
+	for name, expected := range expectedProxy {
+		value, found := lookupEnvironment(positiveControl.Config.Env, name)
+		if !found || value != expected {
+			t.Errorf("plain control container did not receive synthetic Docker proxy default %q", name)
+		}
+	}
 	docker, err := New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := liveTestClaim(t)
 	name, err := docker.Name(claim)
 	if err != nil {
 		t.Fatal(err)
@@ -136,4 +203,14 @@ func TestDockerConfiguredProxyCredentialsDoNotEnterSandbox(t *testing.T) {
 			t.Errorf("sandbox retained nonempty proxy variable %s", key)
 		}
 	}
+}
+
+func lookupEnvironment(environment []string, name string) (string, bool) {
+	for _, entry := range environment {
+		key, value, found := strings.Cut(entry, "=")
+		if found && key == name {
+			return value, true
+		}
+	}
+	return "", false
 }
