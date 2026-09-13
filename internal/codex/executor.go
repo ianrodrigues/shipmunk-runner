@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/codexsession"
@@ -96,11 +98,7 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	if claim.Manifest["agent"] != "codex" || claim.Manifest["runtime_version"] != profile.CodexVersion {
 		return supervisor.Execution{}, errors.New("Codex claim binding is invalid")
 	}
-	source, err := selectSource(workspace)
-	if err != nil {
-		return supervisor.Execution{}, err
-	}
-	trusted, err := trustedInstructions(claim, workspace)
+	source, trusted, err := executionInputs(claim, workspace)
 	if err != nil {
 		return supervisor.Execution{}, err
 	}
@@ -312,20 +310,69 @@ func normalizeExecution(ctx context.Context, claim protocol.Claim, stream Stream
 }
 
 func selectSource(workspace string) (string, error) {
-	entries, err := os.ReadDir(filepath.Join(workspace, "sources"))
+	root, _, err := openExecutionWorkspace(workspace)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	return selectSourceRoot(root, workspace)
+}
+
+func selectSourceRoot(root *os.Root, workspace string) (string, error) {
+	entries, err := readRootDirectory(root, "sources")
 	if err != nil {
 		return "", errors.New("Codex source layout is invalid")
 	}
-	if len(entries) == 1 && entries[0].Name() == "0" {
-		return filepath.Join(workspace, "sources", "0"), nil
+	if len(entries) != 1 && len(entries) != 2 {
+		return "", errors.New("Codex source layout is invalid")
 	}
-	if len(entries) == 2 && entries[0].Name() == "0" && entries[1].Name() == "1" {
-		return filepath.Join(workspace, "sources", "1"), nil
+	for index, entry := range entries {
+		name := fmt.Sprint(index)
+		info, statErr := root.Lstat(filepath.Join("sources", name))
+		if statErr != nil || entry.Name() != name || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("Codex source layout is invalid")
+		}
 	}
-	return "", errors.New("Codex source layout is invalid")
+	return filepath.Join(workspace, "sources", fmt.Sprint(len(entries)-1)), nil
 }
 
 func trustedInstructions(claim protocol.Claim, workspace string) (string, error) {
+	root, original, err := openExecutionWorkspace(workspace)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	trusted, err := trustedInstructionsRoot(claim, root)
+	if err != nil {
+		return "", err
+	}
+	if err := verifyExecutionWorkspace(workspace, original); err != nil {
+		return "", err
+	}
+	return trusted, nil
+}
+
+func executionInputs(claim protocol.Claim, workspace string) (string, string, error) {
+	root, original, err := openExecutionWorkspace(workspace)
+	if err != nil {
+		return "", "", err
+	}
+	defer root.Close()
+	source, err := selectSourceRoot(root, workspace)
+	if err != nil {
+		return "", "", err
+	}
+	trusted, err := trustedInstructionsRoot(claim, root)
+	if err != nil {
+		return "", "", err
+	}
+	if err := verifyExecutionWorkspace(workspace, original); err != nil {
+		return "", "", err
+	}
+	return source, trusted, nil
+}
+
+func trustedInstructionsRoot(claim protocol.Claim, root *os.Root) (string, error) {
 	references, present := claim.Manifest["instruction_artifacts"]
 	if !present {
 		return "", nil
@@ -333,9 +380,13 @@ func trustedInstructions(claim protocol.Claim, workspace string) (string, error)
 	if list, ok := references.([]any); !ok || len(list) != 1 {
 		return "", errors.New("Codex requires one trusted instruction bundle")
 	}
-	raw, err := os.ReadFile(filepath.Join(workspace, "instructions", "0.json"))
-	if err != nil || len(raw) > protocol.InputArtifactMaxBytes {
+	entries, err := readRootDirectory(root, "instructions")
+	if err != nil || len(entries) != 1 || entries[0].Name() != "0.json" {
 		return "", errors.New("trusted instructions are invalid")
+	}
+	raw, err := readTrustedBundle(root, nil)
+	if err != nil {
+		return "", err
 	}
 	value, err := protocol.Decode(raw, protocol.InputArtifactMaxBytes)
 	bundle, ok := value.(map[string]any)
@@ -359,4 +410,99 @@ func trustedInstructions(claim protocol.Claim, workspace string) (string, error)
 		return "", errors.New("trusted AGENTS.md is invalid")
 	}
 	return text, nil
+}
+
+func readTrustedBundle(root *os.Root, afterLstat func()) ([]byte, error) {
+	expected, err := root.Lstat("instructions/0.json")
+	stat, statOK := expectedStat(expected)
+	if err != nil || !statOK || !expected.Mode().IsRegular() || expected.Mode().Perm() != 0600 || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() {
+		return nil, errors.New("trusted instructions are invalid")
+	}
+	if afterLstat != nil {
+		afterLstat()
+	}
+	file, err := root.OpenFile("instructions/0.json", os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, errors.New("trusted instructions are invalid")
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(file, protocol.InputArtifactMaxBytes+1))
+	opened, statErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil || statErr != nil || closeErr != nil || len(raw) > protocol.InputArtifactMaxBytes || !os.SameFile(expected, opened) {
+		return nil, errors.New("trusted instructions are invalid")
+	}
+	return raw, nil
+}
+
+func openExecutionWorkspace(workspace string) (*os.Root, os.FileInfo, error) {
+	if !filepath.IsAbs(workspace) || filepath.Clean(workspace) != workspace {
+		return nil, nil, errors.New("Codex workspace is invalid")
+	}
+	original, err := os.Lstat(workspace)
+	if err != nil || !original.IsDir() || original.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, errors.New("Codex workspace is invalid")
+	}
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err != nil || resolved != workspace {
+		return nil, nil, errors.New("Codex workspace is invalid")
+	}
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return nil, nil, errors.New("Codex workspace is invalid")
+	}
+	opened, openErr := root.Open(".")
+	if openErr != nil {
+		root.Close()
+		return nil, nil, errors.New("Codex workspace is invalid")
+	}
+	openedInfo, statErr := opened.Stat()
+	closeErr := opened.Close()
+	if statErr != nil || closeErr != nil || !os.SameFile(original, openedInfo) {
+		root.Close()
+		return nil, nil, errors.New("Codex workspace changed while opening")
+	}
+	if err := verifyExecutionWorkspace(workspace, original); err != nil {
+		root.Close()
+		return nil, nil, err
+	}
+	return root, original, nil
+}
+
+func verifyExecutionWorkspace(workspace string, original os.FileInfo) error {
+	current, err := os.Lstat(workspace)
+	if err != nil || !os.SameFile(original, current) || current.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Codex workspace changed during input selection")
+	}
+	return nil
+}
+
+func readRootDirectory(root *os.Root, name string) ([]os.DirEntry, error) {
+	expected, err := root.Lstat(name)
+	if err != nil || !expected.IsDir() || expected.Mode()&os.ModeSymlink != 0 || expected.Mode().Perm() != 0700 {
+		return nil, errors.New("Codex input directory is invalid")
+	}
+	directory, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	opened, statErr := directory.Stat()
+	if statErr != nil || !os.SameFile(expected, opened) {
+		directory.Close()
+		return nil, errors.New("Codex input directory changed while opening")
+	}
+	entries, readErr := directory.ReadDir(-1)
+	finished, finishErr := directory.Stat()
+	closeErr := directory.Close()
+	if readErr != nil || finishErr != nil || !os.SameFile(expected, finished) {
+		return nil, errors.New("Codex input directory changed while reading")
+	}
+	return entries, closeErr
+}
+
+func expectedStat(info os.FileInfo) (*syscall.Stat_t, bool) {
+	if info == nil {
+		return nil, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return stat, ok
 }

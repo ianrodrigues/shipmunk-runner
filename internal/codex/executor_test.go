@@ -125,7 +125,10 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
-	workspace := t.TempDir()
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(workspace, "sources", "0"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +152,10 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 }
 
 func TestSelectSourceUsesReviewHead(t *testing.T) {
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, index := range []string{"0", "1"} {
 		if err := os.MkdirAll(filepath.Join(root, "sources", index), 0700); err != nil {
 			t.Fatal(err)
