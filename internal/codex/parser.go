@@ -300,7 +300,7 @@ func parseFinding(value any) (Finding, bool) {
 	explanation, explanationOK := boundedString(object["explanation"], 8192)
 	evidence, evidenceOK := boundedString(object["evidence"], 8192)
 	clean := path.Clean(name)
-	validPath := nameOK && !strings.Contains(name, "\\") && !containsC0(name) && clean == name && clean != "." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/")
+	validPath := nameOK && !strings.Contains(name, "\\") && !containsC0(name) && clean == name && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/")
 	validEnum := sideOK && (side == "LEFT" || side == "RIGHT") && severityOK && (severity == "info" || severity == "low" || severity == "medium" || severity == "high" || severity == "critical")
 	return Finding{Path: name, Line: line, Side: side, Severity: severity, Explanation: explanation, Evidence: evidence}, validPath && lineOK && validEnum && explanationOK && evidenceOK
 }
