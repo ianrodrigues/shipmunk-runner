@@ -254,7 +254,7 @@ func TestLifecycleUncertainCreateRetainsJournalAndRequiresConfirmedAbsence(t *te
 	}
 }
 
-func TestLifecycleClearsUncertainCreateOnlyAfterReconciliation(t *testing.T) {
+func TestLifecycleCompletesUncertainCreateOnlyAfterReconciliation(t *testing.T) {
 	store, lifecycle, _, runtime, _ := newLifecycleFixture(t)
 	runtime.startErr = ErrCreateUncertain
 	if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne); err != nil {
@@ -265,6 +265,26 @@ func TestLifecycleClearsUncertainCreateOnlyAfterReconciliation(t *testing.T) {
 	}
 	if pending, err := store.Read("pending"); err != nil || pending != nil {
 		t.Fatalf("pending journal after reconciled completion = %#v, %v", pending, err)
+	}
+}
+
+func TestLifecycleRevalidatesTombstoneAfterCrashBeforeCompletion(t *testing.T) {
+	_, lifecycle, _, runtime, _ := newLifecycleFixture(t)
+	pending := map[string]any{
+		"sandbox":          "shipmunk-profile-" + operationOne,
+		"create_attempted": true,
+	}
+	if err := lifecycle.stopPending(pending, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !isTrue(pending["create_attempted"]) {
+		t.Fatal("tombstone phase was cleared before the pending journal was retired")
+	}
+	if err := lifecycle.stopPending(pending, nil); err != nil {
+		t.Fatalf("recovery did not revalidate the retained tombstone: %v", err)
+	}
+	if runtime.reconciles != 2 || runtime.stops != 0 {
+		t.Fatalf("tombstone recovery calls = reconciles %d, stops %d", runtime.reconciles, runtime.stops)
 	}
 }
 
