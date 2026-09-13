@@ -131,6 +131,7 @@ func TestParseRejectsInvalidStructuredResults(t *testing.T) {
 		"extra field":         `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[],"secret":true}`,
 		"missing finding":     `{"summary":"Done.","outcome":"findings","findings":[],"tests":[]}`,
 		"finding on clean":    `{"summary":"Done.","outcome":"no_findings","findings":[{"path":"a","line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
+		"parent path":         `{"summary":"Done.","outcome":"findings","findings":[{"path":"..","line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
 		"unsafe path":         `{"summary":"Done.","outcome":"findings","findings":[{"path":"../secret","line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
 		"fractional line":     `{"summary":"Done.","outcome":"findings","findings":[{"path":"a.go","line":1.5,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
 		"unexpected test key": `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[{"command":"go test ./...","status":"passed","summary":"ok","raw":"private"}]}`,
