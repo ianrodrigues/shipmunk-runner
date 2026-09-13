@@ -99,7 +99,6 @@ try {
     }
 
     $request = $transport->requests[0];
-    unset($request['url']);
     echo json_encode($request, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
 } catch (Throwable $exception) {
     fwrite(STDERR, $exception::class.': '.$exception->getMessage()."\n");
