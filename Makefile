@@ -1,9 +1,14 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := check
 
-.PHONY: check lint package-check runner-check native-image-check go-check go-build go-parity-check
+.PHONY: check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check
 
-check: lint package-check runner-check native-image-check go-check go-parity-check
+check: lint package-check runner-check native-image-check go-check go-parity-check go-runtime-check
+
+go-runtime-check: runner-check
+	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-runtime.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
+	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog; \
+	SHIPMUNK_SANDBOX_DOCKER_TEST=1 SHIPMUNK_RUNNER_IMAGE=shipmunk-runner-test:local SHIPMUNK_WATCHDOG_BINARY="$$build_dir/shipmunk-watchdog" go test -race -count=1 ./internal/sandbox ./internal/supervisor
 
 go-parity-check:
 	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'The temporary PHP baseline requires PHP 8.5.' >&2; exit 1; }
@@ -19,7 +24,8 @@ go-build:
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-build.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
 	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-runner" ./cmd/shipmunk-runner; \
 	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-profile" ./cmd/shipmunk-profile; \
-	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-setup" ./cmd/shipmunk-setup
+	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-setup" ./cmd/shipmunk-setup; \
+	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog
 
 lint:
 	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'PHP 8.5 or newer is required.' >&2; exit 1; }

@@ -12,7 +12,7 @@ import (
 )
 
 // RunnerOptions contains the validated command-line configuration for the
-// execution host. A valid value still cannot start work in this foundation.
+// execution host. Only the fixture driver is currently operational in Go.
 type RunnerOptions struct {
 	BaseURL         string
 	TokenFile       string

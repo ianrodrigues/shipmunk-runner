@@ -12,7 +12,7 @@ func TestBuildTargetPropagatesEachCommandFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"all-succeed", "shipmunk-runner", "shipmunk-profile", "shipmunk-setup"} {
+	for _, command := range []string{"all-succeed", "shipmunk-runner", "shipmunk-profile", "shipmunk-setup", "shipmunk-watchdog"} {
 		t.Run(command, func(t *testing.T) {
 			directory := t.TempDir()
 			fakeGo := "#!/bin/sh\ncase \"$*\" in\n*./cmd/" + command + ") exit 17;;\nesac\nexit 0\n"
