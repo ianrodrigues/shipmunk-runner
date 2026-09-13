@@ -1,9 +1,22 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := check
 
-.PHONY: check lint package-check runner-check native-image-check
+.PHONY: check lint package-check runner-check native-image-check go-check go-build
 
-check: lint package-check runner-check native-image-check
+check: lint package-check runner-check native-image-check go-check
+
+go-check:
+	@test -d contracts-source/contracts/v1 || { echo 'go-check: initialize the pinned contracts-source submodule.' >&2; exit 1; }
+	@test -z "$$(gofmt -l cmd internal)" || { echo 'Go files require gofmt.' >&2; gofmt -l cmd internal >&2; exit 1; }
+	go vet ./...
+	go test -race ./...
+	$(MAKE) go-build
+
+go-build:
+	@build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-build.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
+	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-runner" ./cmd/shipmunk-runner; \
+	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-profile" ./cmd/shipmunk-profile; \
+	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-setup" ./cmd/shipmunk-setup
 
 lint:
 	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'PHP 8.5 or newer is required.' >&2; exit 1; }
