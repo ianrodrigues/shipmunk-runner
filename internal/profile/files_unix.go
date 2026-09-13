@@ -5,6 +5,7 @@ package profile
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -248,7 +249,9 @@ func syncProfileDirectory(path string) error {
 }
 
 type nativeProfileEntry struct {
+	root      *os.Root
 	path      string
+	info      os.FileInfo
 	directory bool
 	dev       uint64
 	ino       uint64
@@ -257,29 +260,47 @@ type nativeProfileEntry struct {
 	nlink     uint64
 }
 
-func inspectNativeProfileTree(home string) ([]nativeProfileEntry, error) {
-	info, err := os.Lstat(home)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateProfileDirectory(info, 0700); err != nil {
-		return nil, err
-	}
-	entries := []nativeProfileEntry{}
-	if err := inspectNativeProfileEntries(home, &entries); err != nil {
-		return nil, err
-	}
-	return entries, nil
+type nativeTreeHooks struct {
+	beforeDirectoryOpen func(parent *os.Root, name string)
+	beforeEntryChmod    func(entry nativeProfileEntry)
 }
 
-func inspectNativeProfileEntries(path string, entries *[]nativeProfileEntry) error {
-	children, err := os.ReadDir(path)
+func inspectNativeProfileTree(home string, hooks nativeTreeHooks) ([]nativeProfileEntry, *os.Root, error) {
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	pathInfo, err := os.Lstat(home)
+	if err != nil || !os.SameFile(info, pathInfo) {
+		_ = root.Close()
+		return nil, nil, errors.New("native home changed during inspection")
+	}
+	if err := validateProfileDirectory(info, 0700); err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	entries := []nativeProfileEntry{}
+	if err := inspectNativeProfileEntries(root, ".", &entries, hooks); err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	return entries, root, nil
+}
+
+func inspectNativeProfileEntries(root *os.Root, directory string, entries *[]nativeProfileEntry, hooks nativeTreeHooks) error {
+	children, err := fs.ReadDir(root.FS(), directory)
 	if err != nil {
 		return err
 	}
 	for _, child := range children {
-		childPath := filepath.Join(path, child.Name())
-		info, err := os.Lstat(childPath)
+		name := child.Name()
+		entryPath := filepath.Join(directory, name)
+		info, err := root.Lstat(entryPath)
 		if err != nil {
 			return err
 		}
@@ -292,7 +313,9 @@ func inspectNativeProfileEntries(path string, entries *[]nativeProfileEntry) err
 			return errors.New("unsafe native-generated profile ownership or link count")
 		}
 		entry := nativeProfileEntry{
-			path:      childPath,
+			root:      root,
+			path:      entryPath,
+			info:      info,
 			directory: directory,
 			dev:       uint64(stat.Dev),
 			ino:       uint64(stat.Ino),
@@ -302,7 +325,20 @@ func inspectNativeProfileEntries(path string, entries *[]nativeProfileEntry) err
 		}
 		*entries = append(*entries, entry)
 		if directory {
-			if err := inspectNativeProfileEntries(childPath, entries); err != nil {
+			if hooks.beforeDirectoryOpen != nil {
+				hooks.beforeDirectoryOpen(root, entryPath)
+			}
+			childRoot, err := root.OpenRoot(entryPath)
+			if err != nil {
+				return err
+			}
+			openedInfo, err := childRoot.Stat(".")
+			if err != nil || !os.SameFile(info, openedInfo) {
+				_ = childRoot.Close()
+				return errors.New("native home changed during inspection")
+			}
+			_ = childRoot.Close()
+			if err := inspectNativeProfileEntries(root, entryPath, entries, hooks); err != nil {
 				return err
 			}
 		}
@@ -311,13 +347,77 @@ func inspectNativeProfileEntries(path string, entries *[]nativeProfileEntry) err
 }
 
 func verifyNativeSnapshot(entry nativeProfileEntry) error {
-	info, err := os.Lstat(entry.path)
+	info, err := entry.root.Lstat(entry.path)
 	if err != nil {
 		return errors.New("native home changed during normalization")
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || uint64(stat.Dev) != entry.dev || uint64(stat.Ino) != entry.ino || uint32(stat.Mode) != entry.mode || uint32(stat.Uid) != entry.uid || uint64(stat.Nlink) != entry.nlink {
 		return errors.New("native home changed during normalization")
+	}
+	return nil
+}
+
+func chmodNativeSnapshot(entry nativeProfileEntry) error {
+	if err := verifyNativeSnapshot(entry); err != nil {
+		return err
+	}
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+	if entry.directory {
+		flags |= syscall.O_DIRECTORY
+	}
+	file, err := entry.root.OpenFile(entry.path, flags, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !sameNativeSnapshot(entry, opened) {
+		return errors.New("native home changed during normalization")
+	}
+	mode := os.FileMode(0600)
+	if entry.directory {
+		mode = 0700
+	}
+	return file.Chmod(mode)
+}
+
+func sameNativeSnapshot(entry nativeProfileEntry, info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint64(stat.Dev) == entry.dev && uint64(stat.Ino) == entry.ino && uint32(stat.Mode) == entry.mode && uint32(stat.Uid) == entry.uid && uint64(stat.Nlink) == entry.nlink
+}
+
+func normalizeNativeProfileTree(home string, hooks nativeTreeHooks) error {
+	entries, root, err := inspectNativeProfileTree(home, hooks)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		if hooks.beforeEntryChmod != nil {
+			hooks.beforeEntryChmod(entry)
+		}
+		if err := chmodNativeSnapshot(entry); err != nil {
+			return fmt.Errorf("protect native profile entry: %w", err)
+		}
+	}
+	return validateNativeProfileTree(home)
+}
+
+func validateNativeProfileTree(home string) error {
+	entries, root, err := inspectNativeProfileTree(home, nativeTreeHooks{})
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		mode := os.FileMode(0600)
+		if entry.directory {
+			mode = 0700
+		}
+		if entry.info.Mode().Perm() != mode {
+			return errors.New("native home has unsafe permissions")
+		}
 	}
 	return nil
 }
@@ -351,24 +451,95 @@ func validateProfileTree(path string) error {
 	return nil
 }
 
-func removeProfileTree(path string) error {
-	info, err := os.Lstat(path)
+func removeProfileTree(path string, hooks nativeTreeHooks) error {
+	root, err := os.OpenRoot(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-		children, err := os.ReadDir(path)
+	defer root.Close()
+	rootInfo, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !os.SameFile(rootInfo, pathInfo) || !rootInfo.IsDir() {
+		return errors.New("native home changed during invalidation")
+	}
+	if err := removeProfileEntries(root, ".", hooks); err != nil {
+		return err
+	}
+	if err := root.Close(); err != nil {
+		return err
+	}
+	parent, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	name := filepath.Base(path)
+	current, err := parent.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if os.SameFile(rootInfo, current) {
+		return parent.Remove(name)
+	}
+	// If the home entry was replaced, remove only that entry. Root.Remove does
+	// not follow a symlink, so an outside target remains untouched.
+	return parent.Remove(name)
+}
+
+func removeProfileEntries(root *os.Root, directory string, hooks nativeTreeHooks) error {
+	children, err := fs.ReadDir(root.FS(), directory)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		name := child.Name()
+		entryPath := filepath.Join(directory, name)
+		info, err := root.Lstat(entryPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
-		for _, child := range children {
-			if err := removeProfileTree(filepath.Join(path, child.Name())); err != nil {
-				return err
+		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			if hooks.beforeDirectoryOpen != nil {
+				hooks.beforeDirectoryOpen(root, entryPath)
+			}
+			childRoot, openErr := root.OpenRoot(entryPath)
+			if openErr != nil {
+				// Removing a replaced symlink is safe: Root.Remove never follows it.
+				if removeErr := root.Remove(entryPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+					continue
+				}
+				return openErr
+			}
+			openedInfo, statErr := childRoot.Stat(".")
+			_ = childRoot.Close()
+			if statErr != nil || !os.SameFile(info, openedInfo) {
+				// The name now denotes a replacement. Remove only the entry itself;
+				// never recurse through a path that was not the inspected directory.
+				if removeErr := root.Remove(entryPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+					continue
+				}
+				return errors.New("native home changed during invalidation")
+			}
+			recurseErr := removeProfileEntries(root, entryPath, hooks)
+			if recurseErr != nil {
+				return recurseErr
 			}
 		}
+		if err := root.Remove(entryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
-	return os.Remove(path)
+	return nil
 }
