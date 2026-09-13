@@ -26,6 +26,10 @@ const (
 )
 
 var (
+	// ErrCreateUncertain marks a Docker create request whose daemon-side result
+	// cannot be proved from the client response. The persisted name must remain
+	// reserved until an owned container is observed or an operator resolves it.
+	ErrCreateUncertain   = errors.New("sandbox create outcome is uncertain")
 	ulidPattern          = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
 	containerIDPattern   = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 	containerNamePattern = regexp.MustCompile(`^shipmunk-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
@@ -183,20 +187,20 @@ func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInp
 	}
 	result, err := docker.run(ctx, docker.config.CreateTimeout, maxCommandOutputBytes, arguments...)
 	if err != nil {
-		return nil, fmt.Errorf("create sandbox: %w", err)
+		return nil, fmt.Errorf("%w: create sandbox: %w", ErrCreateUncertain, err)
 	}
 	containerID := strings.TrimSpace(result.stdout)
 	if !containerIDPattern.MatchString(containerID) {
-		return nil, errors.New("Docker returned an invalid sandbox identifier")
+		return nil, fmt.Errorf("%w: Docker returned an invalid sandbox identifier", ErrCreateUncertain)
 	}
 	created, err := docker.inspect(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("verify created sandbox: %w", err)
+		return nil, fmt.Errorf("%w: verify created sandbox: %w", ErrCreateUncertain, err)
 	}
 	if !ownsSandbox(created, claim, name) || created.Config.Image != docker.config.Image || !strings.HasPrefix(created.ID, containerID) {
-		return nil, errors.New("Docker created a sandbox with unexpected ownership or image")
+		return nil, fmt.Errorf("%w: Docker created a sandbox with unexpected ownership or image", ErrCreateUncertain)
 	}
-	return &Process{docker: docker, name: name, id: containerID, claim: claim, workspace: workspace, agentInput: input}, nil
+	return &Process{docker: docker, name: name, id: created.ID, claim: claim, workspace: workspace, agentInput: input}, nil
 }
 
 // Reconcile stops and removes a Shipmunk-owned container, then verifies that
@@ -208,6 +212,9 @@ func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	}
 	inspection, err := docker.inspect(ctx, identifier)
 	if errors.Is(err, errContainerAbsent) {
+		if containerNamePattern.MatchString(identifier) {
+			return fmt.Errorf("%w: reserved sandbox name is absent", ErrCreateUncertain)
+		}
 		return nil
 	}
 	if err != nil {
@@ -216,7 +223,11 @@ func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	if !ownsSandboxIdentifier(inspection, identifier) {
 		return errors.New("refusing to reconcile a container not owned by Shipmunk")
 	}
-	return docker.removeOwned(ctx, identifier, inspection)
+	removeIdentifier := identifier
+	if containerNamePattern.MatchString(identifier) {
+		removeIdentifier = inspection.ID
+	}
+	return docker.removeOwned(ctx, removeIdentifier, inspection)
 }
 
 func (docker *Docker) removeOwned(ctx context.Context, identifier string, inspection containerInspection) error {

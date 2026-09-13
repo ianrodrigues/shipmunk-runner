@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"archive/tar"
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,6 +155,64 @@ func TestReconcileRetainsUncertaintyWhenDockerStillReportsTheContainer(t *testin
 	}
 }
 
+func TestReconcileDoesNotAcknowledgeAnAbsentReservedName(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := docker.Reconcile(context.Background(), testName); !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("Reconcile(reserved name) error = %v, want ErrCreateUncertain", err)
+	}
+	if err := docker.Reconcile(context.Background(), testContainer); err != nil {
+		t.Fatalf("Reconcile(confirmed immutable ID) error = %v, want nil", err)
+	}
+}
+
+func TestCreateTimeoutPreservesUncertaintyAndCatchesLateContainer(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	script, err := os.ReadFile(fixture.executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := fmt.Sprintf("create) touch %q; printf '%%s\\n' '%s'; exit 0 ;;", fixture.marker, testContainer)
+	lateCreate := fmt.Sprintf("create) nohup sh -c 'sleep 0.2; touch %q' >/dev/null 2>&1 & exit 1 ;;", fixture.marker)
+	replaced := strings.Replace(string(script), original, lateCreate, 1)
+	if replaced == string(script) {
+		t.Fatal("could not install the delayed fake create response")
+	}
+	if err := os.WriteFile(fixture.executable, []byte(replaced), 0700); err != nil {
+		t.Fatal(err)
+	}
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable, CreateTimeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = docker.Create(context.Background(), testClaim(), nil, t.TempDir())
+	if !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("Create() error = %v, want ErrCreateUncertain", err)
+	}
+	if err := docker.Reconcile(context.Background(), testName); !errors.Is(err, ErrCreateUncertain) {
+		t.Fatalf("Reconcile before delayed side effect error = %v, want ErrCreateUncertain", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(fixture.marker); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(fixture.marker); err != nil {
+		t.Fatalf("fake daemon did not complete its delayed create: %v", err)
+	}
+	if err := docker.Reconcile(context.Background(), testName); err != nil {
+		t.Fatalf("Reconcile after delayed side effect: %v", err)
+	}
+	if _, err := os.Stat(fixture.marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("late-created sandbox remains: %v", err)
+	}
+}
+
 func TestStopEscalatesToKillAndVerifiesTheStoppedState(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	if err := os.WriteFile(fixture.ignoreStop, []byte("ignore"), 0600); err != nil {
@@ -176,7 +236,7 @@ func TestStopEscalatesToKillAndVerifiesTheStoppedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(arguments), "stop --time 2 "+testName) || !strings.Contains(string(arguments), "kill "+testName) {
+	if !strings.Contains(string(arguments), "stop --time 2 "+testContainer) || !strings.Contains(string(arguments), "kill "+testContainer) {
 		t.Fatalf("stop did not escalate as expected: %s", arguments)
 	}
 	if err := process.Remove(context.Background()); err != nil {
@@ -261,7 +321,6 @@ func TestRunWatchdogTreatsPipeClosureAsParentDeathAndRemovesOwnedSandbox(t *test
 		"--name", testName,
 		"--lease", fmt.Sprint(time.Now().Add(time.Minute).UnixNano()),
 		"--deadline", fmt.Sprint(time.Now().Add(2 * time.Minute).UnixNano()),
-		"--create-timeout", "1ms",
 		"--poll-interval", "1ms",
 	}
 	reader, writer := io.Pipe()
@@ -299,6 +358,9 @@ func TestRunWatchdogWaitsThroughAbsentBeforeCreateWindow(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	if err := os.WriteFile(fixture.marker, []byte("late create"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(writer, "phase:1:started:\nphase:2:finished:\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -349,6 +411,225 @@ func TestRunWatchdogRejectsDisarmUntilSandboxAbsence(t *testing.T) {
 	}
 }
 
+func TestRunWatchdogRetainsUnconfirmedCreateAfterParentDeath(t *testing.T) {
+	if os.Getenv("SHIPMUNK_WATCHDOG_UNCERTAIN_HELPER") == "1" {
+		_ = RunWatchdog(watchdogTestArguments(os.Getenv("SHIPMUNK_WATCHDOG_DOCKER"), time.Now().Add(time.Minute), time.Now().Add(2*time.Minute)), os.Stdin)
+		return
+	}
+	fixture := newFakeDocker(t, false, true)
+	command := exec.Command(os.Args[0], "-test.run=^TestRunWatchdogRetainsUnconfirmedCreateAfterParentDeath$")
+	command.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"SHIPMUNK_WATCHDOG_UNCERTAIN_HELPER=1",
+		"SHIPMUNK_WATCHDOG_DOCKER=" + fixture.executable,
+	}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stdin, "phase:1:started:\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		t.Fatalf("watchdog exited after parent death with an unconfirmed create: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("test watchdog process unexpectedly exited successfully after kill")
+	}
+}
+
+func TestWatchdogRejectsExpiredLeaseBeforeReadinessAndBoundsFrames(t *testing.T) {
+	arguments := watchdogTestArguments("unused", time.Now().Add(-time.Second), time.Now().Add(time.Minute))
+	var output strings.Builder
+	if err := RunWatchdogCommand(arguments, strings.NewReader(""), &output); err == nil {
+		t.Fatal("RunWatchdogCommand accepted an expired lease")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expired watchdog emitted readiness before validation: %q", output.String())
+	}
+	if _, err := readBoundedLine(bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 4096)), 32), 128); !errors.Is(err, errLineTooLong) {
+		t.Fatalf("readBoundedLine error = %v, want frame-size rejection", err)
+	}
+}
+
+func TestWatchdogControlWritesAndDisarmAreBounded(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	const timeout = time.Second
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable, CommandTimeout: timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := newTestWatchdogControl(true)
+	lease := &Lease{docker: docker, name: testName, stdin: blocked, done: make(chan struct{})}
+	started := time.Now()
+	if err := lease.Renew(time.Now().Add(time.Minute)); err == nil {
+		t.Fatal("Renew() succeeded while its control pipe was blocked")
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatal("Renew() exceeded its bounded control-write timeout")
+	}
+	select {
+	case <-blocked.closed:
+	default:
+		t.Fatal("timed-out renewal did not close the blocked parent pipe")
+	}
+
+	control := newTestWatchdogControl(false)
+	lease = &Lease{docker: docker, name: testName, stdin: control, done: make(chan struct{})}
+	started = time.Now()
+	if err := lease.Disarm(); err == nil || !strings.Contains(err.Error(), "still pending") {
+		t.Fatalf("Disarm() error = %v, want bounded pending-shutdown error", err)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatal("Disarm() waited unboundedly for watchdog exit")
+	}
+	select {
+	case <-lease.done:
+		t.Fatal("Disarm() closed/killed the independent cleanup watchdog")
+	default:
+	}
+}
+
+func TestLeasePhaseTransitionsWaitForAcknowledgment(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	watchdogBinary := filepath.Join(t.TempDir(), "watchdog-ack-fixture")
+	script := `#!/bin/sh
+printf 'READY\n'
+while IFS= read -r line; do
+  case "$line" in
+    phase:*)
+      sleep 0.05
+      rest=${line#phase:}
+      sequence=${rest%%:*}
+      printf 'ACK:%s\n' "$sequence"
+      ;;
+    disarm) exit 0 ;;
+  esac
+done
+`
+	if err := os.WriteFile(watchdogBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(Config{
+		DockerExecutable:   fixture.executable,
+		WatchdogExecutable: watchdogBinary,
+		CommandTimeout:     time.Second,
+		PollInterval:       10 * time.Millisecond,
+	})
+	lease, err := watchdog.Arm(testName, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := lease.CreateStarted(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) < 40*time.Millisecond {
+		t.Fatal("CreateStarted() returned before the watchdog acknowledgment")
+	}
+	started = time.Now()
+	if err := lease.CreateFinished(testContainer); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) < 40*time.Millisecond {
+		t.Fatal("CreateFinished() returned before the watchdog acknowledgment")
+	}
+	if err := lease.Disarm(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLeasePhaseTimeoutRetainsUncertaintyAndRefusesDisarm(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	watchdogBinary := filepath.Join(t.TempDir(), "watchdog-no-ack-fixture")
+	script := "#!/bin/sh\nprintf 'READY\\n'\nIFS= read -r line\ncat >/dev/null\n"
+	if err := os.WriteFile(watchdogBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(Config{
+		DockerExecutable:   fixture.executable,
+		WatchdogExecutable: watchdogBinary,
+		CommandTimeout:     time.Second,
+	})
+	lease, err := watchdog.Arm(testName, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.CreateStarted(); err == nil || !strings.Contains(err.Error(), "acknowledgment timed out") {
+		t.Fatalf("CreateStarted() error = %v, want acknowledgment timeout", err)
+	}
+	if err := lease.Disarm(); err == nil || !strings.Contains(err.Error(), "uncertain") {
+		t.Fatalf("Disarm() error = %v, want create uncertainty refusal", err)
+	}
+	_ = lease.stdin.Close()
+	if err := lease.waitForExitBounded(time.Second); err != nil {
+		t.Fatalf("wait for fake watchdog after closing its control pipe: %v", err)
+	}
+}
+
+func TestLeasePhaseRejectsWatchdogEOFBeforeAcknowledgment(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	watchdogBinary := filepath.Join(t.TempDir(), "watchdog-eof-fixture")
+	script := "#!/bin/sh\nprintf 'READY\\n'\nIFS= read -r line\nsleep 0.1\nexit 0\n"
+	if err := os.WriteFile(watchdogBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(Config{
+		DockerExecutable:   fixture.executable,
+		WatchdogExecutable: watchdogBinary,
+		CommandTimeout:     time.Second,
+	})
+	lease, err := watchdog.Arm(testName, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.CreateStarted(); err == nil {
+		t.Fatal("CreateStarted() succeeded without a watchdog acknowledgment")
+	}
+	if err := lease.waitForExitBounded(time.Second); err != nil {
+		t.Fatalf("wait for EOF fixture: %v", err)
+	}
+	if err := lease.Disarm(); err == nil || !strings.Contains(err.Error(), "uncertain") {
+		t.Fatalf("Disarm() error = %v, want create uncertainty refusal", err)
+	}
+}
+
+type testWatchdogControl struct {
+	closed chan struct{}
+	once   sync.Once
+	block  bool
+}
+
+func newTestWatchdogControl(block bool) *testWatchdogControl {
+	return &testWatchdogControl{closed: make(chan struct{}), block: block}
+}
+
+func (control *testWatchdogControl) Write(value []byte) (int, error) {
+	if control.block {
+		<-control.closed
+		return 0, errors.New("control channel closed")
+	}
+	return len(value), nil
+}
+
+func (control *testWatchdogControl) Close() error {
+	control.once.Do(func() { close(control.closed) })
+	return nil
+}
+
 func TestDockerSandboxLifecycleLive(t *testing.T) {
 	if os.Getenv("SHIPMUNK_SANDBOX_DOCKER_TEST") != "1" {
 		t.Skip("set SHIPMUNK_SANDBOX_DOCKER_TEST=1 to use the designated Linux Docker engine")
@@ -389,15 +670,23 @@ func TestDockerSandboxLifecycleLive(t *testing.T) {
 		if process != nil {
 			_ = process.Remove(ctx)
 		}
-		_ = docker.Reconcile(ctx, name)
 		_ = lease.Disarm()
 	})
+	if err := lease.CreateStarted(); err != nil {
+		t.Fatal(err)
+	}
 	process, err = docker.Create(context.Background(), claim, map[string]any{
 		"fake_require_fixture": true,
 		"safe_marker":          "copied",
 	}, workspace)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := lease.CreateFinished(process.ContainerID()); err != nil {
+		t.Fatal(err)
+	}
+	if process.ContainerID() == name || !containerIDPattern.MatchString(process.ContainerID()) {
+		t.Fatalf("ContainerID() = %q, want an immutable full Docker ID", process.ContainerID())
 	}
 	inspection, err := docker.inspect(context.Background(), name)
 	if err != nil {
@@ -572,8 +861,14 @@ func runKilledSupervisorFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := lease.CreateStarted(); err != nil {
+		t.Fatal(err)
+	}
 	process, err := docker.Create(context.Background(), claim, map[string]any{"fake_mode": "sleep"}, workspace)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.CreateFinished(process.ContainerID()); err != nil {
 		t.Fatal(err)
 	}
 	if err := process.Start(context.Background()); err != nil {
@@ -596,7 +891,6 @@ func watchdogTestArguments(docker string, lease, deadline time.Time) []string {
 		"--name", testName,
 		"--lease", fmt.Sprint(lease.UnixNano()),
 		"--deadline", fmt.Sprint(deadline.UnixNano()),
-		"--create-timeout", "1ms",
 		"--poll-interval", "1ms",
 	}
 }

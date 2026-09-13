@@ -32,6 +32,13 @@ func (process *Process) ID() string {
 	return process.name
 }
 
+// ContainerID returns Docker's immutable full container ID. The coordinator
+// should persist it after Create succeeds; Reconcile can safely confirm an
+// absent immutable ID even if the deterministic name is later reused.
+func (process *Process) ContainerID() string {
+	return process.id
+}
+
 // Start starts the container, copies the workspace and agent input, then marks
 // the execution inputs ready for the pinned sandbox entrypoint.
 func (process *Process) Start(ctx context.Context) error {
@@ -42,17 +49,17 @@ func (process *Process) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, "start", process.name); err != nil {
+	if _, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, "start", process.id); err != nil {
 		return fmt.Errorf("start sandbox: %w", err)
 	}
-	if _, err := process.docker.runInput(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, bytes.NewReader(archive), "exec", "--interactive", process.name, "tar", "-xf", "-", "-C", "/workspace"); err != nil {
+	if _, err := process.docker.runInput(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, bytes.NewReader(archive), "exec", "--interactive", process.id, "tar", "-xf", "-", "-C", "/workspace"); err != nil {
 		return fmt.Errorf("copy sandbox workspace: %w", err)
 	}
-	if _, err := process.docker.runInput(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, bytes.NewReader(process.agentInput), "exec", "--interactive", process.name,
+	if _, err := process.docker.runInput(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, bytes.NewReader(process.agentInput), "exec", "--interactive", process.id,
 		"sh", "-c", "umask 077; cat > /run/shipmunk/agent-input.json.tmp && mv /run/shipmunk/agent-input.json.tmp /run/shipmunk/agent-input.json"); err != nil {
 		return fmt.Errorf("copy sandbox agent input: %w", err)
 	}
-	if _, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, "exec", process.name,
+	if _, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, "exec", process.id,
 		"sh", "-c", "touch /run/shipmunk/ready.tmp && mv /run/shipmunk/ready.tmp /run/shipmunk/ready"); err != nil {
 		return fmt.Errorf("mark sandbox inputs ready: %w", err)
 	}
@@ -66,7 +73,7 @@ func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	if _, err := process.inspectOwned(ctx); err != nil {
 		return 0, nil, fmt.Errorf("verify sandbox before wait: %w", err)
 	}
-	result, err := process.docker.run(ctx, 0, maxCommandOutputBytes, "wait", process.name)
+	result, err := process.docker.run(ctx, 0, maxCommandOutputBytes, "wait", process.id)
 	if err != nil {
 		return 0, nil, fmt.Errorf("wait for sandbox: %w", err)
 	}
@@ -82,7 +89,7 @@ func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	if inspection.State.Running {
 		return 0, nil, errors.New("Docker reported completion while the sandbox was still running")
 	}
-	logs, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxOutputBytes, "logs", process.name)
+	logs, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxOutputBytes, "logs", process.id)
 	if err != nil {
 		return 0, nil, fmt.Errorf("read sandbox output: %w", err)
 	}
@@ -107,31 +114,31 @@ func (process *Process) Stop(ctx context.Context) error {
 		return nil
 	}
 	_, stopErr := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes,
-		"stop", "--time", fmt.Sprintf("%d", max(1, int(process.docker.config.StopGrace.Seconds()))), process.name)
-	current, inspectErr := process.docker.inspect(ctx, process.name)
+		"stop", "--time", fmt.Sprintf("%d", max(1, int(process.docker.config.StopGrace.Seconds()))), process.id)
+	current, inspectErr := process.docker.inspect(ctx, process.id)
 	if errors.Is(inspectErr, errContainerAbsent) {
 		return nil
 	}
 	if inspectErr != nil {
 		return fmt.Errorf("verify sandbox after stop: %w", inspectErr)
 	}
-	if !ownsSandbox(current, process.claim, process.name) || !strings.HasPrefix(current.ID, process.id) {
+	if !ownsSandbox(current, process.claim, process.name) || current.ID != process.id {
 		return errors.New("sandbox ownership changed during stop")
 	}
 	if !current.State.Running {
 		return nil
 	}
-	if _, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, "kill", process.name); err != nil {
+	if _, err := process.docker.run(ctx, process.docker.config.CommandTimeout, maxCommandOutputBytes, "kill", process.id); err != nil {
 		return fmt.Errorf("kill sandbox after stop failure (%v): %w", stopErr, err)
 	}
-	current, err = process.docker.inspect(ctx, process.name)
+	current, err = process.docker.inspect(ctx, process.id)
 	if errors.Is(err, errContainerAbsent) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("verify sandbox after kill: %w", err)
 	}
-	if !ownsSandbox(current, process.claim, process.name) || !strings.HasPrefix(current.ID, process.id) {
+	if !ownsSandbox(current, process.claim, process.name) || current.ID != process.id {
 		return errors.New("sandbox ownership changed during kill")
 	}
 	if current.State.Running {
@@ -145,16 +152,16 @@ func (process *Process) Remove(ctx context.Context) error {
 	if err := process.Stop(ctx); err != nil {
 		return err
 	}
-	return process.docker.Reconcile(ctx, process.name)
+	return process.docker.Reconcile(ctx, process.id)
 }
 
 func (process *Process) inspectOwned(ctx context.Context) (containerInspection, error) {
-	inspection, err := process.docker.inspect(ctx, process.name)
+	inspection, err := process.docker.inspect(ctx, process.id)
 	if err != nil {
 		return containerInspection{}, err
 	}
 	if !ownsSandbox(inspection, process.claim, process.name) ||
-		(process.id != "" && !strings.HasPrefix(inspection.ID, process.id)) {
+		(process.id != "" && inspection.ID != process.id) {
 		return containerInspection{}, errors.New("sandbox no longer matches its recorded claim or container ID")
 	}
 	return inspection, nil
