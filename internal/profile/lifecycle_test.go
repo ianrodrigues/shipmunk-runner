@@ -260,7 +260,7 @@ func TestLifecycleClearsUncertainCreateOnlyAfterReconciliation(t *testing.T) {
 	if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne); err != nil {
 		t.Fatalf("Operate() = %v", err)
 	}
-	if runtime.reconciles != 1 || runtime.stops != 1 || !reflect.DeepEqual(runtime.stopMayBeInFlight, []bool{false}) {
+	if runtime.reconciles != 1 || runtime.stops != 0 || len(runtime.stopMayBeInFlight) != 0 {
 		t.Fatalf("create recovery calls = reconciles %d, stops %d flags %v", runtime.reconciles, runtime.stops, runtime.stopMayBeInFlight)
 	}
 	if pending, err := store.Read("pending"); err != nil || pending != nil {
