@@ -288,6 +288,9 @@ func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, erro
 		}
 	}
 	execution.Result["patch_artifact"] = patch
+	if err := validateJSON("result", execution.Result); err != nil {
+		return "", fmt.Errorf("uploaded execution result is invalid: %w", err)
+	}
 	raw, err := json.Marshal(execution.Result)
 	if err != nil {
 		return "", err
