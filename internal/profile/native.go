@@ -442,16 +442,7 @@ func codexFailureReason(raw json.RawMessage) string {
 		}
 		return "process_error"
 	}
-	switch strings.ToLower(message) {
-	case "authentication expired", "not logged in", "unauthorized":
-		return "auth_expired"
-	case "rate limit exceeded", "usage limit reached":
-		return "rate_limited"
-	case "approval required":
-		return "approval_required"
-	default:
-		return "process_error"
-	}
+	return codexFailureMessage(message)
 }
 
 func codexFailureItemReason(item *codexItem) string {

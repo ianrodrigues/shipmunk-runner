@@ -103,7 +103,9 @@ func (control *fakeProfileControlPlane) ProfileRequest(_ context.Context, profil
 			}
 		}
 		response["profile_id"] = profileID
-		response["operation_id"] = control.operationIDForSuffix(suffix)
+		if _, exists := response["operation_id"]; !exists {
+			response["operation_id"] = control.operationIDForSuffix(suffix)
+		}
 		return response, nil
 	default:
 		return nil, fmt.Errorf("unexpected profile suffix %q", suffix)
@@ -647,6 +649,7 @@ func TestLifecycleDisconnectIsLocalAndServerMustAcceptInactiveState(t *testing.T
 
 func TestLifecycleRetainsPendingForInvalidCompletionResponses(t *testing.T) {
 	responses := []map[string]any{
+		{"profile_id": testProfileID, "operation_id": operationTwo, "active": true, "stopped": true, "health": HealthReady, "reason": nil},
 		{"profile_id": testProfileID, "active": true, "health": HealthReady, "reason": nil},
 		{"profile_id": testProfileID, "active": true, "stopped": false, "health": HealthReady, "reason": nil},
 		{"profile_id": testProfileID, "active": "yes", "stopped": true, "health": HealthReady, "reason": nil},
@@ -663,6 +666,38 @@ func TestLifecycleRetainsPendingForInvalidCompletionResponses(t *testing.T) {
 			pending, err := store.Read("pending")
 			if err != nil || pending == nil {
 				t.Fatalf("pending recovery state = %#v, %v", pending, err)
+			}
+		})
+	}
+}
+
+func TestLifecycleRecoveryRetainsPendingForInvalidCompletionResponses(t *testing.T) {
+	responses := []map[string]any{
+		{"profile_id": testProfileID, "operation_id": operationTwo, "active": true, "stopped": true, "health": HealthReady, "reason": nil},
+		{"profile_id": testProfileID, "active": true, "health": HealthReady, "reason": nil},
+		{"profile_id": testProfileID, "active": "yes", "stopped": true, "health": HealthReady, "reason": nil},
+		{"profile_id": testProfileID, "active": false, "stopped": true, "health": "future_health", "reason": nil},
+	}
+	for index, response := range responses {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			store, lifecycle, control, runtime, _ := newLifecycleFixture(t)
+			control.completionErr = errors.New("lost completion")
+			if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne); err == nil {
+				t.Fatal("expected lost completion")
+			}
+			control.completionErr = nil
+			control.setCompletion(response)
+			control.operationID = operationTwo
+			control.binding["operation_id"] = operationTwo
+			if _, err := lifecycle.Operate(context.Background(), store, testProfileID, "probe", operationTwo); err == nil {
+				t.Fatal("invalid recovery completion response was accepted")
+			}
+			pending, err := store.Read("pending")
+			if err != nil || pending == nil || pending["operation_id"] != operationOne {
+				t.Fatalf("pending recovery state = %#v, %v", pending, err)
+			}
+			if runtime.starts != 1 {
+				t.Fatalf("recovery replayed native work: %d starts", runtime.starts)
 			}
 		})
 	}

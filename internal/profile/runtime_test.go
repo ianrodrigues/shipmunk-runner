@@ -420,7 +420,7 @@ func TestRunUsesAllowlistedCommandAndBoundedCapturedOutput(t *testing.T) {
 	fake.mu.Unlock()
 	joined := strings.Join(execArgs, " ")
 	for _, expected := range []string{
-		"exec -i " + testProfileName + " /usr/bin/env -i",
+		"exec -i " + testContainerID + " /usr/bin/env -i",
 		"HOME=/profile CODEX_HOME=/profile/.codex CLAUDE_CONFIG_DIR=/profile/.claude",
 		"XDG_CONFIG_HOME=/profile/.config XDG_CACHE_HOME=/profile/.cache",
 		"PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=dumb DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
