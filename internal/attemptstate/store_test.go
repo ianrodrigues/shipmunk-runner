@@ -85,6 +85,50 @@ func TestStoreSupportsNullableIDsAndPHPUTCVariants(t *testing.T) {
 	}
 }
 
+func TestStoreNormalizesCanonicalPHPTimezoneOffsetsWithoutChangingInstants(t *testing.T) {
+	for _, timestamp := range []string{"2026-09-13T11:11:12+01:00", "2026-09-13T06:11:12-04:00", "2026-09-13T15:56:12+05:45"} {
+		t.Run(timestamp, func(t *testing.T) {
+			path := filepath.Join(privateTempDir(t), "active.json")
+			raw, err := marshalState(testState())
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = []byte(strings.ReplaceAll(string(raw), "2026-09-13T10:11:12+00:00", timestamp))
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			state, err := store.Load()
+			if err != nil || state == nil || !state.LeaseExpiresAt.Equal(testState().LeaseExpiresAt) || state.LeaseExpiresAt.Location() != time.UTC {
+				t.Fatalf("PHP offset changed the lease instant: %+v %v", state, err)
+			}
+			unchanged, err := os.ReadFile(path)
+			if err != nil || string(unchanged) != string(raw) {
+				t.Fatal("loading a PHP journal rewrote it")
+			}
+			if err := store.Save(*state); err != nil {
+				t.Fatal(err)
+			}
+			normalized, err := os.ReadFile(path)
+			if err != nil || !strings.Contains(string(normalized), `"lease_expires_at":"2026-09-13T10:11:12+00:00"`) {
+				t.Fatalf("Go save did not normalize to UTC: %s %v", normalized, err)
+			}
+		})
+	}
+}
+
+func TestDateAtomRejectsNoncanonicalAndInvalidOffsets(t *testing.T) {
+	for _, value := range []string{"2026-09-13T10:11:12+24:00", "2026-09-13T10:11:12+01:60", "2026-09-13T10:11:12-00:00", "2026-09-13T10:11:12+0100", "2026-09-13T10:11:12.5+01:00"} {
+		if _, err := parseDateAtom(value); err == nil {
+			t.Errorf("accepted invalid or noncanonical DATE_ATOM: %s", value)
+		}
+	}
+}
+
 func TestStoreRejectsUnsupportedStateWithoutMutation(t *testing.T) {
 	for name, contents := range map[string]string{
 		"malformed":            `{"run_id":`,

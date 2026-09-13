@@ -410,8 +410,8 @@ func parseDateAtom(value string) (time.Time, error) {
 		return time.Time{}, errors.New("non-canonical DATE_ATOM timestamp")
 	}
 	_, offset := parsed.Zone()
-	if offset != 0 {
-		return time.Time{}, errors.New("attempt timestamps must be UTC")
+	if offset <= -24*60*60 || offset >= 24*60*60 {
+		return time.Time{}, errors.New("invalid DATE_ATOM offset")
 	}
 	return parsed.UTC(), nil
 }
