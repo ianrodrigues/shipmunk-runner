@@ -213,22 +213,22 @@ func TestReconcileDoesNotAcknowledgeAnAbsentReservedName(t *testing.T) {
 	}
 }
 
-func TestCreateTimeoutPreservesUncertaintyAndCatchesLateContainer(t *testing.T) {
+func TestCreateFailureResponsePreservesUncertaintyAndCatchesLateContainer(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	script, err := os.ReadFile(fixture.executable)
 	if err != nil {
 		t.Fatal(err)
 	}
 	original := fmt.Sprintf("create) touch %q; printf '%%s\\n' '%s'; exit 0 ;;", fixture.marker, testContainer)
-	lateCreate := fmt.Sprintf("create) nohup sh -c 'sleep 0.2; touch %q' >/dev/null 2>&1 & exit 1 ;;", fixture.marker)
-	replaced := strings.Replace(string(script), original, lateCreate, 1)
+	failedCreate := "create) printf 'synthetic daemon failure\\n' >&2; exit 1 ;;"
+	replaced := strings.Replace(string(script), original, failedCreate, 1)
 	if replaced == string(script) {
-		t.Fatal("could not install the delayed fake create response")
+		t.Fatal("could not install the failed fake create response")
 	}
 	if err := os.WriteFile(fixture.executable, []byte(replaced), 0700); err != nil {
 		t.Fatal(err)
 	}
-	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable, CreateTimeout: 20 * time.Millisecond})
+	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,17 +237,14 @@ func TestCreateTimeoutPreservesUncertaintyAndCatchesLateContainer(t *testing.T) 
 		t.Fatalf("Create() error = %v, want ErrCreateUncertain", err)
 	}
 	if err := docker.Reconcile(context.Background(), testName); !errors.Is(err, ErrCreateUncertain) {
-		t.Fatalf("Reconcile before delayed side effect error = %v, want ErrCreateUncertain", err)
+		t.Fatalf("Reconcile before late container appears error = %v, want ErrCreateUncertain", err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(fixture.marker); err == nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	if _, err := os.Stat(fixture.marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed fake create unexpectedly left a container marker: %v", err)
 	}
-	if _, err := os.Stat(fixture.marker); err != nil {
-		t.Fatalf("fake daemon did not complete its delayed create: %v", err)
+	// Model the daemon completing a create after the client received an ambiguous failure.
+	if err := os.WriteFile(fixture.marker, []byte("late create"), 0600); err != nil {
+		t.Fatalf("materialize the late fake container: %v", err)
 	}
 	if err := docker.Reconcile(context.Background(), testName); err != nil {
 		t.Fatalf("Reconcile after delayed side effect: %v", err)
