@@ -37,6 +37,9 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	if err := os.Mkdir(home, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(home, ".shipmunk-go-ownership-fixture"), []byte("synthetic\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	sandboxName := "shipmunk-profile-01k4w000000000000000000009"
 	profileRuntime, err := NewDockerRuntime(image)
 	if err != nil {
