@@ -238,6 +238,7 @@ func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash 
 	req.Header.Set("X-Artifact-Kind", kind)
 	req.Header.Set("X-Artifact-SHA256", hash)
 	req.Header.Set("X-Attempt-Fence", fmt.Sprint(fence))
+	req.Header.Set("X-Protocol-Version", Version)
 	res, err := client.client.Do(req)
 	if err != nil {
 		return response{}, fmt.Errorf("control-plane request failed: %w", err)
