@@ -95,19 +95,22 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	if err != nil {
 		return supervisor.Execution{}, err
 	}
+	e.mu.Lock()
+	e.active[executionKey(claim)] = activeExecution{transport: transport}
+	e.mu.Unlock()
 	var watchdog *sandbox.Lease
 	if e.cfg.Watchdog != nil {
 		watchdog, err = e.cfg.Watchdog.ArmCodex("shipmunk-codex-"+claim.AttemptID+"-"+fmt.Sprint(claim.Fence), claim.LeaseExpiresAt, claim.Deadline)
 		if err != nil {
 			return supervisor.Execution{}, err
 		}
+		e.mu.Lock()
+		e.active[executionKey(claim)] = activeExecution{transport: transport, watchdog: watchdog}
+		e.mu.Unlock()
 		if err = watchdog.CreateStarted(); err != nil {
 			return supervisor.Execution{}, err
 		}
 	}
-	e.mu.Lock()
-	e.active[executionKey(claim)] = activeExecution{transport: transport, watchdog: watchdog}
-	e.mu.Unlock()
 	if err = transport.Start(ctx); err != nil {
 		return supervisor.Execution{}, err
 	}
