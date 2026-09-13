@@ -24,7 +24,16 @@ func prepareProfileRoot(path string) error {
 		if err := os.Mkdir(path, 0700); err != nil {
 			return err
 		}
-		if err := os.Chmod(path, 0700); err != nil {
+		fd, openErr := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if openErr != nil {
+			return openErr
+		}
+		created := os.NewFile(uintptr(fd), path)
+		if err := created.Chmod(0700); err != nil {
+			_ = created.Close()
+			return err
+		}
+		if err := created.Close(); err != nil {
 			return err
 		}
 		info, err = os.Lstat(path)
