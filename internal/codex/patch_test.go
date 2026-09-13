@@ -1,10 +1,13 @@
 package codex
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -17,7 +20,7 @@ func TestCollectPatchDerivesSortedMetadataAndHashes(t *testing.T) {
 	writeFile(t, after, "new.sh", "added\n", 0755)
 	writeFile(t, after, "same.txt", "same\n", 0644)
 
-	result, err := CollectPatch(before, after, []byte("diff --git a/changed.txt b/changed.txt\n"))
+	result, err := CollectPatch(before, after, trustedPatch(t, before, after))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,12 +87,83 @@ func TestCollectPatchEnforcesPatchAndChangeBounds(t *testing.T) {
 	}
 }
 
+func TestCollectPatchRejectsIncompleteOrMismatchedPatch(t *testing.T) {
+	before, after := t.TempDir(), t.TempDir()
+	writeFile(t, before, "one.txt", "old one\n", 0644)
+	writeFile(t, before, "two.txt", "old two\n", 0644)
+	writeFile(t, after, "one.txt", "new one\n", 0644)
+	writeFile(t, after, "two.txt", "new two\n", 0644)
+	complete := trustedPatch(t, before, after)
+	if _, err := CollectPatch(before, after, complete[:len(complete)/2]); err == nil {
+		t.Fatal("accepted truncated patch")
+	}
+	partialAfter := t.TempDir()
+	writeFile(t, partialAfter, "one.txt", "new one\n", 0644)
+	writeFile(t, partialAfter, "two.txt", "old two\n", 0644)
+	if _, err := CollectPatch(before, after, trustedPatch(t, before, partialAfter)); err == nil {
+		t.Fatal("accepted patch omitting a verified change")
+	}
+}
+
 func TestCollectPatchNoChangesReturnsNil(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "same", "x", 0600)
 	result, err := CollectPatch(root, root, nil)
 	if err != nil || result != nil {
 		t.Fatalf("got %#v, %v", result, err)
+	}
+}
+
+func TestSnapshotPinsRootAcrossParentReplacement(t *testing.T) {
+	parent := t.TempDir()
+	original := filepath.Join(parent, "snapshot")
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, original, "value", "original", 0644)
+	root, err := os.OpenRoot(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := os.Rename(original, filepath.Join(parent, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, original, "value", "attacker", 0644)
+	states, err := snapshotRoot(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256Hex("original")
+	if states["value"].hash != want {
+		t.Fatal("snapshot followed replacement parent path")
+	}
+}
+
+func TestSnapshotFinalOpenRejectsFIFOReplacementWithoutBlocking(t *testing.T) {
+	rootPath := t.TempDir()
+	writeFile(t, rootPath, "value", "safe", 0644)
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	_, err = snapshotRoot(root, func(path string) {
+		if path != "value" {
+			return
+		}
+		if err := os.Remove(filepath.Join(rootPath, path)); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(filepath.Join(rootPath, path), 0600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err == nil {
+		t.Fatal("accepted FIFO swapped after metadata inspection")
 	}
 }
 
@@ -105,4 +179,26 @@ func writeFile(t *testing.T, root, relative, content string, mode os.FileMode) {
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func trustedPatch(t *testing.T, beforeRoot, afterRoot string) []byte {
+	t.Helper()
+	before, err := snapshot(beforeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := snapshot(afterRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := generatePatch(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return patch
+}
+
+func sha256Hex(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
 }
