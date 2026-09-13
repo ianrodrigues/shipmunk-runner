@@ -32,9 +32,8 @@ func RunRunner(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if parsed.options.Driver != "fixture" {
-		fmt.Fprintln(stderr, "Go native profile execution is not available yet.")
-		return 1
+	if parsed.options.Driver == "codex" {
+		return runCodexRunner(parsed.options, stdout, stderr)
 	}
 	return runFixtureRunner(parsed.options, stdout, stderr)
 }

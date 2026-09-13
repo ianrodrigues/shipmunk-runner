@@ -80,7 +80,7 @@ func TestSupervisedErrorsNeverExposeRawMessages(t *testing.T) {
 func TestNativeRunnerRefusesBeforeReadingCredentials(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := RunRunner([]string{"--base-url=https://runner.example", "--token-file=/nonexistent/private.token", "--state-dir=/nonexistent/state", "--image=fixture", "--driver=codex", "--profiles-dir=/nonexistent/profiles"}, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "native profile execution is not available") || stdout.Len() != 0 {
+	if code != 1 || !strings.Contains(stderr.String(), "Runner setup failed") || stdout.Len() != 0 {
 		t.Fatalf("native boundary code=%d stderr=%q", code, stderr.String())
 	}
 }
