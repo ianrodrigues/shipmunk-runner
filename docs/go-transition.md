@@ -1,8 +1,10 @@
 # Go runner compatibility foundation
 
-The Go module is pinned to Go 1.27.1 and uses only the standard library. `make go-check` runs formatting verification, vet, unit tests, the race detector, and local builds of all three operator commands. A failure to build any command fails the build target. Go's toolchain download can acquire the pinned version when the installed Go executable is older.
+The Go module is pinned to Go 1.27.1 and uses only the standard library. `make go-check` runs formatting verification, vet, unit tests, the race detector, and local builds of all three operator commands. A failure to build any command fails the build target. Go 1.21 or newer can acquire the pinned version when `GOTOOLCHAIN` permits automatic toolchain selection; older installations cannot bootstrap it this way.
 
 The schema authority is the server's `contracts/v1` at commit `6fba1a6502caf7843e41aefbc35f7548fd6ec6be`. Only that immutable schema and synthetic fixture corpus is included here; the private server repository is not a build dependency. [The source inventory](../internal/protocol/contracts-source.json) records the upstream paths and SHA-256 digests, and an integrity test checks every included file. Updating the corpus and its pin is a deliberate compatibility change. The runner embeds the schemas, so HTTP validation does not depend on a checkout or the process working directory.
+
+The upstream positive fixtures prove schema conformance, not executable artifact provenance: their placeholder hashes are not backed by content, and some references reuse an artifact ID with different placeholder hashes. Keep the pinned bytes intact. HTTP download tests instead use real synthetic bytes and their computed hashes; supervision fixtures must provide distinct, consistent artifact identities before testing preparation or execution.
 
 The planned binary targets are Linux `amd64` and `arm64`, plus macOS `amd64` and `arm64`. Linux remains the required Docker engine platform. macOS host support requires validation with a Linux Docker engine, including filesystem ownership and process cleanup; compiling a binary does not establish that support. Windows is not a release target. The release-packaging work owns the tested platform matrix, installer manifests, and published artifacts.
 

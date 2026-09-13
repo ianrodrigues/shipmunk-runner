@@ -7,12 +7,12 @@ check: lint package-check runner-check native-image-check go-check go-parity-che
 
 go-parity-check:
 	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'The temporary PHP baseline requires PHP 8.5.' >&2; exit 1; }
-	go test -race -tags=phpbaseline ./internal/protocol
+	go test -race -count=1 -tags=phpbaseline ./internal/protocol
 
 go-check:
 	@test -z "$$(gofmt -l cmd internal)" || { echo 'Go files require gofmt.' >&2; gofmt -l cmd internal >&2; exit 1; }
 	go vet ./...
-	go test -race ./...
+	go test -race -count=1 ./...
 	$(MAKE) go-build
 
 go-build:
