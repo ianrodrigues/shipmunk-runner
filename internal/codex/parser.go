@@ -124,9 +124,6 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			}
 			state = "turn"
 		case "item.started", "item.updated", "item.completed":
-			if state != "turn" {
-				return Stream{}, ErrMalformedOutput
-			}
 			item, ok := event["item"].(map[string]any)
 			if !ok {
 				return Stream{}, ErrMalformedOutput
@@ -134,6 +131,14 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			id, idOK := boundedString(item["id"], 128)
 			kind, kindOK := boundedString(item["type"], 128)
 			if !idOK || !kindOK || !knownItemType(kind) {
+				return Stream{}, ErrMalformedOutput
+			}
+			// Codex may report a completed startup error after allocating a
+			// thread but before a turn starts. No other pre-turn item is valid.
+			if state == "thread" && typeName == "item.completed" && kind == "error" {
+				return Stream{}, ErrNativeFailure
+			}
+			if state != "turn" {
 				return Stream{}, ErrMalformedOutput
 			}
 			previous, exists := items[id]
@@ -262,7 +267,7 @@ func parseResult(raw []byte) (Result, error) {
 	}
 	findingsRaw, findingsOK := object["findings"].([]any)
 	testsRaw, testsOK := object["tests"].([]any)
-	if !findingsOK || !testsOK || len(findingsRaw) > 100 || len(testsRaw) > 100 || (outcome == "findings") != (len(findingsRaw) > 0) {
+	if !findingsOK || !testsOK || len(findingsRaw) > 100 || len(testsRaw) > 100 || (outcome == "findings" && len(findingsRaw) == 0) || (outcome == "no_findings" && len(findingsRaw) != 0) {
 		return Result{}, ErrInvalidResult
 	}
 	result := Result{Summary: summary, Outcome: outcome, Findings: make([]Finding, 0, len(findingsRaw)), Tests: make([]Test, 0, len(testsRaw))}
@@ -295,8 +300,8 @@ func parseFinding(value any) (Finding, bool) {
 	explanation, explanationOK := boundedString(object["explanation"], 8192)
 	evidence, evidenceOK := boundedString(object["evidence"], 8192)
 	clean := path.Clean(name)
-	validPath := nameOK && !strings.Contains(name, "\\") && !strings.ContainsRune(name, '\x00') && clean == name && clean != "." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/")
-	validEnum := sideOK && (side == "LEFT" || side == "RIGHT") && severityOK && (severity == "low" || severity == "medium" || severity == "high" || severity == "critical")
+	validPath := nameOK && !strings.Contains(name, "\\") && !containsC0(name) && clean == name && clean != "." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/")
+	validEnum := sideOK && (side == "LEFT" || side == "RIGHT") && severityOK && (severity == "info" || severity == "low" || severity == "medium" || severity == "high" || severity == "critical")
 	return Finding{Path: name, Line: line, Side: side, Severity: severity, Explanation: explanation, Evidence: evidence}, validPath && lineOK && validEnum && explanationOK && evidenceOK
 }
 
@@ -308,7 +313,16 @@ func parseTest(value any) (Test, bool) {
 	command, commandOK := boundedString(object["command"], 2048)
 	status, statusOK := boundedString(object["status"], 16)
 	summary, summaryOK := boundedString(object["summary"], 4096)
-	return Test{Command: command, Status: status, Summary: summary}, commandOK && statusOK && summaryOK && (status == "passed" || status == "failed" || status == "not_run")
+	return Test{Command: command, Status: status, Summary: summary}, commandOK && statusOK && summaryOK && (status == "passed" || status == "failed" || status == "error" || status == "not_run")
+}
+
+func containsC0(value string) bool {
+	for _, character := range value {
+		if character >= 0 && character <= 0x1f {
+			return true
+		}
+	}
+	return false
 }
 
 func exactObject(value any, keys ...string) (map[string]any, bool) {
