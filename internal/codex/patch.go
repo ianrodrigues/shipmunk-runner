@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,15 +15,17 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 )
 
 const (
-	MaxChangedFiles  = 200
-	MaxSnapshotFiles = 20_000
-	MaxSnapshotBytes = 128 * 1024 * 1024
-	MaxPatchBytes    = 1024 * 1024
-	MaxPathBytes     = 1024
+	MaxChangedFiles   = 200
+	MaxSnapshotFiles  = 20_000
+	MaxSnapshotBytes  = 128 * 1024 * 1024
+	MaxPatchBytes     = 1024 * 1024
+	MaxPathBytes      = 1024
+	trustedGitTimeout = 30 * time.Second
 )
 
 type FileChange struct {
@@ -192,12 +195,19 @@ func snapshotRoot(rootHandle *os.Root, beforeOpen func(string)) (map[string]file
 	return states, nil
 }
 
-func generatePatch(before, after map[string]fileState) ([]byte, error) {
+func generatePatch(before, after map[string]fileState) (patch []byte, returnedErr error) {
 	temporary, err := os.MkdirTemp("", "shipmunk-patch-")
 	if err != nil {
 		return nil, errors.New("cannot create trusted patch workspace")
 	}
-	defer os.RemoveAll(temporary)
+	defer func() {
+		if err := os.RemoveAll(temporary); err != nil && returnedErr == nil {
+			patch = nil
+			returnedErr = errors.New("cannot remove trusted patch workspace")
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), trustedGitTimeout)
+	defer cancel()
 	work := filepath.Join(temporary, "work")
 	if err := os.Mkdir(work, 0700); err != nil {
 		return nil, errors.New("cannot create trusted patch workspace")
@@ -211,7 +221,7 @@ func generatePatch(before, after map[string]fileState) ([]byte, error) {
 		{"-c", "core.hooksPath=/dev/null", "-c", "user.name=Shipmunk", "-c", "user.email=runner@shipmunk.local", "commit", "-qm", "baseline", "--allow-empty"},
 	}
 	for _, arguments := range commands {
-		if err := runGit(temporary, work, nil, arguments...); err != nil {
+		if err := runGit(ctx, temporary, work, nil, arguments...); err != nil {
 			return nil, err
 		}
 	}
@@ -230,11 +240,11 @@ func generatePatch(before, after map[string]fileState) ([]byte, error) {
 	if err := materialize(work, after); err != nil {
 		return nil, err
 	}
-	if err := runGit(temporary, work, nil, "-c", "core.hooksPath=/dev/null", "add", "-N", "--all"); err != nil {
+	if err := runGit(ctx, temporary, work, nil, "-c", "core.hooksPath=/dev/null", "add", "-N", "--all"); err != nil {
 		return nil, err
 	}
 	output := &boundedWriter{remaining: MaxPatchBytes + 1}
-	if err := runGit(temporary, work, output, "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
+	if err := runGit(ctx, temporary, work, output, "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
 		return nil, err
 	}
 	if output.buffer.Len() > MaxPatchBytes {
@@ -273,8 +283,8 @@ func (writer *boundedWriter) Write(data []byte) (int, error) {
 	return writer.buffer.Write(data)
 }
 
-func runGit(home, work string, stdout *boundedWriter, arguments ...string) error {
-	command := exec.Command("git", arguments...)
+func runGit(ctx context.Context, home, work string, stdout *boundedWriter, arguments ...string) error {
+	command := exec.CommandContext(ctx, "git", arguments...)
 	command.Dir = work
 	command.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "LANG=C"}
 	if stdout != nil {
