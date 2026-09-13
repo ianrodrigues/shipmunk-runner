@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
@@ -154,6 +156,28 @@ func TestStoreRejectsRootReplacementDuringLifetime(t *testing.T) {
 	}
 	if _, err := store.Read(testRun); err == nil {
 		t.Fatal("replacement root accepted")
+	}
+}
+
+func TestStoreRejectsFIFORecordWithoutBlocking(t *testing.T) {
+	store := openTestStore(t)
+	record := filepath.Join(store.root, testRun+".json")
+	if err := syscall.Mkfifo(record, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := store.Read(testRun)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("FIFO session record accepted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("FIFO session record blocked the reader")
 	}
 }
 
