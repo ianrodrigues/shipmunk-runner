@@ -18,6 +18,26 @@ import (
 
 var ErrProtocolIncompatible = errors.New("runner protocol major is incompatible")
 
+// ControlPlaneError preserves the status needed for fenced recovery decisions.
+// Its message never includes an untrusted response body.
+type ControlPlaneError struct {
+	StatusCode int
+}
+
+func (err *ControlPlaneError) Error() string {
+	if err.StatusCode == http.StatusUpgradeRequired {
+		return ErrProtocolIncompatible.Error()
+	}
+	return fmt.Sprintf("control-plane request returned HTTP %d", err.StatusCode)
+}
+
+func (err *ControlPlaneError) Unwrap() error {
+	if err.StatusCode == http.StatusUpgradeRequired {
+		return ErrProtocolIncompatible
+	}
+	return nil
+}
+
 type HTTPClient struct {
 	baseURL *url.URL
 	token   string
@@ -67,6 +87,9 @@ func (client *HTTPClient) Claim(ctx context.Context, now time.Time) (*Claim, err
 }
 
 func (client *HTTPClient) Heartbeat(ctx context.Context, claim Claim) (time.Time, bool, error) {
+	if err := validateFence(claim); err != nil {
+		return time.Time{}, false, err
+	}
 	response, err := client.json(ctx, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/heartbeat", client.fence(claim), ManifestMaxBytes)
 	if err != nil {
 		return time.Time{}, false, err
@@ -74,6 +97,13 @@ func (client *HTTPClient) Heartbeat(ctx context.Context, claim Claim) (time.Time
 	data, err := responseData(response, http.StatusOK)
 	if err != nil {
 		return time.Time{}, false, err
+	}
+	for key := range data {
+		switch key {
+		case "protocol_version", "attempt_id", "fence", "state", "lease_expires_at", "stop_requested", "stop_reason":
+		default:
+			return time.Time{}, false, fmt.Errorf("heartbeat response contained an unsupported field")
+		}
 	}
 	version, _ := data["protocol_version"].(string)
 	attemptID, _ := data["attempt_id"].(string)
@@ -97,6 +127,9 @@ func (client *HTTPClient) Heartbeat(ctx context.Context, claim Claim) (time.Time
 }
 
 func (client *HTTPClient) AcknowledgeStopped(ctx context.Context, claim Claim) error {
+	if err := validateFence(claim); err != nil {
+		return err
+	}
 	payload := client.fence(claim)
 	payload["stopped"] = true
 	response, err := client.json(ctx, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/heartbeat", payload, ManifestMaxBytes)
@@ -107,10 +140,29 @@ func (client *HTTPClient) AcknowledgeStopped(ctx context.Context, claim Claim) e
 }
 
 func (client *HTTPClient) SendEvents(ctx context.Context, claim Claim, raw []byte) error {
-	if err := ValidateFixture("event-batch", pinnedSchemaDirectory(), raw); err != nil {
+	if err := validateFence(claim); err != nil {
+		return err
+	}
+	if err := Validate("event-batch", raw); err != nil {
 		return fmt.Errorf("invalid event batch: %w", err)
 	}
-	response, err := client.request(ctx, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/events", string(raw), "application/json", EventBatchMaxBytes)
+	var events []json.RawMessage
+	if err := json.Unmarshal(raw, &events); err != nil {
+		return err
+	}
+	for _, event := range events {
+		if len(event) > WorkerEventMaxBytes {
+			return fmt.Errorf("event exceeded its byte limit")
+		}
+		value, err := Decode(event, WorkerEventMaxBytes)
+		if err != nil {
+			return err
+		}
+		if err := matchesFence(value.(map[string]any), claim, false); err != nil {
+			return err
+		}
+	}
+	response, err := client.request(ctx, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/events", string(raw), "application/json", ManifestMaxBytes)
 	if err != nil {
 		return err
 	}
@@ -118,8 +170,14 @@ func (client *HTTPClient) SendEvents(ctx context.Context, claim Claim, raw []byt
 }
 
 func (client *HTTPClient) UploadArtifact(ctx context.Context, claim Claim, kind string, body []byte, expectedSHA256 string) (string, error) {
-	if kind == "" || !sha256Pattern.MatchString(expectedSHA256) {
+	if err := validateFence(claim); err != nil {
+		return "", err
+	}
+	if (kind != "patch" && kind != "native_output") || !sha256Pattern.MatchString(expectedSHA256) {
 		return "", fmt.Errorf("artifact kind or hash is invalid")
+	}
+	if len(body) > ResultMaxBytes {
+		return "", fmt.Errorf("artifact exceeded its byte limit")
 	}
 	actual := sha256.Sum256(body)
 	if hex.EncodeToString(actual[:]) != expectedSHA256 {
@@ -141,7 +199,10 @@ func (client *HTTPClient) UploadArtifact(ctx context.Context, claim Claim, kind 
 }
 
 func (client *HTTPClient) Complete(ctx context.Context, claim Claim, raw []byte) error {
-	if err := ValidateFixture("result", pinnedSchemaDirectory(), raw); err != nil {
+	if err := validateFence(claim); err != nil {
+		return err
+	}
+	if err := Validate("result", raw); err != nil {
 		return fmt.Errorf("invalid completion result: %w", err)
 	}
 	value, err := Decode(raw, ResultMaxBytes)
@@ -152,9 +213,9 @@ func (client *HTTPClient) Complete(ctx context.Context, claim Claim, raw []byte)
 	if err != nil {
 		return err
 	}
-	result["protocol_version"] = Version
-	result["attempt_id"] = claim.AttemptID
-	result["fence"] = json.Number(fmt.Sprint(claim.Fence))
+	if err := matchesFence(result, claim, true); err != nil {
+		return err
+	}
 	response, err := client.json(ctx, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/completion", result, ResultMaxBytes)
 	if err != nil {
 		return err
@@ -163,6 +224,9 @@ func (client *HTTPClient) Complete(ctx context.Context, claim Claim, raw []byte)
 }
 
 func (client *HTTPClient) DownloadArtifact(ctx context.Context, claim Claim, artifactID, expectedSHA256 string) ([]byte, error) {
+	if err := validateFence(claim); err != nil {
+		return nil, err
+	}
 	if !ulidPattern.MatchString(artifactID) || !sha256Pattern.MatchString(expectedSHA256) {
 		return nil, fmt.Errorf("artifact identifier or hash is invalid")
 	}
@@ -194,6 +258,9 @@ func (client *HTTPClient) json(ctx context.Context, method, path string, payload
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return response{}, err
+	}
+	if len(body) > maxBytes {
+		return response{}, fmt.Errorf("control-plane request exceeded its byte limit")
 	}
 	return client.request(ctx, method, path, string(body), "application/json", maxBytes)
 }
@@ -258,6 +325,24 @@ func (client *HTTPClient) fence(claim Claim) map[string]any {
 	return map[string]any{"protocol_version": Version, "attempt_id": claim.AttemptID, "fence": claim.Fence}
 }
 
+func validateFence(claim Claim) error {
+	if !ulidPattern.MatchString(claim.RunID) || !ulidPattern.MatchString(claim.AttemptID) || claim.Fence < 1 || claim.Fence > MaxSafeInteger {
+		return fmt.Errorf("invalid active claim identity")
+	}
+	return nil
+}
+
+func matchesFence(data map[string]any, claim Claim, requireRun bool) error {
+	fence, err := positiveInteger(data["fence"])
+	if err != nil || fence != claim.Fence || data["attempt_id"] != claim.AttemptID || data["protocol_version"] != Version {
+		return fmt.Errorf("document did not match the active attempt fence")
+	}
+	if requireRun && data["run_id"] != claim.RunID {
+		return fmt.Errorf("document did not match the active run")
+	}
+	return nil
+}
+
 func responseData(response response, statuses ...int) (map[string]any, error) {
 	if err := expect(response, statuses...); err != nil {
 		return nil, err
@@ -283,10 +368,7 @@ func expect(response response, statuses ...int) error {
 			return nil
 		}
 	}
-	if response.StatusCode == http.StatusUpgradeRequired {
-		return ErrProtocolIncompatible
-	}
-	return fmt.Errorf("control-plane request returned HTTP %d", response.StatusCode)
+	return &ControlPlaneError{StatusCode: response.StatusCode}
 }
 
 func loopbackHost(host string) bool {

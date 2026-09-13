@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "sha256": "fb6f3d476ca7ea43d75e41b36690c464b706e56179dacf4f1a72208ea895d6b4",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "patch": "diff --git a/file.txt b/file.txt\n",
+  "changed_files": [
+    {
+      "path": "file.txt",
+      "before_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "before_mode": "100644",
+      "after_mode": "100644"
+    }
+  ],
+  "tests": []
+}

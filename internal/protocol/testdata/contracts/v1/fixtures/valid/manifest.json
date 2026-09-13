@@ -1,0 +1,49 @@
+{
+  "protocol_version": "1.0",
+  "run_id": "01k4w000000000000000000001",
+  "attempt_id": "01k4w000000000000000000002",
+  "fence": 1,
+  "kind": "review",
+  "repository_id": 123,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_artifacts": [
+    {
+      "artifact_id": "01k4w000000000000000000003",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "instruction_artifacts": [
+    {
+      "artifact_id": "01k4w000000000000000000003",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "profile_id": "01k4w000000000000000000003",
+  "agent": "codex",
+  "effective_config": {
+    "model": "fixture-model",
+    "max_turns": 10,
+    "network": "disabled",
+    "review_path_rules": [
+      [
+        "**"
+      ]
+    ],
+    "pull_request_reviews": true,
+    "mentions": true,
+    "comment_limit": 20,
+    "instructions": "Review carefully.",
+    "dashboard_version": 1,
+    "trusted_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "repository_configuration_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "instructions_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "effective_configuration_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "runtime_version": "fixture-1",
+  "deadline": "2026-09-10T18:00:00Z",
+  "task_context": "Review the supplied diff.",
+  "supervisor": {
+    "credential_reference": "credential:fixture"
+  }
+}

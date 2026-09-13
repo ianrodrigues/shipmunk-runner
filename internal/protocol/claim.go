@@ -12,8 +12,6 @@ var (
 	sha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
-func IsULID(value string) bool { return ulidPattern.MatchString(value) }
-
 // Claim is the immutable, fenced response to a successful claim request.
 type Claim struct {
 	RunID          string
@@ -25,7 +23,11 @@ type Claim struct {
 }
 
 func ParseClaim(raw []byte, now time.Time) (Claim, error) {
-	value, err := Decode(raw, ManifestMaxBytes)
+	schema, err := schemaBytes("manifest")
+	if err != nil {
+		return Claim{}, fmt.Errorf("manifest contract is unavailable")
+	}
+	value, err := decodeValidated("manifest", schema, raw)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -33,13 +35,30 @@ func ParseClaim(raw []byte, now time.Time) (Claim, error) {
 	if err != nil {
 		return Claim{}, err
 	}
-	return ClaimFromManifest(manifest, now)
+	return claimFromValidatedManifest(manifest, now)
 }
 
 func ClaimFromManifest(manifest map[string]any, now time.Time) (Claim, error) {
-	if err := ValidateManifest(manifest); err != nil {
-		return Claim{}, fmt.Errorf("invalid claim manifest: %w", err)
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return Claim{}, fmt.Errorf("claim manifest is invalid")
 	}
+	schema, err := schemaBytes("manifest")
+	if err != nil {
+		return Claim{}, fmt.Errorf("manifest contract is unavailable")
+	}
+	value, err := decodeValidated("manifest", schema, raw)
+	if err != nil {
+		return Claim{}, fmt.Errorf("claim manifest is invalid")
+	}
+	validatedManifest, err := object(value)
+	if err != nil {
+		return Claim{}, fmt.Errorf("claim manifest is invalid")
+	}
+	return claimFromValidatedManifest(validatedManifest, now)
+}
+
+func claimFromValidatedManifest(manifest map[string]any, now time.Time) (Claim, error) {
 	if version, err := stringField(manifest, "protocol_version"); err != nil || version != Version {
 		return Claim{}, fmt.Errorf("unsupported manifest protocol version")
 	}

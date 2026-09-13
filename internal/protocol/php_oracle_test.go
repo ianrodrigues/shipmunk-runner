@@ -1,3 +1,5 @@
+//go:build phpbaseline
+
 package protocol
 
 import (
@@ -20,7 +22,7 @@ func TestPHPOracleClaimFixture(t *testing.T) {
 	if err := exec.Command(php, "-r", `exit(PHP_VERSION_ID >= 80500 ? 0 : 1);`).Run(); err != nil {
 		t.Skip("PHP 8.5 oracle is not installed")
 	}
-	fixture, err := filepath.Abs(filepath.Join(contracts, "fixtures/valid/manifest.json"))
+	fixture, err := filepath.Abs(filepath.Join(contractFixtures, "valid/manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
