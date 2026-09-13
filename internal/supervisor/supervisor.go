@@ -190,6 +190,9 @@ func (s *Supervisor) reconcile(ctx context.Context) error {
 		return err
 	}
 	claim := protocol.Claim{RunID: state.RunID, AttemptID: state.AttemptID, Fence: state.Fence, LeaseExpiresAt: state.LeaseExpiresAt, Deadline: state.Deadline}
+	if state.ProfileID != nil {
+		claim.Manifest = map[string]any{"profile_id": *state.ProfileID}
+	}
 	if state.Workspace != s.Workspaces.Path(claim) {
 		return errors.New("recovery workspace does not match active attempt")
 	}

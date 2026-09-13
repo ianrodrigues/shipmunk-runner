@@ -199,6 +199,7 @@ type fixtureExecutor struct {
 	input           map[string]any
 	cleanupCanceled bool
 	cleanupDeadline bool
+	cleanupClaim    protocol.Claim
 }
 
 func (e *fixtureExecutor) Execute(ctx context.Context, _ protocol.Claim, input map[string]any, _ string) (Execution, error) {
@@ -210,10 +211,11 @@ func (e *fixtureExecutor) Execute(ctx context.Context, _ protocol.Claim, input m
 	return e.execution, e.executeError
 }
 
-func (e *fixtureExecutor) Cleanup(ctx context.Context, _ protocol.Claim) error {
+func (e *fixtureExecutor) Cleanup(ctx context.Context, claim protocol.Claim) error {
 	e.cleanups++
 	e.cleanupCanceled = ctx.Err() != nil
 	_, e.cleanupDeadline = ctx.Deadline()
+	e.cleanupClaim = claim
 	return e.cleanupError
 }
 
@@ -432,6 +434,27 @@ func TestCompositeCleanupFailureRetainsJournalAndPreventsAcknowledgement(t *test
 	}
 	if saved, _ := state.Load(); saved == nil {
 		t.Fatal("journal lost after unconfirmed composite cleanup")
+	}
+}
+
+func TestCompositeRecoveryCarriesDurableProfileBinding(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	profileID := claim.Manifest["profile_id"].(string)
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+		Deadline: claim.Deadline, Workspace: w.Path(claim),
+	}
+	executor := &fixtureExecutor{}
+	s.Executor = executor
+	s.Sandbox = nil
+	s.Watchdog = nil
+	c.claim = nil
+
+	out, err := s.RunOnce(context.Background())
+	if err != nil || out.Worked || executor.cleanups != 1 || executor.cleanupClaim.Manifest["profile_id"] != profileID || c.acks != 1 {
+		t.Fatalf("composite recovery lost profile binding: %+v executor=%+v acks=%d err=%v", out, executor, c.acks, err)
 	}
 }
 
