@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -164,6 +165,14 @@ func TestSnapshotFinalOpenRejectsFIFOReplacementWithoutBlocking(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("accepted FIFO swapped after metadata inspection")
+	}
+}
+
+func TestTrustedGitHonorsLocalContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runGit(ctx, t.TempDir(), t.TempDir(), nil, "version"); err == nil {
+		t.Fatal("trusted Git ignored canceled context")
 	}
 }
 
