@@ -11,7 +11,7 @@ if [ "$1" = '--version' ]; then
 fi
 [ ! -e /var/run/docker.sock ] || exit 2
 [ ! -e /profile/01nnnnnnnnnnnnnnnnnnnnnnnn/home/sibling-secret ] || exit 3
-if [ "$1" = 'login' ] && [ "$2" = 'status' ]; then
+if [ "$1" = 'login' ] && [ "$2" = 'status' ] && [ -f /profile/.shipmunk-go-ownership-fixture ]; then
     mkdir -p /profile/native
     chmod 0777 /profile/native
     printf '{"synthetic":true}\n' > /profile/native/credential.json
