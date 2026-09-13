@@ -136,7 +136,8 @@ func TestDockerSandboxLifecycleUsesIsolationAndRemovesAfterConfirmation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"--read-only", "--user 65532:65532", "--cap-drop ALL", "--network none", "--memory-swap 268435456", "--pids-limit 64", "shipmunk.run=" + testRunID, "shipmunk.attempt=" + testAttemptID, "shipmunk.fence=7"} {
+	for _, expected := range []string{"--read-only", "--user 65532:65532", "--cap-drop ALL", "--network none", "--memory-swap 268435456", "--pids-limit 64", "shipmunk.run=" + testRunID, "shipmunk.attempt=" + testAttemptID, "shipmunk.fence=7",
+		"--env HTTP_PROXY=", "--env http_proxy=", "--env HTTPS_PROXY=", "--env https_proxy=", "--env FTP_PROXY=", "--env ftp_proxy=", "--env ALL_PROXY=", "--env all_proxy=", "--env NO_PROXY=", "--env no_proxy="} {
 		if !strings.Contains(string(arguments), expected) {
 			t.Errorf("Docker arguments do not contain %q", expected)
 		}
@@ -788,6 +789,11 @@ func TestDockerSandboxLifecycleLive(t *testing.T) {
 	}
 	if contains(container.Config.Env, "OPENAI_API_KEY=synthetic-test-secret") || contains(container.Config.Env, "ANTHROPIC_API_KEY=synthetic-test-secret") {
 		t.Fatalf("live sandbox inherited a provider credential: %#v", container.Config.Env)
+	}
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "FTP_PROXY", "ftp_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		if !contains(container.Config.Env, name+"=") {
+			t.Errorf("live sandbox proxy default %q was not explicitly cleared: %#v", name, container.Config.Env)
+		}
 	}
 	if err := process.Start(context.Background()); err != nil {
 		t.Fatal(err)
