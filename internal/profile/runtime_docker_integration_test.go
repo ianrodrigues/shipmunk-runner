@@ -102,7 +102,7 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	inspection := inspections[0]
 	if inspection.Config.User != strconv.Itoa(os.Geteuid())+":"+strconv.Itoa(os.Getegid()) ||
 		!inspection.HostConfig.ReadonlyRootfs || !contains(inspection.HostConfig.CapDrop, "ALL") ||
-		!contains(inspection.HostConfig.SecurityOpt, "no-new-privileges:true") || inspection.HostConfig.NetworkMode != "bridge" ||
+		!hasDockerSecurityOption(inspection.HostConfig.SecurityOpt, "no-new-privileges") || inspection.HostConfig.NetworkMode != "bridge" ||
 		inspection.HostConfig.PidsLimit != 64 {
 		t.Fatalf("profile container hardening was not applied: %#v", inspection)
 	}
@@ -169,6 +169,15 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	if inspectErr == nil || !strings.Contains(string(output), "No such object") {
 		t.Fatalf("profile container survived cleanup: %q %v", output, inspectErr)
 	}
+}
+
+func hasDockerSecurityOption(options []string, expected string) bool {
+	for _, option := range options {
+		if option == expected || option == expected+":true" {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDockerRuntimeRejectsForeignOwnedNativeEntryWithoutMutation(t *testing.T) {
