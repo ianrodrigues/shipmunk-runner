@@ -20,11 +20,23 @@ type recordedDocker struct {
 	failCreate       bool
 	inspectUncertain bool
 	lastInput        []byte
+	owned            bool
+	removed          map[string]bool
+	labelOwner       string
 }
 
 func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin io.Reader, args ...string) (transportResult, error) {
 	d.mu.Lock()
+	if d.removed == nil {
+		d.removed = make(map[string]bool)
+	}
 	d.calls = append(d.calls, append([]string(nil), args...))
+	if len(args) > 2 && args[0] == "rm" {
+		d.removed[args[len(args)-1]] = true
+	}
+	if len(args) > 2 && args[0] == "volume" && args[1] == "rm" {
+		d.removed[args[len(args)-1]] = true
+	}
 	d.mu.Unlock()
 	if d.failCreate && len(args) > 0 && args[0] == "create" {
 		return transportResult{exitCode: 1}, nil
@@ -35,6 +47,17 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 	if args[0] == "inspect" || len(args) > 1 && args[0] == "volume" && args[1] == "inspect" {
 		if d.inspectUncertain {
 			return transportResult{}, context.DeadlineExceeded
+		}
+		name := args[len(args)-1]
+		d.mu.Lock()
+		owned := d.owned && !d.removed[name]
+		owner := d.labelOwner
+		d.mu.Unlock()
+		if owned {
+			if owner == "" {
+				owner = testTransportName
+			}
+			return transportResult{stdout: []byte("true\n" + owner + "\n")}, nil
 		}
 		return transportResult{stderr: []byte("No such object"), exitCode: 1}, nil
 	}
@@ -202,8 +225,51 @@ func TestDockerTransportRejectsBridgeDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestDockerTransportRejectsStaleResponseTemporary(t *testing.T) {
+	transport := transportFixture(t, new(recordedDocker))
+	transport.started = true
+	if err := os.WriteFile(filepath.Join(transport.bridge, "request.json"), []byte(`{"id":1,"command":"true"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(transport.bridge, "response.tmp"), []byte("stale"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.serviceBridge(context.Background()); err == nil {
+		t.Fatal("stale response temporary was overwritten")
+	}
+}
+
+func TestDockerTransportRejectsSymlinkResponseTemporary(t *testing.T) {
+	transport := transportFixture(t, new(recordedDocker))
+	transport.started = true
+	if err := os.WriteFile(filepath.Join(transport.bridge, "request.json"), []byte(`{"id":1,"command":"true"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(transport.bridge, "request.json"), filepath.Join(transport.bridge, "response.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.serviceBridge(context.Background()); err == nil {
+		t.Fatal("symlink response temporary was followed")
+	}
+}
+
+func TestDockerTransportRefusesForeignOwnedCleanup(t *testing.T) {
+	d := &recordedDocker{owned: true, labelOwner: "shipmunk-codex-01bbbbbbbbbbbbbbbbbbbbbbbb-1"}
+	transport := transportFixture(t, d)
+	if err := transport.Stop(context.Background()); err == nil {
+		t.Fatal("foreign resource ownership was accepted")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, call := range d.calls {
+		if len(call) > 0 && (call[0] == "rm" || call[0] == "stop") {
+			t.Fatalf("foreign resource was mutated: %v", call)
+		}
+	}
+}
+
 func TestDockerTransportCancellationCleansEverySibling(t *testing.T) {
-	d := &recordedDocker{blockNative: true}
+	d := &recordedDocker{blockNative: true, owned: true}
 	transport := transportFixture(t, d)
 	transport.started = true
 	ctx, cancel := context.WithCancel(context.Background())
