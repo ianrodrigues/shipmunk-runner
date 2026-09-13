@@ -2,11 +2,15 @@ package command
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 )
 
 const (
@@ -124,8 +128,40 @@ func TestRunnerAndProfileCommandsRemainFailClosedAndSafe(t *testing.T) {
 		"--base-url", "https://runner.example", "--token-file", "/secret/token",
 		"--profiles-dir", "/private/profiles", "--image", "shipmunk:local",
 		"--profile", testProfileID, "--operation", "login", "--operation-id", testOperation,
-	}, &stdout, &stderr); exitCode != 1 || !strings.Contains(stderr.String(), "profile lifecycle is not available") || strings.Contains(stderr.String(), "secret") {
+	}, &stdout, &stderr); exitCode != 1 || !strings.Contains(stderr.String(), "operator terminal") || strings.Contains(stderr.String(), "secret") {
 		t.Fatalf("profile deferral = %d, stdout %q, stderr %q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
+func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
+	original := runNativeProfile
+	t.Cleanup(func() { runNativeProfile = original })
+	arguments := []string{
+		"--base-url", "https://runner.example", "--token-file", "/private/profile.token",
+		"--profiles-dir", "/private/profiles", "--image", "shipmunk:local",
+		"--profile", testProfileID, "--operation", "probe", "--operation-id", testOperation,
+	}
+	for _, test := range []struct {
+		health profile.Health
+		code   int
+		output string
+	}{
+		{health: profile.Health{Health: profile.HealthReady}, code: 0, output: `{"health":"ready","reason":null}` + "\n"},
+		{health: profile.Health{Health: profile.HealthRateLimited, Reason: profile.ReasonRateLimited}, code: 1, output: `{"health":"rate_limited","reason":"rate_limited"}` + "\n"},
+	} {
+		runNativeProfile = func(ProfileOptions, io.Writer) (profile.Health, error) { return test.health, nil }
+		var stdout, stderr bytes.Buffer
+		if code := RunProfile(arguments, &stdout, &stderr); code != test.code || stdout.String() != test.output || stderr.Len() != 0 {
+			t.Fatalf("profile result = %d, %q, %q", code, stdout.String(), stderr.String())
+		}
+	}
+
+	runNativeProfile = func(ProfileOptions, io.Writer) (profile.Health, error) {
+		return profile.Health{}, errors.New("SYNTHETIC_PRIVATE_PROVIDER_TEXT")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := RunProfile(arguments, &stdout, &stderr); code != 1 || stdout.Len() != 0 || strings.Contains(stderr.String(), "SYNTHETIC") {
+		t.Fatalf("unsafe profile error = %d, %q, %q", code, stdout.String(), stderr.String())
 	}
 }
 

@@ -5,6 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+
+	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 )
 
 const developmentVersion = "development"
@@ -36,7 +39,7 @@ func RunRunner(args []string, stdout, stderr io.Writer) int {
 	return runFixtureRunner(parsed.options, stdout, stderr)
 }
 
-// RunProfile implements the fail-closed profile command contract.
+// RunProfile executes the protected native profile lifecycle.
 func RunProfile(args []string, stdout, stderr io.Writer) int {
 	parsed, err := parseProfileOptions(args, stdout)
 	if errors.Is(err, flagHelpRequested) {
@@ -54,7 +57,26 @@ func RunProfile(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err.Error())
 		return 2
 	}
-	fmt.Fprintln(stderr, "Go profile lifecycle is not available in this compatibility foundation.")
+	if parsed.options.Operation == "login" {
+		stdoutFile, stdoutOK := stdout.(*os.File)
+		stderrFile, stderrOK := stderr.(*os.File)
+		if !stdoutOK || !stderrOK || !isTerminal(os.Stdin) || !isTerminal(stdoutFile) || !isTerminal(stderrFile) {
+			fmt.Fprintln(stderr, "Native login requires an operator terminal.")
+			return 1
+		}
+	}
+	health, err := runNativeProfile(parsed.options, stderr)
+	if err != nil {
+		fmt.Fprintln(stderr, "Profile operation failed; protected recovery state was retained when needed.")
+		return 1
+	}
+	if err := writeProfileHealth(stdout, health); err != nil {
+		fmt.Fprintln(stderr, "Profile operation failed; protected recovery state was retained when needed.")
+		return 1
+	}
+	if health.Health == profile.HealthReady || health.Health == "disconnected" {
+		return 0
+	}
 	return 1
 }
 
