@@ -17,7 +17,7 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744b2596 # v6.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version: '1.25.4'
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
