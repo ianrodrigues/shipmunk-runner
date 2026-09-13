@@ -126,3 +126,18 @@ func TestRunnerTokenReadIsPrivateBoundedAndRejectsLinks(t *testing.T) {
 		t.Fatal("accepted token directory")
 	}
 }
+
+func TestDockerPreflightUsesDockerConfigurationWithoutProviderCredentials(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "unix:///synthetic/docker.sock")
+	t.Setenv("DOCKER_CONTEXT", "synthetic-context")
+	t.Setenv("OPENAI_API_KEY", "synthetic-provider-secret")
+	executable := filepath.Join(t.TempDir(), "docker-fixture")
+	script := "#!/bin/sh\nprintf '%s|%s|%s' \"$DOCKER_HOST\" \"$DOCKER_CONTEXT\" \"${OPENAI_API_KEY-unset}\"\n"
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := dockerPreflight(context.Background(), executable, "version")
+	if err != nil || output != "unix:///synthetic/docker.sock|synthetic-context|unset" {
+		t.Fatalf("preflight lost Docker configuration or exposed credentials: %q %v", output, err)
+	}
+}

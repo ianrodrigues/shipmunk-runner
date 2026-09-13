@@ -147,7 +147,7 @@ func dockerPreflight(parent context.Context, executable string, arguments ...str
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, executable, arguments...)
-	command.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C", "LC_ALL=C"}
+	command.Env = sandbox.ClientEnvironment()
 	var output preflightBuffer
 	command.Stdout = &output
 	command.Stderr = io.Discard
