@@ -49,6 +49,36 @@ func TestNameIsStableAndValidatesClaimIdentity(t *testing.T) {
 	}
 }
 
+func TestClientEnvironmentPreservesDockerSettingsOnly(t *testing.T) {
+	allowed := map[string]string{
+		"HOME":              "/synthetic/docker-home",
+		"DOCKER_HOST":       "tcp://docker.example.test:2376",
+		"DOCKER_CONTEXT":    "synthetic-context",
+		"DOCKER_CONFIG":     "/synthetic/docker-config",
+		"DOCKER_CERT_PATH":  "/synthetic/docker-certs",
+		"DOCKER_TLS_VERIFY": "1",
+	}
+	for name, value := range allowed {
+		t.Setenv(name, value)
+	}
+	for _, name := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SHIPMUNK_RUNNER_TOKEN", "SHIPMUNK_CONTROL_PLANE_TOKEN", "GITHUB_TOKEN", "UNRELATED_SECRET"} {
+		t.Setenv(name, "synthetic-secret")
+	}
+	environment := ClientEnvironment()
+	for name, value := range allowed {
+		if !contains(environment, name+"="+value) {
+			t.Errorf("ClientEnvironment() omitted %s", name)
+		}
+	}
+	for _, name := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SHIPMUNK_RUNNER_TOKEN", "SHIPMUNK_CONTROL_PLANE_TOKEN", "GITHUB_TOKEN", "UNRELATED_SECRET"} {
+		for _, entry := range environment {
+			if strings.HasPrefix(entry, name+"=") {
+				t.Errorf("ClientEnvironment() included %s", name)
+			}
+		}
+	}
+}
+
 func TestDockerSandboxLifecycleUsesIsolationAndRemovesAfterConfirmation(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	workspace := t.TempDir()
@@ -57,6 +87,10 @@ func TestDockerSandboxLifecycleUsesIsolationAndRemovesAfterConfirmation(t *testi
 	}
 	t.Setenv("OPENAI_API_KEY", "synthetic-secret")
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-secret")
+	t.Setenv("SHIPMUNK_RUNNER_TOKEN", "synthetic-control-plane-secret")
+	t.Setenv("SHIPMUNK_CONTROL_PLANE_TOKEN", "synthetic-control-plane-secret")
+	t.Setenv("GITHUB_TOKEN", "synthetic-github-secret")
+	setSyntheticDockerEnvironment(t)
 
 	docker, err := New(Config{Image: "fixture", DockerExecutable: fixture.executable})
 	if err != nil {
@@ -87,6 +121,15 @@ func TestDockerSandboxLifecycleUsesIsolationAndRemovesAfterConfirmation(t *testi
 	}
 	if _, err := os.Stat(fixture.environmentLeak); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Docker CLI inherited credentials: stat error = %v", err)
+	}
+	dockerEnvironment, err := os.ReadFile(fixture.clientEnvironment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"HOME=/synthetic/docker-home", "DOCKER_HOST=tcp://docker.example.test:2376", "DOCKER_CONTEXT=synthetic-context", "DOCKER_CONFIG=/synthetic/docker-config", "DOCKER_CERT_PATH=/synthetic/docker-certs", "DOCKER_TLS_VERIFY=1"} {
+		if !strings.Contains(string(dockerEnvironment), expected) {
+			t.Errorf("Docker CLI environment omitted %q: %s", expected, dockerEnvironment)
+		}
 	}
 
 	arguments, err := os.ReadFile(fixture.arguments)
@@ -278,12 +321,16 @@ func TestIndependentWatchdogSubprocessGetsRenewalAndDisarmWithoutCredentials(t *
 	watchdogExecutable := filepath.Join(t.TempDir(), "watchdog-fixture")
 	watchdogLog := filepath.Join(t.TempDir(), "watchdog-input")
 	environmentLeak := filepath.Join(t.TempDir(), "watchdog-environment-leak")
-	watchdogScript := fmt.Sprintf("#!/bin/sh\nif [ -n \"${OPENAI_API_KEY+x}\" ] || [ -n \"${ANTHROPIC_API_KEY+x}\" ]; then touch %q; fi\nprintf 'READY\\n'\ncat > %q\n", environmentLeak, watchdogLog)
+	watchdogScript := fmt.Sprintf("#!/bin/sh\nif [ -n \"${OPENAI_API_KEY+x}\" ] || [ -n \"${ANTHROPIC_API_KEY+x}\" ] || [ -n \"${SHIPMUNK_RUNNER_TOKEN+x}\" ] || [ -n \"${SHIPMUNK_CONTROL_PLANE_TOKEN+x}\" ] || [ -n \"${GITHUB_TOKEN+x}\" ]; then touch %q; fi\nenv | sort > %q\nprintf 'READY\\n'\ncat >> %q\n", environmentLeak, watchdogLog, watchdogLog)
 	if err := os.WriteFile(watchdogExecutable, []byte(watchdogScript), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("OPENAI_API_KEY", "synthetic-secret")
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-secret")
+	t.Setenv("SHIPMUNK_RUNNER_TOKEN", "synthetic-control-plane-secret")
+	t.Setenv("SHIPMUNK_CONTROL_PLANE_TOKEN", "synthetic-control-plane-secret")
+	t.Setenv("GITHUB_TOKEN", "synthetic-github-secret")
+	setSyntheticDockerEnvironment(t)
 	watchdog := NewWatchdog(Config{
 		DockerExecutable:   fixture.executable,
 		WatchdogExecutable: watchdogExecutable,
@@ -307,6 +354,16 @@ func TestIndependentWatchdogSubprocessGetsRenewalAndDisarmWithoutCredentials(t *
 	}
 	if _, err := os.Stat(environmentLeak); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("watchdog inherited credentials: stat error = %v", err)
+	}
+	for _, expected := range []string{"HOME=/synthetic/docker-home", "DOCKER_HOST=tcp://docker.example.test:2376", "DOCKER_CONTEXT=synthetic-context", "DOCKER_CONFIG=/synthetic/docker-config", "DOCKER_CERT_PATH=/synthetic/docker-certs", "DOCKER_TLS_VERIFY=1"} {
+		if !strings.Contains(string(contents), expected) {
+			t.Errorf("watchdog environment omitted %q: %s", expected, contents)
+		}
+	}
+	for _, forbidden := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SHIPMUNK_RUNNER_TOKEN", "SHIPMUNK_CONTROL_PLANE_TOKEN", "GITHUB_TOKEN"} {
+		if strings.Contains(string(contents), forbidden) {
+			t.Errorf("watchdog environment included %s", forbidden)
+		}
 	}
 }
 
@@ -930,27 +987,39 @@ func contains(values []string, target string) bool {
 	return false
 }
 
+func setSyntheticDockerEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", "/synthetic/docker-home")
+	t.Setenv("DOCKER_HOST", "tcp://docker.example.test:2376")
+	t.Setenv("DOCKER_CONTEXT", "synthetic-context")
+	t.Setenv("DOCKER_CONFIG", "/synthetic/docker-config")
+	t.Setenv("DOCKER_CERT_PATH", "/synthetic/docker-certs")
+	t.Setenv("DOCKER_TLS_VERIFY", "1")
+}
+
 type fakeDockerFixture struct {
-	executable      string
-	marker          string
-	running         string
-	arguments       string
-	environmentLeak string
-	keepOnRemove    string
-	ignoreStop      string
+	executable        string
+	marker            string
+	running           string
+	arguments         string
+	clientEnvironment string
+	environmentLeak   string
+	keepOnRemove      string
+	ignoreStop        string
 }
 
 func newFakeDocker(t *testing.T, present, owned bool) fakeDockerFixture {
 	t.Helper()
 	root := t.TempDir()
 	fixture := fakeDockerFixture{
-		executable:      filepath.Join(root, "docker-fixture"),
-		marker:          filepath.Join(root, "present"),
-		running:         filepath.Join(root, "running"),
-		arguments:       filepath.Join(root, "arguments"),
-		environmentLeak: filepath.Join(root, "environment-leak"),
-		keepOnRemove:    filepath.Join(root, "keep-on-remove"),
-		ignoreStop:      filepath.Join(root, "ignore-stop"),
+		executable:        filepath.Join(root, "docker-fixture"),
+		marker:            filepath.Join(root, "present"),
+		running:           filepath.Join(root, "running"),
+		arguments:         filepath.Join(root, "arguments"),
+		clientEnvironment: filepath.Join(root, "client-environment"),
+		environmentLeak:   filepath.Join(root, "environment-leak"),
+		keepOnRemove:      filepath.Join(root, "keep-on-remove"),
+		ignoreStop:        filepath.Join(root, "ignore-stop"),
 	}
 	runID, attemptID, fence := testRunID, testAttemptID, testFence
 	runnerLabel := "true"
@@ -960,7 +1029,8 @@ func newFakeDocker(t *testing.T, present, owned bool) fakeDockerFixture {
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
-if [ -n "${OPENAI_API_KEY+x}" ] || [ -n "${ANTHROPIC_API_KEY+x}" ] || [ -n "${HOME+x}" ]; then touch %q; fi
+if [ -n "${OPENAI_API_KEY+x}" ] || [ -n "${ANTHROPIC_API_KEY+x}" ] || [ -n "${SHIPMUNK_RUNNER_TOKEN+x}" ] || [ -n "${SHIPMUNK_CONTROL_PLANE_TOKEN+x}" ] || [ -n "${GITHUB_TOKEN+x}" ]; then touch %q; fi
+env | sort > %q
 case "$1" in
   inspect)
     if [ -f %q ]; then
@@ -984,7 +1054,7 @@ JSON
   rm) if [ ! -f %q ]; then rm -f %q %q; fi; exit 0 ;;
   *) exit 0 ;;
 esac
-`, fixture.arguments, fixture.environmentLeak, fixture.marker, fixture.running, testContainer, testName, runnerLabel, runID, attemptID, fence, fixture.marker, testContainer, fixture.marker, fixture.running, fixture.running, fixture.ignoreStop, fixture.running, fixture.running, fixture.keepOnRemove, fixture.marker, fixture.running)
+`, fixture.arguments, fixture.environmentLeak, fixture.clientEnvironment, fixture.marker, fixture.running, testContainer, testName, runnerLabel, runID, attemptID, fence, fixture.marker, testContainer, fixture.marker, fixture.running, fixture.running, fixture.ignoreStop, fixture.running, fixture.running, fixture.keepOnRemove, fixture.marker, fixture.running)
 	if err := os.WriteFile(fixture.executable, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

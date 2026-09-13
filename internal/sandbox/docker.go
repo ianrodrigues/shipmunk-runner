@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -36,8 +37,8 @@ var (
 )
 
 // Config controls the Docker sandbox and the executable used by the independent
-// watchdog. Environment variables from the supervisor are never inherited by
-// Docker or the watchdog process.
+// watchdog. Child processes receive only ClientEnvironment's Docker-client
+// configuration allowlist, not the supervisor's full environment.
 type Config struct {
 	Image              string
 	DockerExecutable   string
@@ -294,13 +295,13 @@ func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimi
 	}
 	command := exec.CommandContext(commandContext, docker.config.DockerExecutable, arguments...)
 	configureDockerCommand(command)
-	command.Env = minimalEnvironment()
+	command.Env = ClientEnvironment()
 	var stdout, stderr boundedBuffer
 	stdout.limit = outputLimit
 	stderr.limit = outputLimit
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	err := command.Run()
+	err := runDockerCommand(command)
 	result := commandResult{stdout: stdout.String(), stderr: stderr.String()}
 	if err != nil {
 		if errors.Is(commandContext.Err(), context.DeadlineExceeded) && timeout > 0 {
@@ -311,8 +312,24 @@ func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimi
 	return result, nil
 }
 
-func minimalEnvironment() []string {
-	return []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C"}
+// ClientEnvironment returns the minimal environment shared by Docker client
+// subprocesses and command-boundary preflight checks. Provider and
+// control-plane credentials are intentionally excluded.
+func ClientEnvironment() []string {
+	environment := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C"}
+	for _, name := range []string{
+		"HOME",
+		"DOCKER_HOST",
+		"DOCKER_CONTEXT",
+		"DOCKER_CONFIG",
+		"DOCKER_CERT_PATH",
+		"DOCKER_TLS_VERIFY",
+	} {
+		if value, exists := os.LookupEnv(name); exists {
+			environment = append(environment, name+"="+value)
+		}
+	}
+	return environment
 }
 
 type boundedBuffer struct {
