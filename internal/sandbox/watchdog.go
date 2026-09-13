@@ -40,7 +40,22 @@ func NewWatchdog(config Config) *Watchdog {
 // Arm starts the independent watchdog for an already-journaled deterministic
 // sandbox name. The returned lease is the sole renewal/disarm control channel.
 func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, error) {
-	if !containerNamePattern.MatchString(name) || deadline.IsZero() || lease.IsZero() ||
+	return watchdog.arm(name, lease, deadline, false)
+}
+
+// ArmProfile starts an independent watchdog for a profile credential
+// container. Its ownership checks use the dedicated profile-runtime label and
+// deterministic profile sandbox name rather than attempt labels.
+func (watchdog *Watchdog) ArmProfile(name string, lease, deadline time.Time) (*Lease, error) {
+	return watchdog.arm(name, lease, deadline, true)
+}
+
+func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile bool) (*Lease, error) {
+	validName := containerNamePattern.MatchString(name)
+	if profile {
+		validName = profileNamePattern.MatchString(name)
+	}
+	if !validName || deadline.IsZero() || lease.IsZero() ||
 		!time.Now().Before(deadline) || !time.Now().Before(lease) {
 		return nil, errors.New("watchdog identity or expiry is invalid")
 	}
@@ -59,6 +74,7 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 	command := exec.Command(executable,
 		"--docker", dockerExecutable,
 		"--name", name,
+		"--profile-mode", strconv.FormatBool(profile),
 		"--lease", strconv.FormatInt(lease.UnixNano(), 10),
 		"--deadline", strconv.FormatInt(deadline.UnixNano(), 10),
 		"--poll-interval", pollInterval.String(),
@@ -78,7 +94,7 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 		return nil, fmt.Errorf("start independent watchdog: %w", err)
 	}
 	reader := bufio.NewReaderSize(stdout, 32)
-	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, stdin: control, done: make(chan struct{}), responses: make(chan string, 16)}
+	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, profile: profile, stdin: control, done: make(chan struct{}), responses: make(chan string, 16)}
 	go func() {
 		err := command.Wait()
 		leaseHandle.mu.Lock()
@@ -121,6 +137,7 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 type Lease struct {
 	docker         *Docker
 	name           string
+	profile        bool
 	stdin          io.WriteCloser
 	done           chan struct{}
 	mu             sync.Mutex
@@ -375,7 +392,7 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 	for {
 		remaining := time.Until(leaseExpiry)
 		if remaining <= 0 {
-			return docker.cleanupWatchdogSandbox(options.name, createInFlight, confirmedID)
+			return docker.cleanupWatchdog(options, createInFlight, confirmedID)
 		}
 		timer := time.NewTimer(min(remaining, options.pollInterval))
 		select {
@@ -387,35 +404,35 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 				}
 			}
 			if message == "eof" {
-				return docker.cleanupWatchdogSandbox(options.name, createInFlight, confirmedID)
+				return docker.cleanupWatchdog(options, createInFlight, confirmedID)
 			}
 			if strings.HasPrefix(message, "phase:") {
 				parts := strings.SplitN(strings.TrimPrefix(message, "phase:"), ":", 3)
 				if len(parts) != 3 {
-					return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+					return docker.cleanupWatchdog(options, true, confirmedID)
 				}
 				sequence, parseErr := strconv.ParseUint(parts[0], 10, 64)
 				if parseErr != nil || sequence == 0 || sequence <= lastPhaseSequence {
-					return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+					return docker.cleanupWatchdog(options, true, confirmedID)
 				}
 				lastPhaseSequence = sequence
 				switch parts[1] {
 				case "started":
 					if parts[2] != "" || createPhaseFinished {
-						return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+						return docker.cleanupWatchdog(options, true, confirmedID)
 					}
 					createInFlight = true
 				case "finished":
 					if (!createInFlight && !createPhaseFinished) ||
 						(parts[2] != "" && (len(parts[2]) != 64 || !containerIDPattern.MatchString(parts[2]))) ||
 						(createPhaseFinished && parts[2] != confirmedID) {
-						return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+						return docker.cleanupWatchdog(options, true, confirmedID)
 					}
 					createInFlight = false
 					createPhaseFinished = true
 					confirmedID = parts[2]
 				default:
-					return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+					return docker.cleanupWatchdog(options, true, confirmedID)
 				}
 				if _, err := fmt.Fprintf(output, "ACK:%d\n", sequence); err != nil {
 					return fmt.Errorf("acknowledge watchdog phase: %w", err)
@@ -423,7 +440,7 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 				continue
 			}
 			if message == "protocol-error" {
-				return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+				return docker.cleanupWatchdog(options, true, confirmedID)
 			}
 			if message == "disarm" {
 				if createInFlight {
@@ -458,6 +475,7 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 type watchdogOptions struct {
 	docker       string
 	name         string
+	profile      bool
 	lease        int64
 	deadline     int64
 	pollInterval time.Duration
@@ -492,6 +510,12 @@ func parseWatchdogArguments(arguments []string) (watchdogOptions, error) {
 			options.docker = value
 		case "--name":
 			options.name = value
+		case "--profile-mode":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return watchdogOptions{}, errors.New("invalid watchdog ownership mode")
+			}
+			options.profile = parsed
 		case "--lease":
 			options.lease, _ = strconv.ParseInt(value, 10, 64)
 		case "--deadline":
@@ -506,7 +530,11 @@ func parseWatchdogArguments(arguments []string) (watchdogOptions, error) {
 			return watchdogOptions{}, errors.New("unknown watchdog argument")
 		}
 	}
-	if options.docker == "" || !containerNamePattern.MatchString(options.name) || options.lease == 0 || options.deadline == 0 {
+	validName := containerNamePattern.MatchString(options.name)
+	if options.profile {
+		validName = profileNamePattern.MatchString(options.name)
+	}
+	if options.docker == "" || !validName || options.lease == 0 || options.deadline == 0 {
 		return watchdogOptions{}, errors.New("watchdog configuration is incomplete")
 	}
 	return options, nil
@@ -528,6 +556,26 @@ func earlierExpiry(first, second time.Time) time.Time {
 }
 
 func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, confirmedID string) error {
+	return docker.cleanupWatchdogSandboxWithOwner(name, createInFlight, confirmedID, ownsSandboxIdentifier)
+}
+
+func (docker *Docker) cleanupWatchdog(options watchdogOptions, createInFlight bool, confirmedID string) error {
+	if options.profile {
+		return docker.cleanupProfileWatchdogSandbox(options.name)
+	}
+	return docker.cleanupWatchdogSandbox(options.name, createInFlight, confirmedID)
+}
+
+func (docker *Docker) cleanupProfileWatchdogSandbox(name string) error {
+	return docker.cleanupWatchdogSandboxWithOwner(name, false, "", ownsProfileSandboxIdentifier)
+}
+
+func (docker *Docker) cleanupWatchdogSandboxWithOwner(
+	name string,
+	createInFlight bool,
+	confirmedID string,
+	owns func(containerInspection, string) bool,
+) error {
 	observed := false
 	observedID := confirmedID
 	for {
@@ -549,7 +597,7 @@ func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, c
 			time.Sleep(docker.config.PollInterval)
 			continue
 		}
-		if !ownsSandboxIdentifier(inspection, identifier) || strings.TrimPrefix(inspection.Name, "/") != name {
+		if !owns(inspection, identifier) || strings.TrimPrefix(inspection.Name, "/") != name {
 			return errors.New("watchdog refused to remove an unrelated container")
 		}
 		observed = true
@@ -557,7 +605,7 @@ func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, c
 			observedID = inspection.ID
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), docker.config.CommandTimeout*3)
-		removeErr := docker.removeOwned(ctx, inspection.ID, inspection)
+		removeErr := docker.removeOwnedWith(ctx, inspection.ID, inspection, owns)
 		cancel()
 		if removeErr == nil {
 			return nil
@@ -566,4 +614,17 @@ func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, c
 			time.Sleep(docker.config.PollInterval)
 		}
 	}
+}
+
+func ownsProfileSandboxIdentifier(inspection containerInspection, identifier string) bool {
+	name := strings.TrimPrefix(inspection.Name, "/")
+	if inspection.Config.Labels["shipmunk.profile-runtime"] != "true" ||
+		inspection.Config.Labels["shipmunk.profile-sandbox"] != name || !profileNamePattern.MatchString(name) {
+		return false
+	}
+	if profileNamePattern.MatchString(identifier) {
+		return identifier == name
+	}
+	return containerIDPattern.MatchString(identifier) &&
+		(inspection.ID == identifier || strings.HasPrefix(inspection.ID, identifier))
 }

@@ -34,6 +34,7 @@ var (
 	ulidPattern          = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
 	containerIDPattern   = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 	containerNamePattern = regexp.MustCompile(`^shipmunk-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
+	profileNamePattern   = regexp.MustCompile(`^shipmunk-profile-[0-7][0-9a-hjkmnp-tv-z]{25}$`)
 )
 
 // Config controls the Docker sandbox and the executable used by the independent
@@ -242,7 +243,16 @@ func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 }
 
 func (docker *Docker) removeOwned(ctx context.Context, identifier string, inspection containerInspection) error {
-	if !ownsSandboxIdentifier(inspection, identifier) {
+	return docker.removeOwnedWith(ctx, identifier, inspection, ownsSandboxIdentifier)
+}
+
+func (docker *Docker) removeOwnedWith(
+	ctx context.Context,
+	identifier string,
+	inspection containerInspection,
+	owns func(containerInspection, string) bool,
+) error {
+	if !owns(inspection, identifier) {
 		return errors.New("refusing to remove a container not owned by Shipmunk")
 	}
 	if inspection.State.Running {
@@ -254,7 +264,7 @@ func (docker *Docker) removeOwned(ctx context.Context, identifier string, inspec
 		if inspectErr != nil {
 			return fmt.Errorf("verify sandbox after stop: %w", inspectErr)
 		}
-		if !ownsSandboxIdentifier(current, identifier) {
+		if !owns(current, identifier) {
 			return errors.New("sandbox ownership changed during stop")
 		}
 		if current.State.Running {
@@ -266,7 +276,7 @@ func (docker *Docker) removeOwned(ctx context.Context, identifier string, inspec
 			if inspectErr != nil {
 				return fmt.Errorf("verify sandbox after kill: %w", inspectErr)
 			}
-			if !ownsSandboxIdentifier(current, identifier) {
+			if !owns(current, identifier) {
 				return errors.New("sandbox ownership changed during kill")
 			}
 			if current.State.Running {
