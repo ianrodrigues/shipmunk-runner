@@ -25,9 +25,6 @@ func NewWatchdog(config Config) *Watchdog {
 	if config.DockerExecutable == "" {
 		config.DockerExecutable = "docker"
 	}
-	if config.CreateTimeout <= 0 {
-		config.CreateTimeout = 30 * time.Second
-	}
 	if config.CommandTimeout <= 0 {
 		config.CommandTimeout = 10 * time.Second
 	}
@@ -43,7 +40,8 @@ func NewWatchdog(config Config) *Watchdog {
 // Arm starts the independent watchdog for an already-journaled deterministic
 // sandbox name. The returned lease is the sole renewal/disarm control channel.
 func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, error) {
-	if !containerNamePattern.MatchString(name) || deadline.IsZero() || lease.IsZero() {
+	if !containerNamePattern.MatchString(name) || deadline.IsZero() || lease.IsZero() ||
+		!time.Now().Before(deadline) || !time.Now().Before(lease) {
 		return nil, errors.New("watchdog identity or expiry is invalid")
 	}
 	executable := watchdog.config.WatchdogExecutable
@@ -54,10 +52,6 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 	if dockerExecutable == "" {
 		dockerExecutable = "docker"
 	}
-	createTimeout := watchdog.config.CreateTimeout
-	if createTimeout <= 0 {
-		createTimeout = 30 * time.Second
-	}
 	pollInterval := watchdog.config.PollInterval
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
@@ -67,7 +61,6 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 		"--name", name,
 		"--lease", strconv.FormatInt(lease.UnixNano(), 10),
 		"--deadline", strconv.FormatInt(deadline.UnixNano(), 10),
-		"--create-timeout", createTimeout.String(),
 		"--poll-interval", pollInterval.String(),
 	)
 	command.Env = minimalEnvironment()
@@ -84,13 +77,18 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 		_ = control.Close()
 		return nil, fmt.Errorf("start independent watchdog: %w", err)
 	}
-	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, stdin: control, done: make(chan error, 1)}
+	reader := bufio.NewReaderSize(stdout, 32)
+	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, stdin: control, done: make(chan struct{}), responses: make(chan string, 16)}
 	go func() {
-		leaseHandle.done <- command.Wait()
+		err := command.Wait()
+		leaseHandle.mu.Lock()
+		leaseHandle.waitErr = err
+		leaseHandle.mu.Unlock()
+		close(leaseHandle.done)
 	}()
 	ready := make(chan error, 1)
 	go func() {
-		line, err := bufio.NewReader(stdout).ReadString('\n')
+		line, err := readBoundedLine(reader, 128)
 		if err == nil && strings.TrimSpace(line) != "READY" {
 			err = errors.New("watchdog returned an invalid readiness signal")
 		}
@@ -101,33 +99,39 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 		if err != nil {
 			_ = command.Process.Kill()
 			_ = control.Close()
-			_ = leaseHandle.waitForExit()
+			_ = leaseHandle.waitForExitBounded(watchdog.config.CommandTimeout)
 			return nil, fmt.Errorf("independent watchdog did not arm: %w", err)
 		}
-	case err := <-leaseHandle.done:
-		leaseHandle.wait.Do(func() { leaseHandle.waitErr = err })
+	case <-leaseHandle.done:
+		err := leaseHandle.waitForExitBounded(0)
 		_ = control.Close()
 		return nil, fmt.Errorf("independent watchdog exited before arming: %w", err)
 	case <-time.After(watchdog.config.CommandTimeout):
 		_ = command.Process.Kill()
 		_ = control.Close()
-		_ = leaseHandle.waitForExit()
+		_ = leaseHandle.waitForExitBounded(watchdog.config.CommandTimeout)
 		return nil, errors.New("independent watchdog did not arm before its startup timeout")
 	}
+	go leaseHandle.readResponses(reader)
 	return leaseHandle, nil
 }
 
 // Lease controls one watchdog process. Renewal is monotonic inside the child;
 // its wall-clock input is converted once for each renewal.
 type Lease struct {
-	docker  *Docker
-	name    string
-	stdin   io.WriteCloser
-	done    chan error
-	mu      sync.Mutex
-	closed  bool
-	wait    sync.Once
-	waitErr error
+	docker         *Docker
+	name           string
+	stdin          io.WriteCloser
+	done           chan struct{}
+	mu             sync.Mutex
+	closed         bool
+	createInFlight bool
+	createFinished bool
+	phaseUnknown   bool
+	phaseSequence  uint64
+	responses      chan string
+	confirmedID    string
+	waitErr        error
 }
 
 // Renew updates the watchdog lease, capped by the immutable claim deadline.
@@ -137,12 +141,56 @@ func (lease *Lease) Renew(expiry time.Time) error {
 	}
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
-	if lease.closed {
-		return errors.New("watchdog lease is closed")
+	return lease.writeMessageLocked(fmt.Sprintf("renew:%d\n", expiry.UnixNano()))
+}
+
+// CreateStarted tells the independent watchdog that a Docker create request is
+// about to be issued. If the parent dies before CreateFinished, absence cannot
+// prove that the daemon did not accept the request, so cleanup remains active.
+func (lease *Lease) CreateStarted() error {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.createFinished {
+		return errors.New("watchdog create phase is already finished")
 	}
-	if _, err := fmt.Fprintf(lease.stdin, "renew:%d\n", expiry.UnixNano()); err != nil {
-		return fmt.Errorf("renew independent watchdog: %w", err)
+	if lease.createInFlight && !lease.phaseUnknown {
+		return nil
 	}
+	lease.phaseUnknown = true
+	if err := lease.sendPhaseLocked("started", ""); err != nil {
+		return err
+	}
+	lease.createInFlight = true
+	lease.phaseUnknown = false
+	return nil
+}
+
+// CreateFinished confirms a definitive create response. Pass the full Docker
+// ID on success or an empty ID only when no container could have been created.
+// Do not call this after Create returns ErrCreateUncertain.
+func (lease *Lease) CreateFinished(containerID string) error {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if containerID != "" && (len(containerID) != 64 || !containerIDPattern.MatchString(containerID)) {
+		return errors.New("confirmed Docker container ID is invalid")
+	}
+	if lease.createFinished {
+		if lease.confirmedID == containerID {
+			return nil
+		}
+		return errors.New("watchdog create phase was finished with a different outcome")
+	}
+	if !lease.createInFlight && !lease.phaseUnknown {
+		return errors.New("watchdog has no create request in flight")
+	}
+	lease.phaseUnknown = true
+	if err := lease.sendPhaseLocked("finished", containerID); err != nil {
+		return err
+	}
+	lease.createInFlight = false
+	lease.phaseUnknown = false
+	lease.createFinished = true
+	lease.confirmedID = containerID
 	return nil
 }
 
@@ -150,7 +198,17 @@ func (lease *Lease) Renew(expiry time.Time) error {
 func (lease *Lease) Disarm() error {
 	ctx, cancel := context.WithTimeout(context.Background(), lease.docker.config.CommandTimeout)
 	defer cancel()
-	if _, err := lease.docker.inspect(ctx, lease.name); !errors.Is(err, errContainerAbsent) {
+	lease.mu.Lock()
+	if lease.createInFlight || lease.phaseUnknown {
+		lease.mu.Unlock()
+		return errors.New("cannot disarm watchdog while create outcome is uncertain")
+	}
+	identifier := lease.confirmedID
+	lease.mu.Unlock()
+	if identifier == "" {
+		identifier = lease.name
+	}
+	if _, err := lease.docker.inspect(ctx, identifier); !errors.Is(err, errContainerAbsent) {
 		if err == nil {
 			return errors.New("cannot disarm watchdog while its sandbox exists")
 		}
@@ -161,11 +219,11 @@ func (lease *Lease) Disarm() error {
 		lease.mu.Unlock()
 		return errors.New("watchdog lease is already closed")
 	}
+	writeErr := lease.writeMessageLocked("disarm\n")
 	lease.closed = true
-	_, writeErr := io.WriteString(lease.stdin, "disarm\n")
 	closeErr := lease.stdin.Close()
 	lease.mu.Unlock()
-	waitErr := lease.waitForExit()
+	waitErr := lease.waitForExitBounded(lease.docker.config.CommandTimeout)
 	if writeErr != nil && waitErr != nil {
 		return fmt.Errorf("watchdog exited while disarming (%v): %w", writeErr, waitErr)
 	}
@@ -178,11 +236,89 @@ func (lease *Lease) Disarm() error {
 	return nil
 }
 
-func (lease *Lease) waitForExit() error {
-	lease.wait.Do(func() {
-		lease.waitErr = <-lease.done
-	})
+func (lease *Lease) sendPhaseLocked(phase, containerID string) error {
+	lease.phaseSequence++
+	message := fmt.Sprintf("phase:%d:%s:%s\n", lease.phaseSequence, phase, containerID)
+	if err := lease.writeMessageLocked(message); err != nil {
+		return err
+	}
+	timer := time.NewTimer(lease.docker.config.CommandTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case response := <-lease.responses:
+			if response == fmt.Sprintf("ACK:%d", lease.phaseSequence) {
+				return nil
+			}
+			if response == "EOF" || strings.HasPrefix(response, "ERROR:") {
+				return fmt.Errorf("watchdog phase transition failed: %s", response)
+			}
+		case <-lease.done:
+			return errors.New("independent watchdog exited before acknowledging phase transition")
+		case <-timer.C:
+			return errors.New("independent watchdog phase acknowledgment timed out; retain sandbox state")
+		}
+	}
+}
+
+func (lease *Lease) readResponses(reader *bufio.Reader) {
+	for {
+		line, err := readBoundedLine(reader, 128)
+		if line != "" {
+			lease.responses <- strings.TrimSpace(line)
+		}
+		if err != nil {
+			if errors.Is(err, errLineTooLong) {
+				lease.responses <- "ERROR:oversized watchdog response"
+			} else if !errors.Is(err, io.EOF) {
+				lease.responses <- "ERROR:watchdog response stream failed"
+			} else {
+				lease.responses <- "EOF"
+			}
+			return
+		}
+	}
+}
+
+func (lease *Lease) waitForExitBounded(timeout time.Duration) error {
+	if timeout <= 0 {
+		<-lease.done
+	} else {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-lease.done:
+		case <-timer.C:
+			return errors.New("watchdog shutdown is still pending; cleanup process was left running")
+		}
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
 	return lease.waitErr
+}
+
+func (lease *Lease) writeMessageLocked(message string) error {
+	if lease.closed {
+		return errors.New("watchdog lease is closed")
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(lease.stdin, message)
+		written <- err
+	}()
+	timer := time.NewTimer(lease.docker.config.CommandTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-written:
+		if err != nil {
+			return fmt.Errorf("write watchdog control message: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		lease.closed = true
+		_ = lease.stdin.Close()
+		return errors.New("watchdog control channel write timed out; cleanup process was notified by EOF")
+	}
 }
 
 // RunWatchdog is the command body for cmd/shipmunk-watchdog. EOF is treated as
@@ -198,6 +334,11 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 	if err != nil {
 		return err
 	}
+	deadlineExpiry := expiryFromWall(time.Unix(0, options.deadline))
+	leaseExpiry := earlierExpiry(expiryFromWall(time.Unix(0, options.lease)), deadlineExpiry)
+	if !time.Now().Before(leaseExpiry) {
+		return errors.New("watchdog lease is already expired")
+	}
 	if _, err := fmt.Fprintln(output, "READY"); err != nil {
 		return fmt.Errorf("signal watchdog readiness: %w", err)
 	}
@@ -207,15 +348,16 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 		PollInterval:     options.pollInterval,
 		StopGrace:        2 * time.Second,
 	}}
-	deadlineExpiry := expiryFromWall(time.Unix(0, options.deadline))
-	leaseExpiry := earlierExpiry(expiryFromWall(time.Unix(0, options.lease)), deadlineExpiry)
 	messages := make(chan string, 1)
 	go func() {
 		reader := bufio.NewReader(input)
 		for {
-			line, err := reader.ReadString('\n')
-			if line != "" {
+			line, err := readBoundedLine(reader, 128)
+			if err == nil {
 				messages <- strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+			} else if errors.Is(err, errLineTooLong) {
+				messages <- "protocol-error"
+				return
 			}
 			if err != nil {
 				messages <- "eof"
@@ -224,10 +366,14 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 		}
 	}()
 
+	createInFlight := false
+	createPhaseFinished := false
+	lastPhaseSequence := uint64(0)
+	confirmedID := ""
 	for {
 		remaining := time.Until(leaseExpiry)
 		if remaining <= 0 {
-			return docker.cleanupWatchdogSandbox(options.name, options.createTimeout)
+			return docker.cleanupWatchdogSandbox(options.name, createInFlight, confirmedID)
 		}
 		timer := time.NewTimer(min(remaining, options.pollInterval))
 		select {
@@ -239,11 +385,54 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 				}
 			}
 			if message == "eof" {
-				return docker.cleanupWatchdogSandbox(options.name, options.createTimeout)
+				return docker.cleanupWatchdogSandbox(options.name, createInFlight, confirmedID)
+			}
+			if strings.HasPrefix(message, "phase:") {
+				parts := strings.SplitN(strings.TrimPrefix(message, "phase:"), ":", 3)
+				if len(parts) != 3 {
+					return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+				}
+				sequence, parseErr := strconv.ParseUint(parts[0], 10, 64)
+				if parseErr != nil || sequence == 0 || sequence <= lastPhaseSequence {
+					return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+				}
+				lastPhaseSequence = sequence
+				switch parts[1] {
+				case "started":
+					if parts[2] != "" || createPhaseFinished {
+						return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+					}
+					createInFlight = true
+				case "finished":
+					if (!createInFlight && !createPhaseFinished) ||
+						(parts[2] != "" && (len(parts[2]) != 64 || !containerIDPattern.MatchString(parts[2]))) ||
+						(createPhaseFinished && parts[2] != confirmedID) {
+						return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+					}
+					createInFlight = false
+					createPhaseFinished = true
+					confirmedID = parts[2]
+				default:
+					return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
+				}
+				if _, err := fmt.Fprintf(output, "ACK:%d\n", sequence); err != nil {
+					return fmt.Errorf("acknowledge watchdog phase: %w", err)
+				}
+				continue
+			}
+			if message == "protocol-error" {
+				return docker.cleanupWatchdogSandbox(options.name, true, confirmedID)
 			}
 			if message == "disarm" {
+				if createInFlight {
+					continue
+				}
+				identifier := confirmedID
+				if identifier == "" {
+					identifier = options.name
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), docker.config.CommandTimeout)
-				_, inspectErr := docker.inspect(ctx, options.name)
+				_, inspectErr := docker.inspect(ctx, identifier)
 				cancel()
 				if errors.Is(inspectErr, errContainerAbsent) {
 					return nil
@@ -253,7 +442,10 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 			if strings.HasPrefix(message, "renew:") {
 				unixNano, err := strconv.ParseInt(strings.TrimPrefix(message, "renew:"), 10, 64)
 				if err == nil {
-					leaseExpiry = earlierExpiry(expiryFromWall(time.Unix(0, unixNano)), deadlineExpiry)
+					candidate := earlierExpiry(expiryFromWall(time.Unix(0, unixNano)), deadlineExpiry)
+					if candidate.After(leaseExpiry) {
+						leaseExpiry = candidate
+					}
 				}
 			}
 		case <-timer.C:
@@ -262,16 +454,32 @@ func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) e
 }
 
 type watchdogOptions struct {
-	docker        string
-	name          string
-	lease         int64
-	deadline      int64
-	createTimeout time.Duration
-	pollInterval  time.Duration
+	docker       string
+	name         string
+	lease        int64
+	deadline     int64
+	pollInterval time.Duration
+}
+
+var errLineTooLong = errors.New("watchdog control frame exceeds 128 bytes")
+
+func readBoundedLine(reader *bufio.Reader, maxBytes int) (string, error) {
+	var line strings.Builder
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if line.Len()+len(fragment) > maxBytes {
+			return "", errLineTooLong
+		}
+		line.Write(fragment)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line.String(), err
+	}
 }
 
 func parseWatchdogArguments(arguments []string) (watchdogOptions, error) {
-	options := watchdogOptions{createTimeout: 30 * time.Second, pollInterval: 100 * time.Millisecond}
+	options := watchdogOptions{pollInterval: 100 * time.Millisecond}
 	for index := 0; index < len(arguments); index += 2 {
 		if index+1 >= len(arguments) {
 			return watchdogOptions{}, errors.New("invalid watchdog arguments")
@@ -286,12 +494,6 @@ func parseWatchdogArguments(arguments []string) (watchdogOptions, error) {
 			options.lease, _ = strconv.ParseInt(value, 10, 64)
 		case "--deadline":
 			options.deadline, _ = strconv.ParseInt(value, 10, 64)
-		case "--create-timeout":
-			parsed, err := time.ParseDuration(value)
-			if err != nil || parsed <= 0 {
-				return watchdogOptions{}, errors.New("invalid watchdog create timeout")
-			}
-			options.createTimeout = parsed
 		case "--poll-interval":
 			parsed, err := time.ParseDuration(value)
 			if err != nil || parsed <= 0 || parsed > time.Second {
@@ -323,14 +525,19 @@ func earlierExpiry(first, second time.Time) time.Time {
 	return second
 }
 
-func (docker *Docker) cleanupWatchdogSandbox(name string, createTimeout time.Duration) error {
-	settleUntil := time.Now().Add(createTimeout + time.Second)
+func (docker *Docker) cleanupWatchdogSandbox(name string, createInFlight bool, confirmedID string) error {
+	observed := false
+	observedID := confirmedID
 	for {
+		identifier := observedID
+		if identifier == "" {
+			identifier = name
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), docker.config.CommandTimeout)
-		inspection, err := docker.inspect(ctx, name)
+		inspection, err := docker.inspect(ctx, identifier)
 		cancel()
 		if errors.Is(err, errContainerAbsent) {
-			if !time.Now().Before(settleUntil) {
+			if !createInFlight || observed {
 				return nil
 			}
 			time.Sleep(docker.config.PollInterval)
@@ -340,12 +547,19 @@ func (docker *Docker) cleanupWatchdogSandbox(name string, createTimeout time.Dur
 			time.Sleep(docker.config.PollInterval)
 			continue
 		}
-		if !ownsSandboxIdentifier(inspection, name) {
+		if !ownsSandboxIdentifier(inspection, identifier) || strings.TrimPrefix(inspection.Name, "/") != name {
 			return errors.New("watchdog refused to remove an unrelated container")
 		}
+		observed = true
+		if observedID == "" {
+			observedID = inspection.ID
+		}
 		ctx, cancel = context.WithTimeout(context.Background(), docker.config.CommandTimeout*3)
-		removeErr := docker.removeOwned(ctx, name, inspection)
+		removeErr := docker.removeOwned(ctx, inspection.ID, inspection)
 		cancel()
+		if removeErr == nil {
+			return nil
+		}
 		if removeErr != nil {
 			time.Sleep(docker.config.PollInterval)
 		}
