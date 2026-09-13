@@ -166,7 +166,7 @@ func TestDockerRuntimePreservesLinuxOwnershipAndNormalizesAfterStop(t *testing.T
 	dockerContext, dockerCancel = context.WithTimeout(context.Background(), 15*time.Second)
 	output, inspectErr := exec.CommandContext(dockerContext, "docker", "inspect", sandboxName).CombinedOutput()
 	dockerCancel()
-	if inspectErr == nil || !strings.Contains(string(output), "No such object") {
+	if inspectErr == nil || !strings.Contains(strings.ToLower(string(output)), "no such object") {
 		t.Fatalf("profile container survived cleanup: %q %v", output, inspectErr)
 	}
 }
