@@ -387,6 +387,151 @@ func TestNativeNormalizationRejectsUnsafeEntriesBeforeChangingAnyModes(t *testin
 	}
 }
 
+func TestNativeNormalizationRejectsDirectoryReplacedByOutsideSymlink(t *testing.T) {
+	store, root := openTestStore(t)
+	home, err := store.CreateHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeDir := filepath.Join(home, "native")
+	if err := os.Mkdir(nativeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nativeDir, "metadata"), []byte("native"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outside, "preserve")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var replaced bool
+	parked := filepath.Join(root, "moved-native")
+	hooks := nativeTreeHooks{beforeDirectoryOpen: func(parent *os.Root, name string) {
+		if name != "native" || replaced {
+			return
+		}
+		replaced = true
+		path := filepath.Join(parent.Name(), name)
+		if err := os.Rename(path, parked); err != nil {
+			t.Errorf("move inspected directory: %v", err)
+			return
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Errorf("replace inspected directory: %v", err)
+		}
+	}}
+	if err := normalizeNativeProfileTree(home, hooks); err == nil {
+		t.Fatal("normalization accepted a directory replaced by an outside symlink")
+	}
+	if !replaced {
+		t.Fatal("replacement hook was not reached")
+	}
+	if mode := fileMode(t, outsideFile); mode != 0644 {
+		t.Fatalf("normalization changed outside file mode to %#o", mode)
+	}
+	if contents, err := os.ReadFile(outsideFile); err != nil || string(contents) != "outside" {
+		t.Fatalf("normalization changed outside file: %q, %v", contents, err)
+	}
+}
+
+func TestNativeNormalizationDoesNotChmodReplacedOutsideFile(t *testing.T) {
+	store, root := openTestStore(t)
+	home, err := store.CreateHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := filepath.Join(home, "credential")
+	if err := os.WriteFile(credential, []byte("native"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var replaced bool
+	hooks := nativeTreeHooks{beforeEntryChmod: func(entry nativeProfileEntry) {
+		if entry.path != "credential" || replaced {
+			return
+		}
+		replaced = true
+		path := filepath.Join(entry.root.Name(), entry.path)
+		if err := os.Remove(path); err != nil {
+			t.Errorf("remove inspected file: %v", err)
+			return
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Errorf("replace inspected file: %v", err)
+		}
+	}}
+	if err := normalizeNativeProfileTree(home, hooks); err == nil {
+		t.Fatal("normalization accepted a file replaced by an outside symlink")
+	}
+	if !replaced {
+		t.Fatal("replacement hook was not reached")
+	}
+	if mode := fileMode(t, outside); mode != 0644 {
+		t.Fatalf("normalization changed outside file mode to %#o", mode)
+	}
+	if contents, err := os.ReadFile(outside); err != nil || string(contents) != "outside" {
+		t.Fatalf("normalization changed outside file: %q, %v", contents, err)
+	}
+}
+
+func TestNativeInvalidationRemovesReplacedOutsideSymlinkWithoutFollowingIt(t *testing.T) {
+	_, root := openTestStore(t)
+	home := filepath.Join(root, "home")
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	nativeDir := filepath.Join(home, "native")
+	if err := os.Mkdir(nativeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nativeDir, "metadata"), []byte("native"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outside, "preserve")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var replaced bool
+	parked := filepath.Join(root, "moved-native")
+	hooks := nativeTreeHooks{beforeDirectoryOpen: func(parent *os.Root, name string) {
+		if name != "native" || replaced {
+			return
+		}
+		replaced = true
+		path := filepath.Join(parent.Name(), name)
+		if err := os.Rename(path, parked); err != nil {
+			t.Errorf("move inspected directory: %v", err)
+			return
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Errorf("replace inspected directory: %v", err)
+		}
+	}}
+	if err := removeProfileTree(home, hooks); err != nil {
+		t.Fatalf("invalidation failed to safely remove replacement symlink: %v", err)
+	}
+	if !replaced {
+		t.Fatal("replacement hook was not reached")
+	}
+	if _, err := os.Lstat(nativeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement symlink remains after invalidation: %v", err)
+	}
+	if contents, err := os.ReadFile(outsideFile); err != nil || string(contents) != "outside" {
+		t.Fatalf("invalidation changed outside file: %q, %v", contents, err)
+	}
+}
+
 func TestExecutionJournalUsesPHPIdentityAndRequiresLock(t *testing.T) {
 	store, _ := openTestStore(t)
 	home, err := store.CreateHome()
@@ -430,6 +575,24 @@ func TestExecutionJournalUsesPHPIdentityAndRequiresLock(t *testing.T) {
 	}
 	if mode := fileMode(t, credential); mode != 0600 {
 		t.Fatalf("execution release did not normalize the home: %#o", mode)
+	}
+	if err := store.WithExclusive(func(locked *Store) error {
+		if err := locked.Write("pending", map[string]any{"operation_id": operationOne}); err != nil {
+			return err
+		}
+		if err := locked.ReserveExecution(claim); err == nil {
+			return errors.New("execution reservation succeeded while lifecycle recovery was pending")
+		}
+		value, err := locked.Read("execution")
+		if err != nil {
+			return err
+		}
+		if value != nil {
+			return errors.New("execution reservation was written while lifecycle recovery was pending")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

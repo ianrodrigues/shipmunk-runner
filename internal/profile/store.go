@@ -287,6 +287,13 @@ func (store *Store) ReserveExecution(claim protocol.Claim) error {
 	if err != nil {
 		return err
 	}
+	pending, err := store.Read("pending")
+	if err != nil {
+		return err
+	}
+	if pending != nil {
+		return errors.New("profile lifecycle recovery requires reconciliation")
+	}
 	current, err := store.Read("execution")
 	if err != nil {
 		return err
@@ -357,23 +364,7 @@ func (store *Store) NormalizeNativeHome() error {
 	if err := store.verifyDirectories(); err != nil {
 		return err
 	}
-	entries, err := inspectNativeProfileTree(store.Home())
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if err := verifyNativeSnapshot(entry); err != nil {
-			return err
-		}
-		mode := os.FileMode(0600)
-		if entry.directory {
-			mode = 0700
-		}
-		if err := os.Chmod(entry.path, mode); err != nil {
-			return fmt.Errorf("protect native profile entry: %w", err)
-		}
-	}
-	return store.ValidateHome()
+	return normalizeNativeProfileTree(store.Home(), nativeTreeHooks{})
 }
 
 // Invalidate forgets the active identity and removes home entries without
@@ -388,7 +379,7 @@ func (store *Store) Invalidate() error {
 	if err := store.Forget("active"); err != nil {
 		return err
 	}
-	if err := removeProfileTree(store.Home()); err != nil {
+	if err := removeProfileTree(store.Home(), nativeTreeHooks{}); err != nil {
 		return err
 	}
 	return syncProfileDirectory(store.directory)
