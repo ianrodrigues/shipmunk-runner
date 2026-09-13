@@ -8,6 +8,7 @@ check: lint package-check runner-check native-image-check go-check go-parity-che
 go-runtime-check: runner-check
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-runtime.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
 	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog; \
+	SHIPMUNK_PROFILE_DOCKER_TEST=1 SHIPMUNK_PROFILE_IMAGE=shipmunk-profile-test:local go test -race -count=1 ./internal/profile; \
 	SHIPMUNK_SANDBOX_DOCKER_TEST=1 SHIPMUNK_RUNNER_IMAGE=shipmunk-runner-test:local SHIPMUNK_WATCHDOG_BINARY="$$build_dir/shipmunk-watchdog" go test -race -count=1 ./internal/sandbox ./internal/supervisor
 
 go-parity-check:

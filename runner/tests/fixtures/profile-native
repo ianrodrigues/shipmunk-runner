@@ -11,4 +11,14 @@ if [ "$1" = '--version' ]; then
 fi
 [ ! -e /var/run/docker.sock ] || exit 2
 [ ! -e /profile/01nnnnnnnnnnnnnnnnnnnnnnnn/home/sibling-secret ] || exit 3
+if [ "$1" = 'login' ] && [ "$2" = 'status' ]; then
+    mkdir -p /profile/native
+    chmod 0777 /profile/native
+    printf '{"synthetic":true}\n' > /profile/native/credential.json
+    chmod 0666 /profile/native/credential.json
+    id -u | tr -d '\n' > /profile/native/owner
+    printf ':' >> /profile/native/owner
+    id -g >> /profile/native/owner
+    chmod 0666 /profile/native/owner
+fi
 printf 'Logged in using ChatGPT\n' >&2
