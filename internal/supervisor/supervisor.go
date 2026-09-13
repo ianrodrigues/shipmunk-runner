@@ -203,6 +203,9 @@ func (s *Supervisor) reconcile(ctx context.Context) error {
 		return errors.New("recovery workspace does not match active attempt")
 	}
 	if s.Executor != nil {
+		if state.SandboxID != nil {
+			return fmt.Errorf("%w: legacy sandbox requires its Docker reconciler", ErrCleanupUnconfirmed)
+		}
 		if err := s.Executor.Cleanup(ctx, claim); err != nil {
 			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 		}
