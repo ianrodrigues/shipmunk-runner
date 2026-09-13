@@ -35,6 +35,17 @@ func ValidateFixture(contract, schemaDirectory string, raw []byte) error {
 	return validate(schema, document, "$")
 }
 
+// ValidateManifest applies the complete pinned manifest contract. Decode has
+// already rejected duplicate keys before callers construct the map, while
+// re-encoding preserves null and empty-array distinctions for schema checks.
+func ValidateManifest(manifest map[string]any) error {
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("encode manifest for validation: %w", err)
+	}
+	return ValidateFixture("manifest", pinnedSchemaDirectory(), raw)
+}
+
 func documentLimit(contract string) int {
 	switch contract {
 	case "manifest", "run-input":
