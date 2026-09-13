@@ -179,7 +179,7 @@ func TestHTTPClientFencesAndValidatesOutboundMutations(t *testing.T) {
 		case "/runner/v1/attempts/01k4w000000000000000000002/events", "/runner/v1/attempts/01k4w000000000000000000002/completion", "/runner/v1/attempts/01k4w000000000000000000002/heartbeat":
 			writer.WriteHeader(http.StatusNoContent)
 		case "/runner/v1/attempts/01k4w000000000000000000002/artifacts":
-			if request.Header.Get("X-Attempt-Fence") != "1" || request.Header.Get("X-Artifact-Kind") != "native_output" {
+			if request.Header.Get("X-Attempt-Fence") != "1" || request.Header.Get("X-Artifact-Kind") != "native_output" || request.Header.Get("X-Protocol-Version") != Version {
 				t.Error("missing artifact fence headers")
 			}
 			fmt.Fprint(writer, `{"data":{"id":"01k4w000000000000000000003"}}`)
