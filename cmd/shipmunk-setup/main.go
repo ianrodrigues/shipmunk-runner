@@ -20,7 +20,7 @@ func main() {
 		return
 	}
 	if len(arguments) < 1 || len(arguments) > 2 {
-		fmt.Fprintln(os.Stderr, "Usage: shipmunk-setup [--server-url URL] SETUP-FILE")
+		fmt.Fprintln(os.Stderr, "Usage: shipmunk-setup SETUP-FILE [--server-url=https://runner-reachable-server]")
 		os.Exit(2)
 	}
 	serverURL := ""
@@ -30,6 +30,10 @@ func main() {
 			os.Exit(2)
 		}
 		serverURL = strings.TrimPrefix(arguments[1], "--server-url=")
+		if serverURL == "" {
+			fmt.Fprintln(os.Stderr, "The only setup option is --server-url=https://runner-reachable-server.")
+			os.Exit(2)
+		}
 	}
 	if _, err := setup.Read(arguments[0], serverURL, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "Setup file is invalid or expired.")

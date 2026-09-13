@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
@@ -18,7 +16,7 @@ func main() {
 	tokenFile := flags.String("token-file", "", "mode-0600 runner token file")
 	stateDir := flags.String("state-dir", "", "mode-0700 state directory")
 	image := flags.String("image", "", "repository image")
-	once := flags.Bool("once", false, "handle at most one claim")
+	flags.Bool("once", false, "handle at most one claim")
 	flags.String("driver", "fixture", "fixture or codex")
 	flags.String("profiles-dir", "", "protected profile directory")
 	flags.String("repository-image", "", "repository command image")
@@ -44,27 +42,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Runner token file could not be read.")
 		os.Exit(2)
 	}
-	client, err := protocol.NewHTTPClient(*baseURL, strings.TrimSpace(string(bytes)), nil)
-	if err != nil {
+	if _, err := protocol.NewHTTPClient(*baseURL, strings.TrimSpace(string(bytes)), nil); err != nil {
 		fmt.Fprintln(os.Stderr, "Runner configuration is invalid.")
 		os.Exit(2)
 	}
-	for {
-		claim, err := client.Claim(context.Background(), time.Now())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Runner request failed. Check the runner connection and authorization.")
-			os.Exit(1)
-		}
-		if claim != nil {
-			// #55 owns the mandatory journal/cleanup lifecycle. This explicit
-			// failure is safer than pretending that a claimed attempt completed.
-			fmt.Fprintln(os.Stderr, "Runner stopped before a completed result could be reported. Check the application run and runner configuration.")
-			os.Exit(1)
-		}
-		if *once {
-			fmt.Println("No eligible queued work was returned for this runner.")
-			return
-		}
-		time.Sleep(2 * time.Second)
-	}
+	// #55 must persist a claim before any preparation begins. Until that
+	// journal exists, polling here could reserve work that this process cannot
+	// safely supervise or reconcile after a crash.
+	fmt.Fprintln(os.Stderr, "Go runner supervision is not available in this compatibility foundation.")
+	os.Exit(1)
 }
