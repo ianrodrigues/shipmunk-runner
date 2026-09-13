@@ -164,7 +164,7 @@ func (lifecycle *Lifecycle) Operate(
 			}
 		}
 
-		if err := lifecycle.stopPending(locked, pending, watchdogLease); err != nil {
+		if err := lifecycle.stopPending(pending, watchdogLease); err != nil {
 			return err
 		}
 		if outcome.Health != HealthReady {
@@ -449,7 +449,7 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 	if !ok || protocol.ValidateOperationID(operationID) != nil || !sandboxOK || sandboxName != "shipmunk-profile-"+operationID {
 		return errors.New("profile journal sandbox mismatch")
 	}
-	if err := lifecycle.stopPending(store, pending, nil); err != nil {
+	if err := lifecycle.stopPending(pending, nil); err != nil {
 		return err
 	}
 	rawBinding, bindingExists := pending["binding"]
@@ -551,7 +551,7 @@ func (lifecycle *Lifecycle) rejectBegin(
 	if err := store.Write("pending", pending); err != nil {
 		return err
 	}
-	if err := lifecycle.stopPending(store, pending, nil); err != nil {
+	if err := lifecycle.stopPending(pending, nil); err != nil {
 		return err
 	}
 	if err := store.Invalidate(); err != nil {
@@ -622,16 +622,10 @@ func (lifecycle *Lifecycle) stopAndDisarm(sandboxName string, createMayBeInFligh
 	return nil
 }
 
-func (lifecycle *Lifecycle) stopPending(store *Store, pending map[string]any, lease WatchdogLease) error {
+func (lifecycle *Lifecycle) stopPending(pending map[string]any, lease WatchdogLease) error {
 	createMayBeInFlight := isTrue(pending["create_attempted"])
 	if err := lifecycle.stopAndDisarm(pending["sandbox"].(string), createMayBeInFlight, lease); err != nil {
 		return err
-	}
-	if createMayBeInFlight {
-		pending["create_attempted"] = false
-		if err := store.Write("pending", pending); err != nil {
-			return err
-		}
 	}
 	return nil
 }
