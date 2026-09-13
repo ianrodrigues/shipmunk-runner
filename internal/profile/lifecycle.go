@@ -200,7 +200,7 @@ func (lifecycle *Lifecycle) Operate(
 				return err
 			}
 			if outcome.Health == HealthReady {
-				outcome = Health{Health: "disconnected", Reason: "operation_stopped"}
+				outcome = Health{Health: HealthError, Reason: "operation_stopped"}
 			}
 		}
 		if err := locked.Write("completed", map[string]any{"operation_id": operationID}); err != nil {

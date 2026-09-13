@@ -358,6 +358,25 @@ func TestLifecycleLoginActivatesOnlyAfterAuthenticatedPreflightAndCleanup(t *tes
 	}
 }
 
+func TestLifecycleReturnsStoppedErrorWhenReadyCredentialsAreNotActivated(t *testing.T) {
+	store, lifecycle, control, _, _ := newLifecycleFixture(t)
+	control.setCompletion(map[string]any{
+		"profile_id": testProfileID, "active": false, "stopped": true,
+		"health": HealthError, "reason": "operation_stopped",
+	})
+	outcome, err := lifecycle.Operate(context.Background(), store, testProfileID, "login", operationOne)
+	if err != nil || outcome != (Health{Health: HealthError, Reason: "operation_stopped"}) {
+		t.Fatalf("Operate() = (%#v, %v)", outcome, err)
+	}
+	completion := control.snapshotCalls()[len(control.snapshotCalls())-1]
+	if completion.payload["health"] != HealthReady || completion.payload["reason"] != nil {
+		t.Fatalf("completion payload did not preserve the authenticated outcome: %#v", completion.payload)
+	}
+	if active, err := store.Read("active"); err != nil || active != nil {
+		t.Fatalf("inactive completion retained credentials: %#v, %v", active, err)
+	}
+}
+
 func TestLifecyclePersistsBeforeBeginAndDistinguishesDefinitiveErrors(t *testing.T) {
 	for _, test := range []struct {
 		name        string
