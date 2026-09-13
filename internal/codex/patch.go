@@ -112,11 +112,19 @@ func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 }
 
 func snapshot(root string) (map[string]fileState, error) {
+	pathInfo, err := os.Lstat(root)
+	if err != nil || !pathInfo.IsDir() || pathInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("root must be a real directory")
+	}
 	rootHandle, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, errors.New("root must be a real directory")
 	}
 	defer rootHandle.Close()
+	openedInfo, err := rootHandle.Lstat(".")
+	if err != nil || !os.SameFile(pathInfo, openedInfo) {
+		return nil, errors.New("root changed while opening")
+	}
 	return snapshotRoot(rootHandle, nil)
 }
 
@@ -226,7 +234,7 @@ func generatePatch(before, after map[string]fileState) (patch []byte, returnedEr
 		return nil, errors.New("cannot protect trusted patch attributes")
 	}
 	commands := [][]string{
-		{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "add", "--all"},
+		{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "add", "--all", "--force"},
 		{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Shipmunk", "-c", "user.email=runner@shipmunk.local", "commit", "-qm", "baseline", "--allow-empty"},
 	}
 	for _, arguments := range commands {
@@ -249,7 +257,7 @@ func generatePatch(before, after map[string]fileState) (patch []byte, returnedEr
 	if err := materialize(work, after); err != nil {
 		return nil, err
 	}
-	if err := runGit(ctx, temporary, work, nil, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "add", "-N", "--all"); err != nil {
+	if err := runGit(ctx, temporary, work, nil, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "add", "-N", "--all", "--force"); err != nil {
 		return nil, err
 	}
 	output := &boundedWriter{remaining: MaxPatchBytes + 1}
