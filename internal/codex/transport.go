@@ -339,11 +339,18 @@ func (t *DockerTransport) serviceBridge(ctx context.Context) error {
 	if err != nil {
 		return errors.New("repository command response is invalid")
 	}
-	tmp := filepath.Join(t.bridge, "response.tmp")
-	if err = os.WriteFile(tmp, wire, 0600); err != nil {
+	tmp, err := root.OpenFile("response.tmp", os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
 		return errors.New("cannot write repository response")
 	}
-	if err = os.Rename(tmp, filepath.Join(t.bridge, "response.json")); err != nil {
+	if _, err = tmp.Write(wire); err == nil {
+		err = tmp.Sync()
+	}
+	responseCloseErr := tmp.Close()
+	if err != nil || responseCloseErr != nil {
+		return errors.New("cannot write repository response")
+	}
+	if err = root.Rename("response.tmp", "response.json"); err != nil {
 		return errors.New("cannot publish repository response")
 	}
 	return nil
@@ -469,6 +476,14 @@ func (t *DockerTransport) Stop(ctx context.Context) error {
 func (t *DockerTransport) cleanup(ctx context.Context) error {
 	var failed bool
 	for _, n := range []string{t.cfg.Name, t.cfg.Name + "-repo", t.cfg.Name + "-diff"} {
+		owned, absent, err := t.ownedResource(ctx, n, false)
+		if err != nil || !owned && !absent {
+			failed = true
+			continue
+		}
+		if absent {
+			continue
+		}
 		_, _ = t.rawRun(ctx, nil, "stop", "--time", "2", n)
 		_, _ = t.rawRun(ctx, nil, "rm", "--force", n)
 		r, e := t.rawRun(ctx, nil, "inspect", n)
@@ -477,14 +492,29 @@ func (t *DockerTransport) cleanup(ctx context.Context) error {
 		}
 	}
 	if !failed {
+		owned, absent, err := t.ownedResource(ctx, t.workspaceVolume, true)
+		if err != nil || !owned && !absent {
+			failed = true
+		}
+		if absent {
+			goto bridgeCleanup
+		}
+		if !owned {
+			goto finished
+		}
 		_, _ = t.rawRun(ctx, nil, "volume", "rm", t.workspaceVolume)
 		r, e := t.rawRun(ctx, nil, "volume", "inspect", t.workspaceVolume)
 		if e != nil || r.exitCode == 0 || !strings.Contains(strings.ToLower(string(r.stdout)+string(r.stderr)), "no such") {
 			failed = true
-		} else if err := os.RemoveAll(t.bridge); err != nil {
+		}
+	}
+bridgeCleanup:
+	if !failed && t.bridge != "" {
+		if err := os.RemoveAll(t.bridge); err != nil {
 			failed = true
 		}
 	}
+finished:
 	t.started = false
 	if t.profileHandle != nil {
 		_ = t.profileHandle.Close()
@@ -498,6 +528,25 @@ func (t *DockerTransport) cleanup(ctx context.Context) error {
 		return errors.New("cannot confirm all Codex process trees are absent")
 	}
 	return nil
+}
+
+func (t *DockerTransport) ownedResource(ctx context.Context, name string, volume bool) (owned, absent bool, err error) {
+	args := []string{"inspect", "--format", `{{index .Config.Labels "shipmunk.codex"}}{{"\n"}}{{index .Config.Labels "shipmunk.codex-owner"}}`, name}
+	if volume {
+		args = []string{"volume", "inspect", "--format", `{{index .Labels "shipmunk.codex"}}{{"\n"}}{{index .Labels "shipmunk.codex-owner"}}`, name}
+	}
+	r, err := t.rawRun(ctx, nil, args...)
+	if err != nil {
+		return false, false, err
+	}
+	if r.exitCode != 0 {
+		if strings.Contains(strings.ToLower(string(r.stdout)+string(r.stderr)), "no such") {
+			return false, true, nil
+		}
+		return false, false, errors.New("cannot inspect Codex resource ownership")
+	}
+	lines := strings.Split(strings.TrimSpace(string(r.stdout)), "\n")
+	return len(lines) == 2 && lines[0] == "true" && lines[1] == t.cfg.Name, false, nil
 }
 
 type execDockerCommand struct{ executable string }
