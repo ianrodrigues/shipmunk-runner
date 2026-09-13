@@ -39,6 +39,7 @@ type TransportConfig struct {
 	DockerExecutable                                        string
 	MaxCommands                                             int
 	CommandTimeout                                          time.Duration
+	sourceHandle                                            *os.File
 }
 
 type transportResult struct {
@@ -111,6 +112,21 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 		}
 	}
 	for index, root := range []string{cfg.ProfileHome, cfg.Source} {
+		if index == 1 && cfg.sourceHandle != nil {
+			handle := cfg.sourceHandle
+			info, statErr := handle.Stat()
+			if statErr != nil || !info.IsDir() {
+				closeHandles()
+				return nil, errors.New("Codex transport input directory is invalid")
+			}
+			handles[index] = handle
+			stable := handle.Name()
+			if runtime.GOOS == "linux" {
+				stable = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
+			}
+			cfg.Source = stable
+			continue
+		}
 		info, err := os.Lstat(root)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			closeHandles()

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,7 +37,6 @@ type ExecutorConfig struct {
 	ProfileHome, NativeImage, RepositoryImage, DockerExecutable string
 	Sessions                                                    *codexsession.Store
 	SessionMode                                                 codexsession.Mode
-	MaxCommands                                                 int
 	CommandTimeout                                              time.Duration
 	NewTransport                                                func(TransportConfig) (agentTransport, error)
 	Watchdog                                                    *sandbox.Watchdog
@@ -73,12 +73,6 @@ func NewExecutor(cfg ExecutorConfig) (*Executor, error) {
 	if cfg.SessionMode != codexsession.Fresh && cfg.SessionMode != codexsession.Resume {
 		return nil, errors.New("Codex session mode is invalid")
 	}
-	if cfg.MaxCommands == 0 {
-		cfg.MaxCommands = 100
-	}
-	if cfg.MaxCommands < 1 {
-		return nil, errors.New("Codex command budget is invalid")
-	}
 	if cfg.NewTransport == nil {
 		if cfg.Watchdog == nil && cfg.ArmWatchdog == nil {
 			return nil, errors.New("Codex watchdog configuration is incomplete")
@@ -102,8 +96,14 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	if err != nil {
 		return supervisor.Execution{}, err
 	}
-	transport, err := e.cfg.NewTransport(TransportConfig{Name: "shipmunk-codex-" + claim.AttemptID + "-" + fmt.Sprint(claim.Fence), ProfileHome: e.cfg.ProfileHome, Source: source, NativeImage: e.cfg.NativeImage, RepositoryImage: e.cfg.RepositoryImage, DockerExecutable: e.cfg.DockerExecutable, MaxCommands: e.cfg.MaxCommands, CommandTimeout: e.cfg.CommandTimeout})
+	maxCommands, err := claimCommandBudget(claim)
 	if err != nil {
+		_ = source.Close()
+		return supervisor.Execution{}, err
+	}
+	transport, err := e.cfg.NewTransport(TransportConfig{Name: "shipmunk-codex-" + claim.AttemptID + "-" + fmt.Sprint(claim.Fence), ProfileHome: e.cfg.ProfileHome, Source: source.Name(), sourceHandle: source, NativeImage: e.cfg.NativeImage, RepositoryImage: e.cfg.RepositoryImage, DockerExecutable: e.cfg.DockerExecutable, MaxCommands: maxCommands, CommandTimeout: e.cfg.CommandTimeout})
+	if err != nil {
+		_ = source.Close()
 		return supervisor.Execution{}, err
 	}
 	e.mu.Lock()
@@ -389,24 +389,52 @@ func trustedInstructions(claim protocol.Claim, workspace string) (string, error)
 	return trusted, nil
 }
 
-func executionInputs(claim protocol.Claim, workspace string) (string, string, error) {
+func executionInputs(claim protocol.Claim, workspace string) (*os.File, string, error) {
 	root, original, err := openExecutionWorkspace(workspace)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	defer root.Close()
-	source, err := selectSourceRoot(root, workspace)
+	sourcePath, err := selectSourceRoot(root, workspace)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
+	}
+	source, err := root.Open(filepath.Join("sources", filepath.Base(sourcePath)))
+	if err != nil {
+		return nil, "", errors.New("Codex source changed while opening")
+	}
+	expected, expectedErr := root.Lstat(filepath.Join("sources", filepath.Base(sourcePath)))
+	opened, openedErr := source.Stat()
+	if expectedErr != nil || openedErr != nil || !opened.IsDir() || !os.SameFile(expected, opened) {
+		_ = source.Close()
+		return nil, "", errors.New("Codex source changed while opening")
 	}
 	trusted, err := trustedInstructionsRoot(claim, root)
 	if err != nil {
-		return "", "", err
+		_ = source.Close()
+		return nil, "", err
 	}
 	if err := verifyExecutionWorkspace(workspace, original); err != nil {
-		return "", "", err
+		_ = source.Close()
+		return nil, "", err
 	}
 	return source, trusted, nil
+}
+
+func claimCommandBudget(claim protocol.Claim) (int, error) {
+	config, ok := claim.Manifest["effective_config"].(map[string]any)
+	if !ok {
+		return 0, errors.New("Codex claim command budget is invalid")
+	}
+	number, ok := config["max_turns"].(json.Number)
+	if !ok {
+		return 0, errors.New("Codex claim command budget is invalid")
+	}
+	value, err := strconv.ParseInt(number.String(), 10, 32)
+	if err != nil || value < 1 || value > 1000 {
+		return 0, errors.New("Codex claim command budget is invalid")
+	}
+	return int(value), nil
 }
 
 func trustedInstructionsRoot(claim protocol.Claim, root *os.Root) (string, error) {

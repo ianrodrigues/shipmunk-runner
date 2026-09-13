@@ -154,7 +154,7 @@ func setupFailureExecutor(t *testing.T, startErr error) (*Executor, *executorTra
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(2 * time.Minute), Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion}}
+	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(2 * time.Minute), Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "effective_config": map[string]any{"max_turns": json.Number("2")}}}
 	return executor, transport, lease, claim
 }
 
@@ -168,11 +168,29 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport := new(executorTransport)
-	executor, err := NewExecutor(ExecutorConfig{ProfileHome: t.TempDir(), NativeImage: "native", RepositoryImage: "repo", Sessions: sessions, NewTransport: func(TransportConfig) (agentTransport, error) { return transport, nil }})
+	var receivedBudget int
+	var preservedSource bool
+	executor, err := NewExecutor(ExecutorConfig{ProfileHome: t.TempDir(), NativeImage: "native", RepositoryImage: "repo", Sessions: sessions, NewTransport: func(cfg TransportConfig) (agentTransport, error) {
+		receivedBudget = cfg.MaxCommands
+		if cfg.sourceHandle == nil {
+			return nil, errors.New("source identity was not handed to transport")
+		}
+		moved := cfg.Source + "-moved"
+		if err := os.Rename(cfg.Source, moved); err != nil {
+			return nil, err
+		}
+		if err := os.Mkdir(cfg.Source, 0700); err != nil {
+			return nil, err
+		}
+		original, originalErr := os.Stat(moved)
+		opened, openedErr := cfg.sourceHandle.Stat()
+		preservedSource = originalErr == nil && openedErr == nil && os.SameFile(original, opened)
+		return transport, nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
+	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("2")}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
 	workspace, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -186,6 +204,9 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 	}
 	if execution.Result["outcome"] != "no_findings" || len(execution.Artifacts) != 0 {
 		t.Fatalf("unexpected execution: %#v", execution)
+	}
+	if receivedBudget != 2 || !preservedSource {
+		t.Fatalf("transport input handoff: budget=%d preserved_source=%t", receivedBudget, preservedSource)
 	}
 	if len(transport.calls) != 5 {
 		t.Fatalf("native calls=%d, want version + two probes around execution", len(transport.calls))
