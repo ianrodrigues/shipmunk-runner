@@ -47,6 +47,24 @@ type fileState struct {
 	data       []byte
 }
 
+// CollectSnapshots generates and verifies a canonical patch from two protected
+// filesystem snapshots.
+func CollectSnapshots(beforeRoot, afterRoot string) (*Patch, error) {
+	before, err := snapshot(beforeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("original snapshot: %w", err)
+	}
+	after, err := snapshot(afterRoot)
+	if err != nil {
+		return nil, fmt.Errorf("changed snapshot: %w", err)
+	}
+	generated, err := generatePatch(before, after)
+	if err != nil {
+		return nil, err
+	}
+	return CollectPatch(beforeRoot, afterRoot, generated)
+}
+
 // CollectPatch verifies independently collected patch bytes against protected
 // original and frozen snapshot trees. Generating the diff remains a collector-
 // container responsibility; repository Git state is never trusted.
