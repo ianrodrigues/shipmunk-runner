@@ -63,7 +63,7 @@ func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, e
 		"--deadline", strconv.FormatInt(deadline.UnixNano(), 10),
 		"--poll-interval", pollInterval.String(),
 	)
-	command.Env = minimalEnvironment()
+	command.Env = ClientEnvironment()
 	command.Stderr = io.Discard
 	stdout, err := command.StdoutPipe()
 	if err != nil {

@@ -175,14 +175,14 @@ func (docker *Docker) runInput(ctx context.Context, timeout time.Duration, outpu
 	defer cancel()
 	command := exec.CommandContext(commandContext, docker.config.DockerExecutable, arguments...)
 	configureDockerCommand(command)
-	command.Env = minimalEnvironment()
+	command.Env = ClientEnvironment()
 	command.Stdin = stdin
 	var stdout, stderr boundedBuffer
 	stdout.limit = outputLimit
 	stderr.limit = outputLimit
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	err := command.Run()
+	err := runDockerCommand(command)
 	result := commandResult{stdout: stdout.String(), stderr: stderr.String()}
 	if err != nil {
 		if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
