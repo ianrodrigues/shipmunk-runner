@@ -88,3 +88,42 @@ func TestDecodeExecutionRejectsPatchlessChangeResult(t *testing.T) {
 		t.Fatal("accepted changes_proposed without exactly one verified patch")
 	}
 }
+
+func TestDecodeExecutionDiscardsUntrustedDiagnosticsAfterFailedExit(t *testing.T) {
+	claim := fixtureClaim(t)
+	var envelope map[string]any
+	if err := json.Unmarshal(normalizedOutputWithEvents(t, claim, "no_findings", 1), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	result := envelope["result"].(map[string]any)
+	result["tests"] = []any{map[string]any{"command": "SYNTHETIC_PRIVATE_PROVIDER_TEXT", "status": "passed", "summary": "private"}}
+	body := "SYNTHETIC_PRIVATE_PROVIDER_TEXT"
+	hash := sha256.Sum256([]byte(body))
+	envelope["artifacts"] = []any{map[string]any{"kind": "native_output", "bytes": body, "sha256": hex.EncodeToString(hash[:])}}
+
+	execution, err := DecodeExecution(claim, 1, marshalEnvelope(t, envelope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.Events) != 0 || len(execution.Artifacts) != 0 {
+		t.Fatalf("failed native execution retained diagnostics: %#v %#v", execution.Events, execution.Artifacts)
+	}
+	if tests, ok := execution.Result["tests"].([]any); !ok || len(tests) != 0 {
+		t.Fatalf("failed native execution retained tests: %#v", execution.Result["tests"])
+	}
+}
+
+func TestDecodeExecutionRejectsNativePatchReferenceBeforeUpload(t *testing.T) {
+	claim := fixtureClaim(t)
+	var envelope map[string]any
+	if err := json.Unmarshal(outputWithPatch(t, claim, "changes_proposed"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope["result"].(map[string]any)["patch_artifact"] = map[string]any{
+		"artifact_id": "01k4w000000000000000000099",
+		"sha256":      envelope["artifacts"].([]any)[0].(map[string]any)["sha256"],
+	}
+	if _, err := DecodeExecution(claim, 0, marshalEnvelope(t, envelope)); err == nil {
+		t.Fatal("accepted a native-selected artifact identity")
+	}
+}

@@ -51,13 +51,11 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 		result["summary"] = "Native executable exited unsuccessfully."
 		result["findings"] = []any{}
 		result["patch_artifact"] = nil
-		if _, ok := result["tests"].([]any); !ok {
-			result["tests"] = []any{}
-		}
+		result["tests"] = []any{}
 		result["usage"] = nil
 	}
 	execution := Execution{Result: result}
-	if raw, exists := envelope["events"]; exists {
+	if raw, exists := envelope["events"]; exists && !failedExit {
 		events, ok := raw.([]any)
 		if !ok {
 			return Execution{}, errors.New("native events must be an array")
@@ -79,7 +77,7 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 			execution.Events = append(execution.Events, encoded)
 		}
 	}
-	if raw, exists := envelope["artifacts"]; exists {
+	if raw, exists := envelope["artifacts"]; exists && !failedExit {
 		artifacts, ok := raw.([]any)
 		if !ok {
 			return Execution{}, errors.New("native artifacts must be an array")
@@ -96,11 +94,6 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 			if !kindOK || !bodyOK || !hashOK || (kind != "patch" && kind != "native_output") || hex.EncodeToString(actual[:]) != hash || len(body) > protocol.ResultMaxBytes {
 				return Execution{}, errors.New("native artifact kind, size or hash is invalid")
 			}
-			if failedExit && kind == "patch" {
-				// A failed native process is normalized to incomplete. Never upload
-				// a patch produced by its partial or otherwise failed execution.
-				continue
-			}
 			execution.Artifacts = append(execution.Artifacts, Artifact{Kind: kind, Bytes: []byte(body), SHA256: hash})
 		}
 	}
@@ -110,7 +103,7 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 			patches++
 		}
 	}
-	if patches > 1 || (patches == 0 && result["patch_artifact"] != nil) {
+	if patches > 1 || result["patch_artifact"] != nil {
 		return Execution{}, errors.New("native patch reference has no unique uploaded artifact")
 	}
 	if patches != 0 && result["outcome"] != "changes_proposed" {
