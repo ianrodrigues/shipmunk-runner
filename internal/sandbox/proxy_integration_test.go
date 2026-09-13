@@ -92,7 +92,7 @@ func TestDockerConfiguredProxyCredentialsDoNotEnterSandbox(t *testing.T) {
 	}
 	claim := liveTestClaim(t)
 	controlName := fmt.Sprintf("shipmunk-proxy-control-%s-%d", claim.AttemptID, claim.Fence)
-	controlID := query("create", "--name", controlName, "--label", "shipmunk.proxy-test=true", "--label", "shipmunk.proxy-test-attempt="+claim.AttemptID, "--network", "none", config.Image)
+	controlID := query("create", "--pull", "never", "--name", controlName, "--label", "shipmunk.proxy-test=true", "--label", "shipmunk.proxy-test-attempt="+claim.AttemptID, "--network", "none", config.Image)
 	if !containerIDPattern.MatchString(controlID) {
 		t.Fatal("Docker did not return an immutable ID for the positive-control container")
 	}
