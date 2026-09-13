@@ -1,0 +1,3 @@
+interface:
+  display_name: "Shipmunk Task Board"
+  short_description: "Execute Shipmunk work from the central GitHub Project"
