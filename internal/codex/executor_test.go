@@ -83,7 +83,10 @@ func TestExecutorPreservesWatchdogUncertaintyWhenSetupCleanupUnconfirmed(t *test
 
 func setupFailureWorkspace(t *testing.T) string {
 	t.Helper()
-	workspace := t.TempDir()
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(workspace, "sources", "0"), 0700); err != nil {
 		t.Fatal(err)
 	}
