@@ -399,9 +399,9 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 		return fmt.Errorf("resolve profile image for create reconciliation: %w", err)
 	}
 	for {
-		created, _, createErr := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, []string{
+		created, dispatched, createErr := runtime.call(ctx, runtime.config.dockerTimeout, dockerOutputLimit, checkpoint, nil, false, []string{
 			"create", "--name", sandboxName,
-			"--label", profileUIDLabel + "=recovery-reservation",
+			"--label", profileUIDLabel + "=true",
 			"--label", profileNameLabel + "=" + sandboxName,
 			"--label", profileReservationLabel + "=true",
 			"--entrypoint", "/usr/bin/env", image,
@@ -427,6 +427,16 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if dispatched {
+				return fmt.Errorf("%w: profile reservation create outcome is uncertain", ErrCreateUncertain)
+			}
+			timer := time.NewTimer(runtime.config.checkpointInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 			continue
 		}
 		if inspectErr != nil {
@@ -449,7 +459,7 @@ func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName s
 
 func (runtime *dockerRuntime) ownsReservation(inspection dockerInspection, sandboxName, image string) bool {
 	return inspection.Name == "/"+sandboxName &&
-		inspection.Config.Labels[profileUIDLabel] == "recovery-reservation" &&
+		inspection.Config.Labels[profileUIDLabel] == "true" &&
 		inspection.Config.Labels[profileNameLabel] == sandboxName &&
 		inspection.Config.Labels[profileReservationLabel] == "true" &&
 		inspection.Config.Image == image && !inspection.State.Running && len(inspection.Mounts) == 0
