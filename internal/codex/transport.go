@@ -299,8 +299,7 @@ func (t *DockerTransport) serviceBridge(ctx context.Context) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	stat, statOK := info.Sys().(*syscall.Stat_t)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || !statOK || stat.Nlink != 1 || info.Size() > MaxCommandRequestBytes {
+	if err != nil || !validBridgeRequestInfo(info) {
 		return errors.New("repository command request is invalid")
 	}
 	request, err := root.OpenFile("request.json", os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -354,6 +353,14 @@ func (t *DockerTransport) serviceBridge(ctx context.Context) error {
 		return errors.New("cannot publish repository response")
 	}
 	return nil
+}
+
+func validBridgeRequestInfo(info os.FileInfo) bool {
+	if info == nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > MaxCommandRequestBytes {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Nlink == 1
 }
 
 type bridgeRequest struct {
