@@ -306,7 +306,7 @@ func (runtime *dockerRuntime) Run(ctx context.Context, sandboxName, agent, opera
 		limit = runtime.config.loginTimeout
 	}
 	arguments := []string{
-		"exec", "-i", sandboxName, "/usr/bin/env", "-i",
+		"exec", "-i", inspection.ID, "/usr/bin/env", "-i",
 		"HOME=/profile", "CODEX_HOME=/profile/.codex", "CLAUDE_CONFIG_DIR=/profile/.claude",
 		"XDG_CONFIG_HOME=/profile/.config", "XDG_CACHE_HOME=/profile/.cache",
 		"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TERM=dumb",

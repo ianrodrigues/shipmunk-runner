@@ -850,6 +850,9 @@ func validateCompletionResponse(response, pending map[string]any, submitted Heal
 		!healthOK || !reasonExists || !reasonOK || !validCompletionHealth(Health{Health: health, Reason: reason}) {
 		return errors.New("profile completion response is invalid")
 	}
+	if health == HealthReady && submitted.Health != HealthReady {
+		return errors.New("profile completion response is inconsistent")
+	}
 	if active && (submitted.Health != HealthReady || health != HealthReady || reason != "") {
 		return errors.New("profile completion response is inconsistent")
 	}
