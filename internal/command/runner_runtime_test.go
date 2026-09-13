@@ -127,6 +127,65 @@ func TestRunnerTokenReadIsPrivateBoundedAndRejectsLinks(t *testing.T) {
 	}
 }
 
+func TestRunnerTokenRejectsPathReplacementDuringRead(t *testing.T) {
+	for _, phase := range []string{"after open", "before read", "after read"} {
+		t.Run(phase, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "runner.token")
+			if err := os.WriteFile(path, []byte("123|synthetic-token"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			replacePath := func() {
+				t.Helper()
+				oldPath := filepath.Join(directory, "opened-token")
+				if err := os.Rename(path, oldPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("123|replacement-token"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hooks := runnerTokenReadHooks{}
+			switch phase {
+			case "after open":
+				hooks.afterOpen = replacePath
+			case "before read":
+				hooks.beforeRead = replacePath
+			case "after read":
+				hooks.afterRead = replacePath
+			}
+			token, err := readRunnerTokenWithHooks(path, hooks)
+			if err == nil || token != "" {
+				t.Fatal("accepted a token after its path was replaced")
+			}
+			if strings.Contains(err.Error(), "synthetic-token") || strings.Contains(err.Error(), "replacement-token") {
+				t.Fatal("token content appeared in a read error")
+			}
+		})
+	}
+}
+
+func TestFileIsTerminalRejectsNullDeviceAndPipes(t *testing.T) {
+	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	if isTerminal(null) {
+		t.Fatal("treated /dev/null as a terminal")
+	}
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	if isTerminal(reader) || isTerminal(writer) {
+		t.Fatal("treated a pipe as a terminal")
+	}
+}
+
 func TestDockerPreflightUsesDockerConfigurationWithoutProviderCredentials(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///synthetic/docker.sock")
 	t.Setenv("DOCKER_CONTEXT", "synthetic-context")
