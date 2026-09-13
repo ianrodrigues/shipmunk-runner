@@ -19,8 +19,25 @@ func TestExecutionInputsSelectHeadAndReadPrivateTrustedBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, trusted, err := executionInputs(claim, workspace)
-	if err != nil || source != filepath.Join(workspace, "sources", "1") || trusted != "Approved agents." {
-		t.Fatalf("inputs = %q %q %v", source, trusted, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if source.Name() != filepath.Join(workspace, "sources", "1") || trusted != "Approved agents." {
+		t.Fatalf("inputs = %q %q", source.Name(), trusted)
+	}
+}
+
+func TestClaimCommandBudgetUsesValidatedMaxTurns(t *testing.T) {
+	claim := protocol.Claim{Manifest: map[string]any{"effective_config": map[string]any{"max_turns": json.Number("3")}}}
+	if budget, err := claimCommandBudget(claim); err != nil || budget != 3 {
+		t.Fatalf("budget = %d, %v", budget, err)
+	}
+	for _, value := range []any{nil, 3, json.Number("0"), json.Number("1001"), json.Number("1.5")} {
+		claim.Manifest["effective_config"].(map[string]any)["max_turns"] = value
+		if _, err := claimCommandBudget(claim); err == nil {
+			t.Fatalf("accepted invalid max_turns %#v", value)
+		}
 	}
 }
 
