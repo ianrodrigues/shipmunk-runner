@@ -113,9 +113,9 @@ func (m *Mediator) Handle(ctx context.Context, raw []byte) ([]byte, error) {
 }
 
 type commandRequest struct {
-	Fence   int64
-	ID      int64
-	Command string
+	Fence   int64  `json:"fence"`
+	ID      int64  `json:"id"`
+	Command string `json:"command"`
 }
 
 type commandResponse struct {
