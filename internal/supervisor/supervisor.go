@@ -79,12 +79,22 @@ type Watchdog interface {
 	Arm(string, time.Time, time.Time) (WatchdogLease, error)
 }
 
+// Executor owns a composite native execution boundary. Execute must return only
+// bounded, normalized output. Cleanup must reconcile every resource it may have
+// created, including resources left by a partially completed Execute call, and
+// release reserved capacity only after that reconciliation succeeds.
+type Executor interface {
+	Execute(context.Context, protocol.Claim, map[string]any, string) (Execution, error)
+	Cleanup(context.Context, protocol.Claim) error
+}
+
 type Supervisor struct {
 	Client            Client
 	State             StateStore
 	Workspaces        Workspaces
 	Sandbox           Sandbox
 	Watchdog          Watchdog
+	Executor          Executor
 	mu                sync.Mutex
 	blocked           bool
 	heartbeatInterval time.Duration
@@ -108,7 +118,8 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	if s.blocked {
 		return Outcome{}, errors.New("supervisor requires restart after journal failure")
 	}
-	if s.Client == nil || s.State == nil || s.Workspaces == nil || s.Sandbox == nil || s.Watchdog == nil {
+	if s.Client == nil || s.State == nil || s.Workspaces == nil ||
+		(s.Executor == nil && (s.Sandbox == nil || s.Watchdog == nil)) {
 		return Outcome{}, errors.New("supervisor dependencies are incomplete")
 	}
 	if err := ctx.Err(); err != nil {
@@ -182,7 +193,11 @@ func (s *Supervisor) reconcile(ctx context.Context) error {
 	if state.Workspace != s.Workspaces.Path(claim) {
 		return errors.New("recovery workspace does not match active attempt")
 	}
-	if state.SandboxID != nil {
+	if s.Executor != nil {
+		if err := s.Executor.Cleanup(ctx, claim); err != nil {
+			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
+		}
+	} else if state.SandboxID != nil {
 		name, err := s.Sandbox.Name(claim)
 		if err != nil {
 			return err
@@ -229,6 +244,16 @@ func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, erro
 	if path != s.Workspaces.Path(claim) {
 		return "", errors.New("prepared workspace does not match attempt")
 	}
+	if s.Executor != nil {
+		execution, err := s.Executor.Execute(g.ctx, claim, workspace.Sanitize(claim.Manifest), path)
+		if err != nil {
+			return "", err
+		}
+		if err := g.ctx.Err(); err != nil {
+			return "", err
+		}
+		return s.publishExecution(g, claim, execution)
+	}
 	name, err := s.Sandbox.Name(claim)
 	if err != nil {
 		return "", err
@@ -269,6 +294,13 @@ func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, erro
 	if err != nil {
 		return "", err
 	}
+	return s.publishExecution(g, claim, execution)
+}
+
+func (s *Supervisor) publishExecution(g *leaseGuard, claim protocol.Claim, execution Execution) (string, error) {
+	if execution.Result == nil {
+		return "", errors.New("native execution returned no result")
+	}
 	for start := 0; start < len(execution.Events); start += 100 {
 		end := min(start+100, len(execution.Events))
 		raw, err := json.Marshal(execution.Events[start:end])
@@ -307,7 +339,11 @@ func (s *Supervisor) cleanup(claim protocol.Claim, state attemptstate.State, wat
 	// Revoked execution authority cannot cancel mandatory cleanup.
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	if state.SandboxID != nil {
+	if s.Executor != nil {
+		if err := s.Executor.Cleanup(ctx, claim); err != nil {
+			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
+		}
+	} else if state.SandboxID != nil {
 		if err := s.Sandbox.Reconcile(ctx, *state.SandboxID); err != nil {
 			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 		}
