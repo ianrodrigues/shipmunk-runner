@@ -644,6 +644,23 @@ exit 1
 			t.Fatalf("watchdog left Codex resource %s present: %v\n%s", suffix, err, calls)
 		}
 	}
+	for _, suffix := range []string{"", "-repo", "-diff", "-workspace"} {
+		if err := os.WriteFile(filepath.Join(root, name+suffix), []byte("present"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- (&Docker{config: Config{DockerExecutable: docker, CommandTimeout: time.Second, PollInterval: 10 * time.Millisecond}}).cleanupCodexWatchdog(name, true)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Codex watchdog did not clear create-in-flight after removing the owned volume")
+	}
 }
 
 func TestRunWatchdogWaitsThroughAbsentBeforeCreateWindow(t *testing.T) {

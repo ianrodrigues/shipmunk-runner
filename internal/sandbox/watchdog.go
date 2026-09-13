@@ -638,11 +638,11 @@ func (docker *Docker) cleanupCodexWatchdog(name string, createInFlight bool) err
 		if err != nil || !absent {
 			return errors.New("watchdog could not confirm Codex volume absence")
 		}
-		if createInFlight {
-			time.Sleep(docker.config.PollInterval)
-			continue
-		}
-		return nil
+		// The volume is the topology's first Docker side effect. Observing its
+		// owned label and then confirming its removal proves the pending create
+		// sequence was accepted and has been fenced by cleanup.
+		createInFlight = false
+		continue
 	}
 }
 

@@ -458,6 +458,30 @@ func TestCompositeRecoveryCarriesDurableProfileBinding(t *testing.T) {
 	}
 }
 
+func TestCompositeRecoveryRefusesLegacySandboxWithoutReconciler(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	legacyID := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		LeaseExpiresAt: claim.LeaseExpiresAt, Deadline: claim.Deadline,
+		Workspace: w.Path(claim), SandboxID: &legacyID,
+	}
+	executor := &fixtureExecutor{}
+	s.Executor = executor
+	s.Sandbox = nil
+	s.Watchdog = nil
+	c.claim = nil
+
+	out, err := s.RunOnce(context.Background())
+	if !errors.Is(err, ErrCleanupUnconfirmed) || out.Worked || executor.cleanups != 0 || c.acks != 0 || w.removes != 0 {
+		t.Fatalf("legacy sandbox was released without a reconciler: %+v cleanups=%d acks=%d removes=%d err=%v", out, executor.cleanups, c.acks, w.removes, err)
+	}
+	if saved, _ := state.Load(); saved == nil || saved.SandboxID == nil || *saved.SandboxID != legacyID {
+		t.Fatal("legacy sandbox journal was not retained")
+	}
+}
+
 func TestCleanupFailureRetainsJournalAndBlocksReplacement(t *testing.T) {
 	for _, mode := range []string{"container", "workspace", "acknowledgement"} {
 		t.Run(mode, func(t *testing.T) {
