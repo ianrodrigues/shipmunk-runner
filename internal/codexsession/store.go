@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
@@ -83,6 +84,7 @@ func New(id, binding string) (Session, error) {
 type Store struct {
 	root     string
 	rootInfo os.FileInfo
+	writeMu  sync.Mutex
 }
 
 // Open creates a private canonical root and rejects every symlink component.
@@ -180,6 +182,9 @@ func (store *Store) Read(runID string) (*Session, error) {
 
 // Write atomically and durably replaces the named run's compatible record.
 func (store *Store) write(runID, binding string, session Session) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+
 	path, err := store.path(runID)
 	if err != nil {
 		return err

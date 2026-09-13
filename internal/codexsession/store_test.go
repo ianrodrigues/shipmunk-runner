@@ -230,6 +230,48 @@ func TestStoreConcurrentReadsAndWritesRemainComplete(t *testing.T) {
 	}
 }
 
+func TestStoreConcurrentConflictingBindingsCannotReplaceEachOther(t *testing.T) {
+	store := openTestStore(t)
+	firstClaim := testClaim()
+	secondClaim := testClaim()
+	secondClaim.Manifest["repository_id"] = 999
+	firstBinding := mustBinding(t, firstClaim)
+	secondBinding := mustBinding(t, secondClaim)
+	first, _ := New(testSession, firstBinding)
+	second, _ := New("0299a213-81c0-7800-8aa1-bbab2a035a54", secondBinding)
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, candidate := range []struct {
+		claim   protocol.Claim
+		session Session
+	}{{firstClaim, first}, {secondClaim, second}} {
+		candidate := candidate
+		go func() {
+			<-start
+			results <- store.Persist(candidate.claim, candidate.session)
+		}()
+	}
+	close(start)
+
+	successes := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful conflicting writes = %d, want exactly 1", successes)
+	}
+	persisted, err := store.Read(testRun)
+	if err != nil || persisted == nil {
+		t.Fatalf("read winning session = %#v, %v", persisted, err)
+	}
+	if *persisted != first && *persisted != second {
+		t.Fatalf("persisted torn or unexpected session: %#v", persisted)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
