@@ -157,6 +157,10 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	}
 	stream, parseErr := Parse([]byte(result.Stdout), []byte(result.Stderr))
 	if parseErr != nil {
+		var failure *ClassifiedFailure
+		if errors.As(parseErr, &failure) {
+			return failureExecution(claim, failure.Reason, result.ExitCode), nil
+		}
 		return supervisor.Execution{}, errors.New("Codex result parsing failed")
 	}
 	if result.ExitCode != 0 {
@@ -178,6 +182,39 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 		}
 	}
 	return normalizeExecution(ctx, claim, stream, transport)
+}
+
+func failureExecution(claim protocol.Claim, reason FailureReason, exitCode int) supervisor.Execution {
+	summaries := map[FailureReason]string{
+		FailureAuthExpired:         "Native runtime authentication must be renewed.",
+		FailureRateLimited:         "Native runtime account limit prevented execution.",
+		FailureApprovalRequired:    "Native runtime requires approval unavailable in unattended execution.",
+		FailureModelUnavailable:    "Native backend rejected the configured model. Select a supported model for this profile.",
+		FailureInvalidOutputSchema: "Native backend rejected the structured output schema. Update the runner before retrying.",
+	}
+	summary := summaries[reason] + " Stage: execution. Reason: " + string(reason) + ". Native exit code: "
+	if exitCode < 0 || exitCode > 255 {
+		summary += "unavailable."
+	} else {
+		summary += fmt.Sprintf("%d.", exitCode)
+	}
+	outcome := "incomplete"
+	if reason == FailureApprovalRequired {
+		outcome = "needs_input"
+	}
+	event, _ := json.Marshal(map[string]any{
+		"protocol_version": protocol.Version, "attempt_id": claim.AttemptID, "fence": claim.Fence,
+		"sequence": 1, "type": "progress", "timestamp": time.Now().UTC().Format(time.RFC3339),
+		"payload": map[string]any{"message": summary},
+	})
+	return supervisor.Execution{
+		Events: []json.RawMessage{event},
+		Result: map[string]any{
+			"protocol_version": protocol.Version, "run_id": claim.RunID, "attempt_id": claim.AttemptID,
+			"fence": claim.Fence, "outcome": outcome, "summary": summary, "findings": []any{},
+			"tests": []any{}, "patch_artifact": nil, "usage": nil,
+		},
+	}
 }
 
 func (e *Executor) probe(ctx context.Context, t agentTransport) error {
