@@ -155,6 +155,9 @@ func installRelease(archive io.Reader, releases string, platform shipmunkrelease
 		if err := verifyRelease(destination, platform.Files); err != nil {
 			return "", errors.New("existing runner release was altered")
 		}
+		if err := syncDirectory(releases); err != nil {
+			return "", err
+		}
 		return destination, nil
 	} else if !os.IsNotExist(err) {
 		return "", errors.New("cannot inspect runner release destination")
