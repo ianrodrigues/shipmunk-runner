@@ -1,4 +1,3 @@
-// Package install guards state-preserving runner renewal and configuration activation.
 package install
 
 import (
@@ -6,16 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
+	"github.com/ianrodrigues/shipmunk-runner/internal/attemptstate"
+	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
 const maxConfigBytes = 16 << 10
+
+const activationJournalName = ".activation.json"
 
 type Identity struct {
 	BaseURL   string
@@ -29,9 +30,16 @@ type Guard struct {
 	Rename   func(string, string) error
 }
 
-// Validate refuses renewal while work or recovery remains unresolved. It never
-// removes or rewrites state, profiles, native homes, or journals.
 func (guard Guard) Validate() error {
+	return guard.withLocks(func(state *attemptstate.Store) error {
+		if err := guard.recover(); err != nil {
+			return err
+		}
+		return guard.validateLocked(state)
+	})
+}
+
+func (guard Guard) validateLocked(state *attemptstate.Store) error {
 	if protocol.ValidateProfileID(guard.Identity.RunnerID) != nil || protocol.ValidateProfileID(guard.Identity.ProfileID) != nil {
 		return errors.New("runner installation identity is invalid")
 	}
@@ -51,7 +59,8 @@ func (guard Guard) Validate() error {
 	if err := optionalPrivateDirectory(stateRoot); err != nil {
 		return fmt.Errorf("runner state layout is unsafe: %w", err)
 	}
-	if err := absent(filepath.Join(stateRoot, "active-attempt.json")); err != nil {
+	active, err := state.Load()
+	if err != nil || active != nil {
 		return fmt.Errorf("runner attempt recovery must be resolved before renewal: %w", err)
 	}
 	profiles := filepath.Join(guard.Root, "profiles")
@@ -92,12 +101,7 @@ func (guard Guard) Validate() error {
 	return nil
 }
 
-// Activate replaces config.json and both tokens as one failure-atomic group.
-// If activation fails, the exact prior files are restored.
 func (guard Guard) Activate(config, profileToken, executionToken []byte) error {
-	if err := guard.Validate(); err != nil {
-		return err
-	}
 	identity, err := decodeIdentity(config)
 	if err != nil || identity != guard.Identity {
 		return errors.New("new runner configuration identity does not match the installation")
@@ -109,95 +113,173 @@ func (guard Guard) Activate(config, profileToken, executionToken []byte) error {
 		return fmt.Errorf("execution token is invalid: %w", err)
 	}
 	values := map[string][]byte{"config.json": config, "profile.token": profileToken, "execution.token": executionToken}
-	order := []string{"profile.token", "execution.token", "config.json"}
-	if err := guard.Validate(); err != nil {
+	return guard.withLocks(func(state *attemptstate.Store) error {
+		if err := guard.recover(); err != nil {
+			return err
+		}
+		if err := guard.validateLocked(state); err != nil {
+			return err
+		}
+		return guard.activateLocked(values)
+	})
+}
+
+type activationJournal struct {
+	Version int             `json:"version"`
+	Files   map[string]bool `json:"files"`
+}
+
+var activationOrder = []string{"profile.token", "execution.token", "config.json"}
+
+func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
+	if protocol.ValidateProfileID(guard.Identity.RunnerID) != nil || protocol.ValidateProfileID(guard.Identity.ProfileID) != nil {
+		return errors.New("runner installation identity is invalid")
+	}
+	if !filepath.IsAbs(guard.Root) || filepath.Clean(guard.Root) != guard.Root || filepath.Base(guard.Root) != guard.Identity.RunnerID {
+		return errors.New("runner installation path is invalid")
+	}
+	if err := rejectSymlinkComponents(guard.Root); err != nil {
 		return err
 	}
-	temporary := map[string]string{}
-	backups := map[string]string{}
-	cleanup := func() {
-		for _, path := range temporary {
-			_ = os.Remove(path)
+	if err := privateDirectory(guard.Root); err != nil {
+		return fmt.Errorf("runner installation directory is unsafe: %w", err)
+	}
+	state, err := attemptstate.Open(filepath.Join(guard.Root, "state", "active-attempt.json"))
+	if err != nil {
+		return fmt.Errorf("runner is active or its state is unsafe: %w", err)
+	}
+	defer state.Close()
+	store, err := profile.Open(filepath.Join(guard.Root, "profiles"), guard.Identity.ProfileID)
+	if err != nil {
+		return fmt.Errorf("runner profile is unsafe: %w", err)
+	}
+	defer store.Close()
+	return store.WithExclusive(func(*profile.Store) error { return operation(state) })
+}
+
+func (guard Guard) activateLocked(values map[string][]byte) error {
+	journal := activationJournal{Version: 1, Files: make(map[string]bool)}
+	for _, name := range activationOrder {
+		journal.Files[name] = false
+		path := filepath.Join(guard.Root, name)
+		old, err := readPrivateFile(path, maxConfigBytes)
+		if err == nil {
+			journal.Files[name] = true
+			if err := writePrivateExclusive(guard.backup(name), old); err != nil {
+				return guard.abortPreparation(err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return guard.abortPreparation(err)
 		}
-		for _, path := range backups {
-			_ = os.Remove(path)
+		if err := writePrivateExclusive(guard.pending(name), values[name]); err != nil {
+			return guard.abortPreparation(err)
 		}
 	}
-	defer cleanup()
-	for _, name := range order {
-		path := filepath.Join(guard.Root, name)
-		if err := validateOptionalFile(path); err != nil {
-			return fmt.Errorf("existing runner configuration is unsafe: %w", err)
-		}
-		file, err := os.CreateTemp(guard.Root, ".activate-*")
-		if err != nil {
-			return err
-		}
-		temporary[name] = file.Name()
-		if err := file.Chmod(0600); err == nil {
-			_, err = file.Write(values[name])
-		}
-		if err == nil {
-			err = file.Sync()
-		}
-		closeErr := file.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			return fmt.Errorf("persist runner configuration: %w", err)
-		}
-		if _, err := os.Lstat(path); err == nil {
-			backup := filepath.Join(guard.Root, ".rollback-"+name)
-			if err := os.Link(path, backup); err != nil {
-				return fmt.Errorf("preserve runner configuration: %w", err)
-			}
-			backups[name] = backup
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+	raw, _ := json.Marshal(journal)
+	if err := writePrivateExclusive(filepath.Join(guard.Root, activationJournalName), raw); err != nil {
+		return guard.abortPreparation(err)
+	}
+	if err := syncPrivateDirectory(guard.Root); err != nil {
+		return err
 	}
 	rename := guard.Rename
 	if rename == nil {
 		rename = os.Rename
 	}
-	committed := []string{}
-	for _, name := range order {
-		path := filepath.Join(guard.Root, name)
-		if err := rename(temporary[name], path); err != nil {
-			rollbackErr := rollback(guard.Root, committed, backups)
-			return errors.Join(fmt.Errorf("activate runner configuration: %w", err), rollbackErr)
+	for _, name := range activationOrder {
+		if err := rename(guard.pending(name), filepath.Join(guard.Root, name)); err != nil {
+			return errors.Join(fmt.Errorf("activate runner configuration: %w", err), guard.recover())
 		}
-		delete(temporary, name)
-		committed = append(committed, name)
 	}
-	directory, err := os.Open(guard.Root)
-	if err != nil {
+	if err := syncPrivateDirectory(guard.Root); err != nil {
 		return err
 	}
-	err = directory.Sync()
-	closeErr := directory.Close()
-	if err != nil {
-		return err
-	}
-	return closeErr
+	return guard.finishActivation()
 }
 
-func rollback(root string, committed []string, backups map[string]string) error {
+func (guard Guard) recover() error {
+	raw, err := readPrivateFile(filepath.Join(guard.Root, activationJournalName), maxConfigBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return guard.removePreparation()
+	}
+	if err != nil {
+		return fmt.Errorf("activation recovery journal is unsafe: %w", err)
+	}
+	value, err := protocol.Decode(raw, maxConfigBytes)
+	object, ok := value.(map[string]any)
+	if err != nil || !ok || len(object) != 2 || object["version"] != json.Number("1") {
+		return errors.New("activation recovery journal is invalid")
+	}
+	files, ok := object["files"].(map[string]any)
+	if !ok || len(files) != len(activationOrder) {
+		return errors.New("activation recovery journal is invalid")
+	}
+	for _, name := range activationOrder {
+		existed, ok := files[name].(bool)
+		if !ok {
+			return errors.New("activation recovery journal is invalid")
+		}
+		path := filepath.Join(guard.Root, name)
+		if existed {
+			old, err := readPrivateFile(guard.backup(name), maxConfigBytes)
+			if err != nil {
+				return errors.New("activation backup is unavailable")
+			}
+			_ = os.Remove(guard.pending(name))
+			if err := writePrivateExclusive(guard.pending(name), old); err != nil {
+				return err
+			}
+			if err := os.Rename(guard.pending(name), path); err != nil {
+				return err
+			}
+		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := syncPrivateDirectory(guard.Root); err != nil {
+		return err
+	}
+	return guard.finishActivation()
+}
+
+func (guard Guard) finishActivation() error {
+	if err := os.Remove(filepath.Join(guard.Root, activationJournalName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := syncPrivateDirectory(guard.Root); err != nil {
+		return err
+	}
+	for _, name := range activationOrder {
+		for _, path := range []string{guard.backup(name), guard.pending(name)} {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return syncPrivateDirectory(guard.Root)
+}
+
+func (guard Guard) abortPreparation(cause error) error {
+	return errors.Join(cause, guard.removePreparation())
+}
+
+func (guard Guard) removePreparation() error {
 	var result error
-	for index := len(committed) - 1; index >= 0; index-- {
-		name := committed[index]
-		path := filepath.Join(root, name)
-		if backup, ok := backups[name]; ok {
-			if err := os.Rename(backup, path); err != nil {
+	for _, name := range activationOrder {
+		for _, path := range []string{guard.backup(name), guard.pending(name)} {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				result = errors.Join(result, err)
 			}
-			delete(backups, name)
-		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, err)
 		}
 	}
 	return result
+}
+
+func (guard Guard) backup(name string) string {
+	return filepath.Join(guard.Root, ".activation-backup-"+name)
+}
+func (guard Guard) pending(name string) string {
+	return filepath.Join(guard.Root, ".activation-new-"+name)
 }
 
 func (guard Guard) validateExistingIdentity() error {
@@ -220,25 +302,38 @@ func decodeIdentity(raw []byte) (Identity, error) {
 	if len(raw) == 0 || len(raw) > maxConfigBytes {
 		return Identity{}, errors.New("runner configuration is invalid")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	var data map[string]any
-	if err := decoder.Decode(&data); err != nil {
-		return Identity{}, err
+	value, err := protocol.Decode(raw, maxConfigBytes)
+	data, ok := value.(map[string]any)
+	if err != nil || !ok || (len(data) != 4 && len(data) != 5) {
+		return Identity{}, errors.New("runner configuration is invalid")
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return Identity{}, errors.New("runner configuration has trailing data")
+	for _, key := range []string{"image_id", "base_url", "runner_id", "profile_id"} {
+		if _, ok := data[key]; !ok {
+			return Identity{}, errors.New("runner configuration is invalid")
+		}
+	}
+	for key := range data {
+		if key != "image_id" && key != "base_url" && key != "runner_id" && key != "profile_id" && key != "expires_at" {
+			return Identity{}, errors.New("runner configuration is invalid")
+		}
+	}
+	if expires, present := data["expires_at"]; present {
+		if value, ok := expires.(string); !ok || value == "" {
+			return Identity{}, errors.New("runner configuration is invalid")
+		}
 	}
 	baseURL, baseOK := data["base_url"].(string)
 	runnerID, runnerOK := data["runner_id"].(string)
 	profileID, profileOK := data["profile_id"].(string)
-	if !baseOK || !runnerOK || !profileOK || baseURL == "" {
+	image, imageOK := data["image_id"].(string)
+	if !baseOK || !runnerOK || !profileOK || !imageOK || baseURL == "" || image == "" {
 		return Identity{}, errors.New("runner configuration identity is incomplete")
 	}
 	return Identity{BaseURL: baseURL, RunnerID: runnerID, ProfileID: profileID}, nil
 }
 
 func validToken(value []byte) error {
-	if len(value) == 0 || len(value) > 4096 || strings.TrimSpace(string(value)) != string(value) || bytes.ContainsAny(value, "\r\n\x00") {
+	if len(value) == 0 || len(value) > 4096 || strings.TrimSpace(string(value)) != string(value) || bytes.ContainsAny(value, "\r\n\t \x00") {
 		return errors.New("token bytes are invalid")
 	}
 	return nil
@@ -263,25 +358,12 @@ func validateOptionalFile(path string) error {
 	return err
 }
 
-func readPrivateFile(path string, limit int64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 || info.Size() > limit {
-		return nil, errors.New("file type, ownership, permissions, or size is unsafe")
-	}
-	return os.ReadFile(path)
-}
-
 func privateDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || info.Mode().Perm() != 0700 || stat.Uid != uint32(os.Geteuid()) {
+	if !info.IsDir() || info.Mode().Perm() != 0700 || fileOwner(info) != os.Geteuid() {
 		return errors.New("directory is not private and owned")
 	}
 	return nil

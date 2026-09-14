@@ -1,11 +1,16 @@
 package install
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/ianrodrigues/shipmunk-runner/internal/attemptstate"
+	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 )
 
 const (
@@ -35,6 +40,109 @@ func TestGuardPreservesStateAndProfilesDuringRenewal(t *testing.T) {
 		if err != nil || string(raw) != want {
 			t.Fatalf("%s = %q, %v", path, raw, err)
 		}
+	}
+}
+
+func TestGuardUsesRuntimeAttemptAndProfileLocks(t *testing.T) {
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	config := configuration(identity, "image")
+	t.Run("attempt", func(t *testing.T) {
+		root := installation(t)
+		state, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer state.Close()
+		if err := (Guard{Root: root, Identity: identity}).Activate(config, []byte("profile"), []byte("execution")); err == nil {
+			t.Fatal("activation ignored active runner lock")
+		}
+		if _, err := os.Stat(filepath.Join(root, "config.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("activation mutated configuration under contention")
+		}
+	})
+	t.Run("profile", func(t *testing.T) {
+		root := installation(t)
+		store, err := profile.Open(filepath.Join(root, "profiles"), profileID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		err = store.WithExclusive(func(*profile.Store) error {
+			if err := (Guard{Root: root, Identity: identity}).Activate(config, []byte("profile"), []byte("execution")); err == nil {
+				t.Fatal("activation ignored active profile lock")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestGuardRecoversDurableIncompleteActivation(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	old := map[string][]byte{"config.json": configuration(identity, "old"), "profile.token": []byte("old-profile"), "execution.token": []byte("old-execution")}
+	guard := Guard{Root: root, Identity: identity}
+	journal := activationJournal{Version: 1, Files: map[string]bool{}}
+	for _, name := range activationOrder {
+		mustWrite(t, filepath.Join(root, name), old[name])
+		mustWrite(t, guard.backup(name), old[name])
+		journal.Files[name] = true
+	}
+	mustWrite(t, filepath.Join(root, "profile.token"), []byte("new-profile"))
+	raw, _ := json.Marshal(journal)
+	mustWrite(t, filepath.Join(root, activationJournalName), raw)
+	if err := guard.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, expected := range old {
+		actual, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil || string(actual) != string(expected) {
+			t.Fatalf("%s was not recovered: %q, %v", name, actual, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, activationJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("recovery journal remained")
+	}
+}
+
+func TestGuardRejectsDuplicateAndUnknownConfiguration(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	valid := string(configuration(identity, "image"))
+	for _, raw := range []string{
+		strings.Replace(valid, `"base_url":`, `"base_url":"https://other.example","base_url":`, 1),
+		strings.TrimSuffix(valid, "}") + `,"unknown":true}`,
+	} {
+		if err := (Guard{Root: root, Identity: identity}).Activate([]byte(raw), []byte("profile"), []byte("execution")); err == nil {
+			t.Fatal("accepted non-strict configuration")
+		}
+	}
+	legacy := strings.TrimSuffix(valid, "}") + `,"expires_at":"2099-01-01T00:00:00Z"}`
+	if decoded, err := decodeIdentity([]byte(legacy)); err != nil || decoded != identity {
+		t.Fatalf("legacy configuration identity = %#v, %v", decoded, err)
+	}
+}
+
+func TestPrivateReadRejectsLinksAndSpecialFilesWithoutBlocking(t *testing.T) {
+	root := canonicalPrivateTemp(t)
+	regular := filepath.Join(root, "regular")
+	mustWrite(t, regular, []byte("private"))
+	for name, create := range map[string]func(string) error{
+		"symlink":  func(path string) error { return os.Symlink(regular, path) },
+		"hardlink": func(path string) error { return os.Link(regular, path) },
+		"fifo":     func(path string) error { return syscall.Mkfifo(path, 0600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(root, name)
+			if err := create(path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readPrivateFile(path, 100); err == nil {
+				t.Fatal("accepted unsafe private file")
+			}
+		})
 	}
 }
 
@@ -114,6 +222,18 @@ func installation(t *testing.T) string {
 	}
 	root := filepath.Join(temporary, runnerID)
 	mustMkdir(t, root)
+	return root
+}
+
+func canonicalPrivateTemp(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	return root
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -21,6 +22,9 @@ type runnerTokenReadHooks struct {
 }
 
 func readRunnerTokenWithHooks(path string, hooks runnerTokenReadHooks) (string, error) {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), ".activation.json")); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("runner configuration activation is incomplete")
+	}
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return "", errors.New("cannot open runner token")

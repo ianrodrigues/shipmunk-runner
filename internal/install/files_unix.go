@@ -3,6 +3,8 @@
 package install
 
 import (
+	"errors"
+	"io"
 	"os"
 	"syscall"
 )
@@ -21,4 +23,57 @@ func fileNlink(info os.FileInfo) uint64 {
 		return 0
 	}
 	return uint64(stat.Nlink)
+}
+
+func fileOwner(info os.FileInfo) int { return fileUID(info) }
+
+func readPrivateFile(path string, limit int64) ([]byte, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	before, err := inspectPrivateFile(path, file, limit)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(raw)) > limit {
+		return nil, errors.New("private file is oversized or unreadable")
+	}
+	after, err := inspectPrivateFile(path, file, limit)
+	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || int64(len(raw)) != after.Size() {
+		return nil, errors.New("private file changed while reading")
+	}
+	return raw, nil
+}
+
+func inspectPrivateFile(path string, file *os.File, limit int64) (os.FileInfo, error) {
+	opened, err := file.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !os.SameFile(opened, current) || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0600 || fileUID(opened) != os.Geteuid() || fileNlink(opened) != 1 || opened.Size() > limit {
+		return nil, errors.New("file type, ownership, permissions, links, or size is unsafe")
+	}
+	return opened, nil
+}
+
+func writePrivateExclusive(path string, raw []byte) error {
+	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	_, writeErr := file.Write(raw)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	return errors.Join(writeErr, syncErr, closeErr)
+}
+
+func syncPrivateDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(directory.Sync(), directory.Close())
 }
