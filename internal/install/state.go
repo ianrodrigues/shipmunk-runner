@@ -453,9 +453,16 @@ func (guard Guard) validateExistingIdentity() error {
 	if err != nil {
 		return fmt.Errorf("existing runner configuration is unsafe: %w", err)
 	}
-	configuration, err := decodeConfiguration(raw)
+	configuration, err := decodeExistingConfiguration(raw)
 	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
 		return errors.New("setup identity differs from the existing runner")
+	}
+	if configuration.ImageID == "" {
+		for _, name := range []string{"run", "connect"} {
+			if err := absent(filepath.Join(guard.Root, name)); err != nil {
+				return errors.New("setup identity differs from the existing runner")
+			}
+		}
 	}
 	return nil
 }
@@ -506,15 +513,38 @@ func (guard Guard) Configuration() (Configuration, error) {
 }
 
 func decodeConfiguration(raw []byte) (installedConfiguration, error) {
+	return decodeConfigurationShape(raw, true)
+}
+
+func decodeExistingConfiguration(raw []byte) (installedConfiguration, error) {
+	if configuration, err := decodeConfiguration(raw); err == nil {
+		return configuration, nil
+	}
+	configuration, err := decodeConfigurationShape(raw, false)
+	if err != nil || configuration.ReleaseVersion != "v0.1.0-alpha.5" {
+		return installedConfiguration{}, errors.New("runner configuration is invalid")
+	}
+	return configuration, nil
+}
+
+func decodeConfigurationShape(raw []byte, requireImage bool) (installedConfiguration, error) {
 	if len(raw) == 0 || len(raw) > maxConfigBytes {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
 	value, err := protocol.Decode(raw, maxConfigBytes)
 	data, ok := value.(map[string]any)
-	if err != nil || !ok || len(data) != 8 {
+	expectedFields := 7
+	if requireImage {
+		expectedFields = 8
+	}
+	if err != nil || !ok || len(data) != expectedFields {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
-	for _, key := range []string{"base_url", "runner_id", "profile_id", "expires_at", "release_path", "release_version", "platform", "image_id"} {
+	keys := []string{"base_url", "runner_id", "profile_id", "expires_at", "release_path", "release_version", "platform"}
+	if requireImage {
+		keys = append(keys, "image_id")
+	}
+	for _, key := range keys {
 		if _, ok := data[key]; !ok {
 			return installedConfiguration{}, errors.New("runner configuration is invalid")
 		}
@@ -530,7 +560,7 @@ func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	if !baseOK || !runnerOK || !profileOK || !expiresOK || !releasePathOK || !releaseVersionOK || !platformOK ||
 		baseURL == "" || len(baseURL) > 2048 || protocol.ValidateProfileID(runnerID) != nil || protocol.ValidateProfileID(profileID) != nil ||
 		len(expiresAt) > 64 || len(releasePath) > 4096 || !filepath.IsAbs(releasePath) || filepath.Clean(releasePath) != releasePath ||
-		!releaseVersionPattern.MatchString(releaseVersion) || !imageOK || !imageIDPattern.MatchString(imageID) || (platform != "linux-amd64" && platform != "linux-arm64" && platform != "darwin-amd64" && platform != "darwin-arm64") {
+		!releaseVersionPattern.MatchString(releaseVersion) || (requireImage && (!imageOK || !imageIDPattern.MatchString(imageID))) || (platform != "linux-amd64" && platform != "linux-arm64" && platform != "darwin-amd64" && platform != "darwin-arm64") {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
 	if parsed, err := time.Parse(time.RFC3339, expiresAt); err != nil || parsed.Format(time.RFC3339) != expiresAt {
