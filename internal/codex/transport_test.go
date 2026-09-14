@@ -23,6 +23,7 @@ type recordedDocker struct {
 	owned            bool
 	removed          map[string]bool
 	labelOwner       string
+	collectorOutput  []byte
 }
 
 func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin io.Reader, args ...string) (transportResult, error) {
@@ -69,6 +70,9 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 			d.mu.Unlock()
 		}
 		return transportResult{stdout: []byte("repository output\n")}, nil
+	}
+	if len(args) > 1 && args[0] == "exec" && args[1] == testTransportName+"-diff" {
+		return transportResult{stdout: d.collectorOutput}, nil
 	}
 	if len(args) > 2 && args[0] == "exec" && args[1] == "-i" && args[2] == testTransportName && d.blockNative {
 		<-ctx.Done()
@@ -127,6 +131,30 @@ func TestDockerTransportJoinsCollectionAndCleanupFailures(t *testing.T) {
 	_, err := transport.CollectPatch(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "cannot create patch collector") || !strings.Contains(err.Error(), "cleanup was not confirmed") {
 		t.Fatalf("collection/cleanup failures were not both retained: %v", err)
+	}
+}
+
+func TestDockerTransportCollectsPatchFromPinnedSource(t *testing.T) {
+	d := &recordedDocker{collectorOutput: tarFileFixture(t, "file.txt", "changed\n")}
+	transport := transportFixture(t, d)
+	transport.started = true
+	original := transport.sourceHandle.Name()
+	if err := os.Rename(original, original+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(original, "file.txt"), []byte("attacker\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	patch, err := transport.CollectPatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patch == nil || len(patch.ChangedFiles) != 1 || patch.ChangedFiles[0].BeforeSHA256 == nil || *patch.ChangedFiles[0].BeforeSHA256 != sha256Hex("original\n") {
+		t.Fatalf("transport did not collect from its pinned source: %#v", patch)
 	}
 }
 
@@ -308,6 +336,23 @@ func tarFixture(t *testing.T, name string, kind byte) []byte {
 	w := tar.NewWriter(&b)
 	h := &tar.Header{Name: name, Mode: 0600, Size: 0, Typeflag: kind}
 	if err := w.WriteHeader(h); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return []byte(b.String())
+}
+
+func tarFileFixture(t *testing.T, name, contents string) []byte {
+	t.Helper()
+	var b strings.Builder
+	w := tar.NewWriter(&b)
+	h := &tar.Header{Name: name, Mode: 0600, Size: int64(len(contents)), Typeflag: tar.TypeReg}
+	if err := w.WriteHeader(h); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(contents)); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
