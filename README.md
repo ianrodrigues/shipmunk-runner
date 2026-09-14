@@ -1,6 +1,6 @@
 # Shipmunk runner
 
-The standalone PHP execution host for Shipmunk. It runs Codex work in isolated Linux containers and connects to a separately deployed Shipmunk application. It does not load Laravel, Composer dependencies, application environment files, database credentials or GitHub credentials.
+The standalone execution host for Shipmunk. The Go runner runs Codex work in isolated Linux containers and connects to a separately deployed Shipmunk application. It does not load Laravel, Composer dependencies, application environment files, database credentials or GitHub credentials. The published PHP installer remains the supported installation path until the separate installer migration is complete.
 
 The initial version is `v0.1.0-alpha.1`. This is a prerelease: offline checks establish the tested behavior, not live subscription compatibility or full product release readiness. Runner versions and release tags are independent of application versions.
 
@@ -27,11 +27,13 @@ make check
 
 `make check` runs syntax checks, package and release-upload fixtures, the supervisor/container suite, and pinned native executable checks. Native image construction downloads the pinned official packages; tests use synthetic data without account access. No application, database, Redis, Composer installation or application checkout is required. Trusted pushes, internal pull requests and releases use the existing `github-runner-01` self-hosted Linux runner. The configured check job skips fork pull requests, and there is no GitHub-hosted fallback. The repository also requires approval for all external contributors: a fork can edit workflow files, so the job condition alone is not an isolation boundary. Do not approve external fork workflow runs. Review a fork contribution and promote the accepted code to a trusted internal branch before running checks.
 
+`make go-build VERSION=v1.2.3` builds the four operational Go commands with that exact version embedded. An ordinary local build reports `development`; release packaging must always supply its validated release tag. Each resulting `shipmunk-runner`, `shipmunk-profile`, `shipmunk-setup`, and `shipmunk-watchdog` binary reports the embedded value with `--version`.
+
 ## Publish a release
 
 1. Pass the checks and merge the reviewed runner changes.
 2. Create a GitHub release with a semantic version tag such as `v0.1.0-alpha.1`, targeting that commit. Mark alpha versions as prereleases.
-3. Publish the release. The [release workflow](.github/workflows/release.yml) runs the standalone checks, then builds and uploads `shipmunk-runner-VERSION.tar`, `installer.php`, `SHA256SUMS` and `runner-release.json` from that tag's commit.
+3. Publish the release. The [release workflow](.github/workflows/release.yml) runs the standalone checks, then builds `shipmunk-runner-VERSION-{linux,darwin}-{amd64,arm64}.tar`, `SHA256SUMS`, and `runner-release.json` from that tag's commit. A separate write-scoped job uploads those exact checked artifacts and publishes the manifest last.
 
 Publishing either a stable release or a prerelease triggers the workflow. Draft creation alone does not. A rerun verifies and reuses matching assets, resumes missing uploads, and refuses to replace different bytes. Only the upload job has repository write permission, and its token is exposed only to the upload step. See [release packaging and application pins](docs/releases.md).
 
