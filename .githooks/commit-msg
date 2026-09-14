@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+message=$1
+subject=$(sed -n '1p' "$message")
+case "$subject" in
+    'fixup! '?*|'squash! '?*|'amend! '?*)
+        # Git generates autosquash messages; squash them before merging.
+        ;;
+    *)
+        if [[ ${#subject} -gt 72 ]] || ! [[ "$subject" =~ ^(feat|fix|docs|test|chore|ci|refactor|perf|build|style|revert)(\([a-z0-9._/-]+\))?!?:\ [^[:space:]].*$ ]]; then
+            echo 'commit-msg: use a Conventional Commit subject of at most 72 characters, e.g. fix: preserve base snapshots.' >&2
+            exit 1
+        fi
+        description=${subject#*: }
+        if [[ "$description" =~ ^[[:upper:]] ]] || [[ "$subject" == *. ]]; then
+            echo 'commit-msg: start the description in lower case and omit the final period.' >&2
+            exit 1
+        fi
+        if [[ -n "$(sed -n '2p' "$message")" ]]; then
+            echo 'commit-msg: leave the second line blank before the body.' >&2
+            exit 1
+        fi
+        ;;
+esac
+
+# Linked worktrees share optional local checks outside the tracked hook files.
+common_dir=$(git rev-parse --git-common-dir)
+for extra in "$common_dir"/hooks/commit-msg.d/*; do
+    [[ -f "$extra" && -x "$extra" ]] || continue
+    "$extra" "$message"
+done

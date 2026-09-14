@@ -29,6 +29,12 @@ make check
 
 `make go-build VERSION=v1.2.3` builds the four operational Go commands with that exact version embedded. An ordinary local build reports `development`; release packaging must always supply its validated release tag. Each resulting `shipmunk-runner`, `shipmunk-profile`, `shipmunk-setup`, and `shipmunk-watchdog` binary reports the embedded value with `--version`.
 
+## Local Git hooks
+
+Run `make hooks` once per clone to enable the tracked hooks, including linked worktrees. Installation is repeatable and refuses to overwrite a custom `core.hooksPath` or hide executable default hooks; combine your existing hooks explicitly first. Hooks use Bash and the existing Go/PHP tools, perform no network calls or test suites, and never rewrite or stage files. Pre-commit checks whitespace/conflict markers and the exact staged Go formatting and PHP syntax, so partial staging is respected. `make hooks-check` runs their isolated Git regressions and is included in `make check`.
+
+Use Conventional Commits such as `fix: preserve base snapshots`: the entire subject must be at most 72 characters, start its description in lower case, omit a final period, and have a blank line before the body. Git-generated `fixup!`, `squash!`, and `amend!` messages are exempt; autosquash them before merging. Optional executable checks in `$(git rev-parse --git-common-dir)/hooks/commit-msg.d/` receive every commit message, including autosquash messages. Pre-push rejects creating, updating, or deleting the remote `main` branch; push a feature branch for review. Release tags are allowed.
+
 ## Publish a release
 
 1. Pass the checks and merge the reviewed runner changes.

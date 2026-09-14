@@ -4,9 +4,29 @@ VERSION ?= development
 GO_VERSION_PACKAGE := github.com/ianrodrigues/shipmunk-runner/internal/command
 GO_RELEASE_LDFLAGS := -s -w -X $(GO_VERSION_PACKAGE).Version=$(VERSION)
 
-.PHONY: check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check
+.PHONY: hooks hooks-check check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check
 
-check: lint package-check runner-check native-image-check go-check go-parity-check go-runtime-check
+check: hooks-check lint package-check runner-check native-image-check go-check go-parity-check go-runtime-check
+
+hooks:
+	@set -eu; \
+	if current="$$(git config --get core.hooksPath)"; then \
+		if test "$$current" != .githooks; then \
+			echo 'hooks: existing core.hooksPath is custom; integrate it explicitly before installing.' >&2; exit 1; \
+		fi; \
+	else \
+		common_dir="$$(git rev-parse --git-common-dir)"; \
+		for hook in pre-commit commit-msg pre-push; do \
+			if test -f "$$common_dir/hooks/$$hook" && test -x "$$common_dir/hooks/$$hook"; then \
+				echo "hooks: preserve or integrate existing local $$hook before installing; commit-msg extras can use hooks/commit-msg.d/." >&2; exit 1; \
+			fi; \
+		done; \
+		git config --local core.hooksPath .githooks; \
+	fi; \
+	echo 'Git hooks enabled for this clone and its linked worktrees.'
+
+hooks-check:
+	bash tests/GitHooksTest.sh
 
 go-runtime-check: runner-check
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-runtime.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
