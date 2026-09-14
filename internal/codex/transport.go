@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -245,6 +246,9 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 			if err = t.verifyProfileHome(); err != nil {
 				return err
 			}
+			if err = t.attestProfileMount(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	archive, err := archiveDirectory(t.cfg.Source, MaxSnapshotBytes)
@@ -272,6 +276,54 @@ func (t *DockerTransport) verifyProfileHome() error {
 	current, err := os.Lstat(t.cfg.ProfileHome)
 	if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, current) {
 		return errors.New("Codex profile directory changed before container setup")
+	}
+	return nil
+}
+
+func (t *DockerTransport) attestProfileMount(ctx context.Context) error {
+	if t.profileHandle == nil {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	path := t.profileHandle.Name()
+	if runtime.GOOS == "linux" {
+		path = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), t.profileHandle.Fd())
+	} else if runtime.GOOS == "darwin" {
+		path = fmt.Sprintf("/dev/fd/%d", t.profileHandle.Fd())
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	defer root.Close()
+	opened, err := root.Open(".")
+	if err != nil {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	openedInfo, statErr := opened.Stat()
+	closeErr := opened.Close()
+	handleInfo, handleErr := t.profileHandle.Stat()
+	if statErr != nil || closeErr != nil || handleErr != nil || !os.SameFile(openedInfo, handleInfo) {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	proof := make([]byte, 32)
+	if _, err = rand.Read(proof); err != nil {
+		return errors.New("cannot create Codex profile mount proof")
+	}
+	name := ".shipmunk-mount-proof-" + fmt.Sprintf("%x", proof[:16])
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return errors.New("cannot create Codex profile mount proof")
+	}
+	defer root.Remove(name)
+	if _, err = file.Write(proof); err == nil {
+		err = file.Sync()
+	}
+	if closeErr = file.Close(); err != nil || closeErr != nil {
+		return errors.New("cannot create Codex profile mount proof")
+	}
+	result, err := t.run(ctx, nil, "exec", t.cfg.Name, "/bin/cat", "/profile/"+name)
+	if err != nil || !bytes.Equal(result.stdout, proof) {
+		return errors.New("Codex profile mount does not match retained directory")
 	}
 	return nil
 }

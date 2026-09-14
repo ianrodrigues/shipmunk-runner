@@ -25,6 +25,8 @@ type recordedDocker struct {
 	labelOwner       string
 	collectorOutput  []byte
 	onNativeStart    func()
+	profilePath      string
+	nativeMountProof []byte
 }
 
 func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin io.Reader, args ...string) (transportResult, error) {
@@ -81,6 +83,24 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 	}
 	if len(args) > 1 && args[0] == "exec" && args[1] == testTransportName+"-diff" {
 		return transportResult{stdout: d.collectorOutput}, nil
+	}
+	if len(args) == 4 && args[0] == "exec" && args[1] == testTransportName && args[2] == "/bin/cat" {
+		d.mu.Lock()
+		var proof []byte
+		if d.nativeMountProof != nil {
+			proof = make([]byte, len(d.nativeMountProof))
+			copy(proof, d.nativeMountProof)
+		}
+		profilePath := d.profilePath
+		d.mu.Unlock()
+		if proof != nil {
+			return transportResult{stdout: proof}, nil
+		}
+		proof, err := os.ReadFile(filepath.Join(profilePath, filepath.Base(args[3])))
+		if err != nil {
+			return transportResult{exitCode: 1}, nil
+		}
+		return transportResult{stdout: proof}, nil
 	}
 	if len(args) > 2 && args[0] == "exec" && args[1] == "-i" && args[2] == testTransportName && d.blockNative {
 		<-ctx.Done()
@@ -187,6 +207,33 @@ func TestDockerTransportRejectsProfileHomeReplacedDuringNativeContainerStart(t *
 	}
 }
 
+func TestDockerTransportRejectsProfileHomeReplacedAndRestoredDuringNativeContainerStart(t *testing.T) {
+	d := new(recordedDocker)
+	transport := transportFixture(t, d)
+	profile := transport.cfg.ProfileHome
+	d.nativeMountProof = []byte{}
+	d.onNativeStart = func() {
+		moved := profile + "-moved"
+		if err := os.Rename(profile, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(profile, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(profile); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(moved, profile); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := transport.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Codex profile mount does not match retained directory") {
+		t.Fatalf("profile home replaced and restored during native start was accepted: %v", err)
+	}
+}
+
 func TestDockerTransportJoinsSetupAndCleanupFailures(t *testing.T) {
 	d := &recordedDocker{failCreate: true, inspectUncertain: true}
 	transport := transportFixture(t, d)
@@ -250,6 +297,9 @@ func transportFixture(t *testing.T, docker dockerCommand) *DockerTransport {
 	transport, err := newDockerTransport(TransportConfig{Name: testTransportName, ProfileHome: profile, Source: source, NativeImage: "native:pinned", RepositoryImage: "repo:pinned", MaxCommands: 2}, docker)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if recorded, ok := docker.(*recordedDocker); ok {
+		recorded.profilePath = profile
 	}
 	t.Cleanup(func() { _ = transport.Stop(context.Background()) })
 	return transport
