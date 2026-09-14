@@ -68,9 +68,8 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 	if err != nil {
 		return nil, nil, err
 	}
-	platform, err := dockerPreflight(ctx, dockerExecutable, "version", "--format", "{{.Server.Os}}")
-	if err != nil || platform != "linux" {
-		return nil, nil, errors.New("a Linux Docker engine is required")
+	if err := codex.RequireDocker(ctx, dockerExecutable); err != nil {
+		return nil, nil, err
 	}
 	for _, image := range []string{options.Image, options.RepositoryImage} {
 		id, e := dockerPreflight(ctx, dockerExecutable, "image", "inspect", "--format", "{{.Id}}", "--", image)

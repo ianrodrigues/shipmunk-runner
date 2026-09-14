@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ianrodrigues/shipmunk-runner/internal/codex"
 	"github.com/ianrodrigues/shipmunk-runner/internal/install"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
@@ -299,7 +300,11 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	imageID, err := setupBuildImage(root, releasePath)
 	if err != nil {
-		fmt.Fprintln(stderr, "Runtime image preparation failed. Check the Linux Docker engine, then retry. Previous configuration was preserved.")
+		if errors.Is(err, codex.ErrDockerRequirements) {
+			fmt.Fprintln(stderr, codex.ErrDockerRequirements.Error()+". Previous configuration was preserved.")
+		} else {
+			fmt.Fprintln(stderr, "Runtime image preparation failed. Check the Linux Docker engine, then retry. Previous configuration was preserved.")
+		}
 		return 1
 	}
 	config, err := json.Marshal(map[string]any{
@@ -352,8 +357,8 @@ func buildSetupImage(root, releasePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if serverOS, err := dockerPreflight(context.Background(), docker, "version", "--format", "{{.Server.Os}}"); err != nil || serverOS != "linux" {
-		return "", errors.New("a Linux Docker engine is required")
+	if err := codex.RequireDocker(context.Background(), docker); err != nil {
+		return "", err
 	}
 	contextRoot, err := os.MkdirTemp(root, ".image-context-")
 	if err != nil {
