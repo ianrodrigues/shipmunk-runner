@@ -160,14 +160,14 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 		}
 		handles[index] = handle
 		stable := resolved
-		if runtime.GOOS == "linux" {
-			stable = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
-		} else if index == 1 && runtime.GOOS == "darwin" {
-			stable = fmt.Sprintf("/dev/fd/%d", handle.Fd())
-		}
 		if index == 0 {
-			cfg.ProfileHome = stable
+			cfg.ProfileHome = resolved
 		} else {
+			if runtime.GOOS == "linux" {
+				stable = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
+			} else if runtime.GOOS == "darwin" {
+				stable = fmt.Sprintf("/dev/fd/%d", handle.Fd())
+			}
 			cfg.Source = stable
 		}
 	}
@@ -223,6 +223,9 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	if _, err = t.run(ctx, nil, "volume", "create", "--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner="+t.cfg.Name, "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", fmt.Sprintf("o=size=256m,uid=%d,gid=%d,mode=0700,nosuid,nodev", uid, gid), t.workspaceVolume); err != nil {
 		return errors.New("cannot create repository memory volume")
 	}
+	if err = t.verifyProfileHome(); err != nil {
+		return err
+	}
 	common := []string{"--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner=" + t.cfg.Name, "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2"}
 	native := append([]string{"create", "--name", t.cfg.Name}, common...)
 	native = append(native, "--pids-limit", "128", "--network", "bridge", "--workdir", "/empty", "--mount", "type=bind,src="+t.cfg.ProfileHome+",dst=/profile", "--mount", "type=bind,src="+t.bridge+",dst=/bridge", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", nativeID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
@@ -250,6 +253,21 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		return errors.New("cannot initialize protected repository baseline")
 	}
 	t.started = true
+	return nil
+}
+
+func (t *DockerTransport) verifyProfileHome() error {
+	if t.profileHandle == nil {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	opened, err := t.profileHandle.Stat()
+	if err != nil || !opened.IsDir() {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	current, err := os.Lstat(t.cfg.ProfileHome)
+	if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, current) {
+		return errors.New("Codex profile directory changed before container setup")
+	}
 	return nil
 }
 
