@@ -15,6 +15,10 @@ hooks:
 			echo 'hooks: existing core.hooksPath is custom; integrate it explicitly before installing.' >&2; exit 1; \
 		fi; \
 	else \
+		status=$$?; \
+		if test "$$status" -ne 1; then \
+			echo 'hooks: could not read core.hooksPath; configuration was not changed.' >&2; exit "$$status"; \
+		fi; \
 		common_dir="$$(git rev-parse --git-common-dir)"; \
 		for hook in pre-commit commit-msg pre-push; do \
 			if test -f "$$common_dir/hooks/$$hook" && test -x "$$common_dir/hooks/$$hook"; then \
