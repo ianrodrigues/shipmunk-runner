@@ -41,6 +41,17 @@ func runCodexRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 }
 
 func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor.Supervisor, func() error, error) {
+	state, err := attemptstate.Open(filepath.Join(options.StateDir, "active-attempt.json"))
+	if err != nil {
+		return nil, nil, err
+	}
+	ready := false
+	defer func() {
+		if !ready {
+			_ = state.Close()
+		}
+	}()
+	runnerStartupAfterAttemptLock()
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {
 		return nil, nil, err
@@ -67,13 +78,8 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 			return nil, nil, errors.New("Codex images must exist locally")
 		}
 	}
-	state, err := attemptstate.Open(filepath.Join(options.StateDir, "active-attempt.json"))
-	if err != nil {
-		return nil, nil, err
-	}
 	workspaces, err := workspace.New(filepath.Join(options.StateDir, "workspaces"))
 	if err != nil {
-		_ = state.Close()
 		return nil, nil, err
 	}
 	mode := codexsession.Fresh
@@ -81,6 +87,7 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 		mode = codexsession.Resume
 	}
 	router := &codexProfileRouter{profilesDir: options.ProfilesDir, nativeImage: options.Image, repositoryImage: options.RepositoryImage, dockerExecutable: dockerExecutable, watchdogExecutable: watchdogExecutable, active: make(map[string]supervisor.Executor), sessionMode: mode}
+	ready = true
 	return &supervisor.Supervisor{Client: client, State: state, Workspaces: workspaces, Executor: router}, state.Close, nil
 }
 

@@ -18,11 +18,28 @@ import (
 )
 
 var runNativeProfile = executeNativeProfile
+var profileStartupAfterLock = func() {}
 
 func executeNativeProfile(options ProfileOptions, stderr io.Writer) (profile.Health, error) {
 	if os.Geteuid() == 0 {
 		return profile.Health{}, errors.New("native profiles require a dedicated non-root runner account")
 	}
+	store, err := profile.Open(options.ProfilesDir, options.Profile)
+	if err != nil {
+		return profile.Health{}, err
+	}
+	defer store.Close()
+	var health profile.Health
+	err = store.WithExclusive(func(locked *profile.Store) error {
+		var operationErr error
+		health, operationErr = executeNativeProfileLocked(options, stderr, locked)
+		return operationErr
+	})
+	return health, err
+}
+
+func executeNativeProfileLocked(options ProfileOptions, stderr io.Writer, store *profile.Store) (profile.Health, error) {
+	profileStartupAfterLock()
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {
 		return profile.Health{}, err
@@ -31,11 +48,6 @@ func executeNativeProfile(options ProfileOptions, stderr io.Writer) (profile.Hea
 	if err != nil {
 		return profile.Health{}, err
 	}
-	store, err := profile.Open(options.ProfilesDir, options.Profile)
-	if err != nil {
-		return profile.Health{}, err
-	}
-	defer store.Close()
 	runtime, err := profile.NewDockerRuntime(options.Image)
 	if err != nil {
 		return profile.Health{}, err
@@ -58,7 +70,7 @@ func executeNativeProfile(options ProfileOptions, stderr io.Writer) (profile.Hea
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return lifecycle.Operate(ctx, store, options.Profile, options.Operation, options.OperationID)
+	return lifecycle.OperateLocked(ctx, store, options.Profile, options.Operation, options.OperationID)
 }
 
 func adjacentWatchdogExecutable() (string, error) {

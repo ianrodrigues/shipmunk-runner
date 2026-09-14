@@ -76,7 +76,20 @@ func NewLifecycle(controlPlane ControlPlane, runtime Runtime, watchdog Watchdog)
 // Operate performs login, probe, or disconnect under the profile's OS lock.
 // Native and transport detail is reduced to a health reason before it can be
 // persisted or sent to the application.
-func (lifecycle *Lifecycle) Operate(
+func (lifecycle *Lifecycle) Operate(ctx context.Context, store *Store, profileID, operation, operationID string) (Health, error) {
+	if store == nil {
+		return Health{}, errors.New("profile lifecycle dependencies are incomplete")
+	}
+	var outcome Health
+	err := store.WithExclusive(func(locked *Store) error {
+		var err error
+		outcome, err = lifecycle.OperateLocked(ctx, locked, profileID, operation, operationID)
+		return err
+	})
+	return outcome, err
+}
+
+func (lifecycle *Lifecycle) OperateLocked(
 	ctx context.Context,
 	store *Store,
 	profileID string,
@@ -95,9 +108,12 @@ func (lifecycle *Lifecycle) Operate(
 	if operation != "login" && operation != "probe" && operation != "disconnect" {
 		return Health{}, errors.New("unsupported profile operation")
 	}
+	if err := store.assertLocked(); err != nil {
+		return Health{}, err
+	}
 
 	var outcome Health
-	err := store.WithExclusive(func(locked *Store) error {
+	err := func(locked *Store) error {
 		execution, err := locked.Read("execution")
 		if err != nil {
 			return err
@@ -207,7 +223,7 @@ func (lifecycle *Lifecycle) Operate(
 			return err
 		}
 		return locked.Forget("pending")
-	})
+	}(store)
 	return outcome, err
 }
 

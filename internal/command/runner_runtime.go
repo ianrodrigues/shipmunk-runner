@@ -22,6 +22,8 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/workspace"
 )
 
+var runnerStartupAfterAttemptLock = func() {}
+
 func runFixtureRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 	if os.Geteuid() == 0 {
 		fmt.Fprintln(stderr, "Run the runner as a dedicated non-root account with Docker access.")
@@ -39,6 +41,17 @@ func runFixtureRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 }
 
 func prepareFixtureRunner(ctx context.Context, options RunnerOptions) (*supervisor.Supervisor, func() error, error) {
+	store, err := attemptstate.Open(filepath.Join(options.StateDir, "active-attempt.json"))
+	if err != nil {
+		return nil, nil, err
+	}
+	ready := false
+	defer func() {
+		if !ready {
+			_ = store.Close()
+		}
+	}()
+	runnerStartupAfterAttemptLock()
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {
 		return nil, nil, err
@@ -77,15 +90,11 @@ func prepareFixtureRunner(ctx context.Context, options RunnerOptions) (*supervis
 	if err != nil {
 		return nil, nil, err
 	}
-	store, err := attemptstate.Open(filepath.Join(options.StateDir, "active-attempt.json"))
-	if err != nil {
-		return nil, nil, err
-	}
 	workspaces, err := workspace.New(filepath.Join(options.StateDir, "workspaces"))
 	if err != nil {
-		_ = store.Close()
 		return nil, nil, err
 	}
+	ready = true
 	return &supervisor.Supervisor{Client: client, State: store, Workspaces: workspaces, Sandbox: supervisor.DockerBackend{Docker: docker}, Watchdog: supervisor.HostWatchdog{Watchdog: sandbox.NewWatchdog(config)}}, store.Close, nil
 }
 
