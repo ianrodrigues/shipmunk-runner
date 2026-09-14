@@ -68,6 +68,33 @@ func TestParseRunnerOptionsPreservesDefaultsAndCodexRequirements(t *testing.T) {
 	}
 }
 
+func TestInstalledRunnerPathsShareOneRoot(t *testing.T) {
+	_, err := ParseRunnerOptions([]string{
+		"--base-url", "https://runner.example",
+		"--token-file", "/private/runner/execution.token",
+		"--state-dir", "/other/state",
+		"--image", "shipmunk:local",
+	})
+	if err == nil {
+		t.Fatal("incoherent installed runner paths were accepted")
+	}
+}
+
+func TestInstalledProfilePathsShareOneRoot(t *testing.T) {
+	_, err := ParseProfileOptions([]string{
+		"--base-url", "https://runner.example",
+		"--token-file", "/private/runner/profile.token",
+		"--profiles-dir", "/other/profiles",
+		"--image", "shipmunk:local",
+		"--profile", testProfileID,
+		"--operation", "probe",
+		"--operation-id", testOperation,
+	})
+	if err == nil {
+		t.Fatal("incoherent installed profile paths were accepted")
+	}
+}
+
 func TestParseProfileOptionsRequiresCanonicalIdentifiers(t *testing.T) {
 	args := []string{
 		"--base-url", "https://runner.example",

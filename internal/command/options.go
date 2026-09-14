@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
-// RunnerOptions contains the validated command-line configuration for the
-// execution host. Only the fixture driver is currently operational in Go.
 type RunnerOptions struct {
 	BaseURL         string
 	TokenFile       string
@@ -105,6 +104,12 @@ func validateRunnerOptions(options *RunnerOptions) error {
 	if options.Driver == "codex" && options.ProfilesDir == "" {
 		return errCodexProfilesDirRequired
 	}
+	if filepath.Base(options.TokenFile) == "execution.token" {
+		root := filepath.Dir(options.TokenFile)
+		if filepath.Clean(options.StateDir) != filepath.Join(root, "state") || options.Driver == "codex" && filepath.Clean(options.ProfilesDir) != filepath.Join(root, "profiles") {
+			return errors.New("Installed runner paths must share one installation root.")
+		}
+	}
 	if options.RepositoryImage == "" {
 		options.RepositoryImage = options.Image
 	}
@@ -182,6 +187,9 @@ func validateProfileOptions(options ProfileOptions) error {
 	}
 	if options.Operation != "login" && options.Operation != "probe" && options.Operation != "disconnect" {
 		return errUnsupportedProfileOperation
+	}
+	if filepath.Base(options.TokenFile) == "profile.token" && filepath.Clean(options.ProfilesDir) != filepath.Join(filepath.Dir(options.TokenFile), "profiles") {
+		return errors.New("Installed profile paths must share one installation root.")
 	}
 	return nil
 }
