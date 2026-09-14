@@ -1,11 +1,14 @@
 package command
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,7 +22,23 @@ const setupBundleMaxBytes = 16 * 1024
 var (
 	setupTokenPattern  = regexp.MustCompile(`^[0-9]+\|[A-Za-z0-9_]{40,160}$`)
 	setupExpiryPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$`)
+	setupRuntime       = setupRuntimeHooks{
+		effectiveUID: os.Geteuid,
+		stdin:        os.Stdin,
+		isTerminal: func(value any) bool {
+			file, ok := value.(*os.File)
+			return ok && isTerminal(file)
+		},
+		now: time.Now,
+	}
 )
+
+type setupRuntimeHooks struct {
+	effectiveUID func() int
+	stdin        io.Reader
+	isTerminal   func(any) bool
+	now          func() time.Time
+}
 
 // SetupOptions contains parsed setup command arguments. ServerURL overrides
 // the bundle's base_url when provided.
@@ -168,8 +187,81 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "shipmunk-setup "+Version)
 		return 0
 	}
+	if setupRuntime.effectiveUID() == 0 {
+		fmt.Fprintln(stderr, "Run setup as a dedicated non-root account with Docker access.")
+		return 1
+	}
+	if !setupRuntime.isTerminal(setupRuntime.stdin) || !setupRuntime.isTerminal(stdout) || !setupRuntime.isTerminal(stderr) {
+		fmt.Fprintln(stderr, "Guided setup requires an operator terminal on stdin, stdout and stderr.")
+		return 1
+	}
+	raw, err := readProtectedSetupFile(options.SetupFile, setupRuntime.effectiveUID())
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	bundle, err := ParseSetupBundle(raw, options.ServerURL, setupRuntime.now())
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	fmt.Fprintf(stdout, "Server: %s\nRunner: %s\nProfile: %s\nTokens expire: %s\n", bundle.BaseURL, bundle.RunnerID, bundle.ProfileID, bundle.ExpiresAt.Format(time.RFC3339))
+	fmt.Fprintln(stdout, "Setup installs private local files and builds the pinned runtime image. It does not start reviews.")
+	fmt.Fprint(stdout, "Continue with this server and runner? [y/N] ")
+	answer, _ := bufio.NewReader(setupRuntime.stdin).ReadString('\n')
+	if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+		return 0
+	}
 	fmt.Fprintln(stderr, "Go setup installation is not available in this compatibility foundation.")
 	return 1
+}
+
+func readProtectedSetupFile(path string, effectiveUID int) ([]byte, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil || setupPathHasSymlink(abs) {
+		return nil, errors.New("Unsafe setup identifier, ownership, type or permissions.")
+	}
+	expected, err := os.Lstat(abs)
+	if err != nil || !expected.Mode().IsRegular() || expected.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("The setup file must be a small regular file owned by this account, without links.")
+	}
+	file, err := os.Open(abs)
+	if err != nil {
+		return nil, errors.New("Cannot open the downloaded setup file safely.")
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(expected, opened) || setupFileUID(opened) != uint32(effectiveUID) || setupFileNlink(opened) != 1 {
+		return nil, errors.New("The setup file must be a small regular file owned by this account, without links.")
+	}
+	if opened.Mode().Perm() != 0o600 {
+		if err := file.Chmod(0o600); err != nil {
+			return nil, errors.New("Cannot protect the downloaded setup file.")
+		}
+	}
+	reader := io.LimitReader(file, setupBundleMaxBytes+1)
+	raw, err := io.ReadAll(reader)
+	if err != nil || len(raw) > setupBundleMaxBytes {
+		return nil, errors.New("The setup file is not valid JSON or exceeds its size limit.")
+	}
+	afterOpen, openErr := file.Stat()
+	afterPath, pathErr := os.Lstat(abs)
+	if openErr != nil || pathErr != nil || !os.SameFile(afterOpen, afterPath) || afterOpen.Mode().Perm() != 0o600 || setupFileUID(afterOpen) != uint32(effectiveUID) || setupFileNlink(afterOpen) != 1 {
+		return nil, errors.New("The setup file changed while it was being read.")
+	}
+	return raw, nil
+}
+
+func setupPathHasSymlink(path string) bool {
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func validateSetupURL(value string) error {
