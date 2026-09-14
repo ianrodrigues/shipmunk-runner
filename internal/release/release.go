@@ -223,6 +223,7 @@ func releaseBuildEnvironment(platform Platform) []string {
 	controlled := map[string]bool{
 		"CGO_ENABLED": true, "GOOS": true, "GOARCH": true, "GOFLAGS": true,
 		"GOWORK": true, "GOENV": true, "GOEXPERIMENT": true, "GOAMD64": true, "GOARM64": true,
+		"GOFIPS140": true, "GOTOOLCHAIN": true,
 	}
 	environment := make([]string, 0, len(os.Environ())+9)
 	for _, entry := range os.Environ() {
@@ -234,6 +235,7 @@ func releaseBuildEnvironment(platform Platform) []string {
 	return append(environment,
 		"CGO_ENABLED=0", "GOOS="+platform.OS, "GOARCH="+platform.Arch,
 		"GOFLAGS=", "GOWORK=off", "GOENV=off", "GOEXPERIMENT=", "GOAMD64=v1", "GOARM64=v8.0",
+		"GOFIPS140=off", "GOTOOLCHAIN=local",
 	)
 }
 

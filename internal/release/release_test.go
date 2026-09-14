@@ -142,11 +142,11 @@ func TestVersionLinkerContract(t *testing.T) {
 }
 
 func TestReleaseBuildEnvironmentPinsBuildAffectingOptions(t *testing.T) {
-	for _, name := range []string{"GOFLAGS", "GOWORK", "GOENV", "GOEXPERIMENT", "GOAMD64", "GOARM64"} {
+	for _, name := range []string{"GOFLAGS", "GOWORK", "GOENV", "GOEXPERIMENT", "GOAMD64", "GOARM64", "GOFIPS140", "GOTOOLCHAIN"} {
 		t.Setenv(name, "hostile")
 	}
 	environment := releaseBuildEnvironment(Platform{"linux", "amd64"})
-	want := map[string]string{"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64", "GOFLAGS": "", "GOWORK": "off", "GOENV": "off", "GOEXPERIMENT": "", "GOAMD64": "v1", "GOARM64": "v8.0"}
+	want := map[string]string{"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64", "GOFLAGS": "", "GOWORK": "off", "GOENV": "off", "GOEXPERIMENT": "", "GOAMD64": "v1", "GOARM64": "v8.0", "GOFIPS140": "off", "GOTOOLCHAIN": "local"}
 	got := map[string]string{}
 	for _, entry := range environment {
 		name, value, _ := strings.Cut(entry, "=")
