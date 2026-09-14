@@ -50,7 +50,17 @@ type fileState struct {
 // CollectSnapshots generates and verifies a canonical patch from two protected
 // filesystem snapshots.
 func CollectSnapshots(beforeRoot, afterRoot string) (*Patch, error) {
-	before, err := snapshot(beforeRoot)
+	return collectSnapshots(beforeRoot, afterRoot, nil)
+}
+
+func collectSnapshots(beforeRoot, afterRoot string, beforeHandle *os.File) (*Patch, error) {
+	var before map[string]fileState
+	var err error
+	if beforeHandle == nil {
+		before, err = snapshot(beforeRoot)
+	} else {
+		before, err = snapshotPinned(beforeRoot, beforeHandle)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("original snapshot: %w", err)
 	}
@@ -145,6 +155,23 @@ func snapshot(root string) (map[string]fileState, error) {
 	defer rootHandle.Close()
 	openedInfo, err := rootHandle.Lstat(".")
 	if err != nil || !os.SameFile(pathInfo, openedInfo) {
+		return nil, errors.New("root changed while opening")
+	}
+	return snapshotRoot(rootHandle, nil)
+}
+
+func snapshotPinned(root string, expected *os.File) (map[string]fileState, error) {
+	expectedInfo, err := expected.Stat()
+	if err != nil || !expectedInfo.IsDir() {
+		return nil, errors.New("root must be a real directory")
+	}
+	rootHandle, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("root must be a real directory")
+	}
+	defer rootHandle.Close()
+	openedInfo, err := rootHandle.Lstat(".")
+	if err != nil || !os.SameFile(expectedInfo, openedInfo) {
 		return nil, errors.New("root changed while opening")
 	}
 	return snapshotRoot(rootHandle, nil)
