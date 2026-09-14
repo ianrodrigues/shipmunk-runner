@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+git diff --cached --check
+
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/shipmunk-pre-commit.XXXXXX")
+trap 'rm -rf "$temporary"' EXIT
+git diff --cached --name-only --diff-filter=ACMR -z > "$temporary/paths"
+while IFS= read -r -d '' path; do
+    case "$path" in
+        *.go) language=go ;;
+        *.php|runner/bin/shipmunk-runner|runner/bin/shipmunk-profile) language=php ;;
+        *) continue ;;
+    esac
+    # A staged symlink or submodule is not a source file to lint.
+    mode=$(git --literal-pathspecs ls-files --stage -- "$path")
+    case "${mode%% *}" in 100644|100755) ;; *) continue ;; esac
+    git cat-file blob ":./$path" > "$temporary/staged.$language"
+    if [[ "$language" == go ]]; then
+        command -v gofmt >/dev/null || { echo 'pre-commit: gofmt is required for staged Go files.' >&2; exit 1; }
+        if ! gofmt < "$temporary/staged.go" > "$temporary/formatted.go"; then
+            printf 'pre-commit: staged Go syntax is invalid: %s\n' "$path" >&2
+            exit 1
+        fi
+        if ! cmp -s "$temporary/staged.go" "$temporary/formatted.go"; then
+            printf 'pre-commit: format with gofmt and restage: %s\n' "$path" >&2
+            exit 1
+        fi
+    else
+        php_command=${PHP_BIN:-php}
+        command -v "$php_command" >/dev/null || { echo 'pre-commit: PHP is required for staged PHP files.' >&2; exit 1; }
+        if ! "$php_command" -l "$temporary/staged.php" > "$temporary/php-output" 2>&1; then
+            printf 'pre-commit: staged PHP syntax is invalid: %s\n' "$path" >&2
+            cat "$temporary/php-output" >&2
+            exit 1
+        fi
+    fi
+done < "$temporary/paths"
