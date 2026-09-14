@@ -248,7 +248,19 @@ func TestParseSetupBundleValidatesFieldsAndServerOverride(t *testing.T) {
 	}
 }
 
-func TestRunSetupDefersWithoutReadingSetupFile(t *testing.T) {
+func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("setup ownership fixture requires a non-root test account")
+	}
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+	setupRuntime = setupRuntimeHooks{
+		effectiveUID: os.Geteuid,
+		stdin:        strings.NewReader("\n"),
+		isTerminal:   func(any) bool { return true },
+		now:          func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) },
+	}
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	if exitCode := RunSetup([]string{"--help"}, &stdout, &stderr); exitCode != 0 || !strings.Contains(stdout.String(), "SETUP-FILE") || stderr.Len() != 0 {
@@ -266,31 +278,113 @@ func TestRunSetupDefersWithoutReadingSetupFile(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	validSetupFile := filepath.Join(root, "valid.json")
-	if err := os.WriteFile(validSetupFile, []byte(validSetupBundleJSON), 0o600); err != nil {
+	if err := os.WriteFile(validSetupFile, []byte(validSetupBundleJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	missingSetupFile := filepath.Join(root, "missing.json")
-	symlinkedSetupFile := filepath.Join(root, "linked.json")
-	if err := os.Symlink(validSetupFile, symlinkedSetupFile); err != nil {
+	if code := RunSetup([]string{validSetupFile, "--server-url", "https://override.example"}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("declined setup = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "Server: https://override.example\n") || !strings.Contains(output, "Runner: "+testRunnerID+"\n") || !strings.Contains(output, "Profile: "+testProfileID+"\n") || !strings.Contains(output, "It does not start reviews.\n") || !strings.HasSuffix(output, "[y/N] ") {
+		t.Fatalf("unsafe or incomplete setup summary: %q", output)
+	}
+	if strings.Contains(output, "AAAA") || strings.Contains(output, "BBBB") {
+		t.Fatal("setup summary exposed a token")
+	}
+	if info, err := os.Stat(validSetupFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("setup file was not protected: %#v, %v", info, err)
+	}
+
+	stdout.Reset()
+	setupRuntime.stdin = strings.NewReader("y\n")
+	if code := RunSetup([]string{validSetupFile}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "installation is not available") {
+		t.Fatalf("confirmed setup handoff = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunSetupRejectsUnsafeFilesBeforeDisplayingBundle(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("setup ownership fixture requires a non-root test account")
+	}
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+	setupRuntime = setupRuntimeHooks{effectiveUID: os.Geteuid, stdin: strings.NewReader("\n"), isTerminal: func(any) bool { return true }, now: time.Now}
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	permissiveSetupFile := filepath.Join(root, "permissive.json")
-	if err := os.WriteFile(permissiveSetupFile, []byte("not json"), 0o644); err != nil {
+	valid := filepath.Join(root, "valid.json")
+	if err := os.WriteFile(valid, []byte(validSetupBundleJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	setupDirectory := filepath.Join(root, "directory")
-	if err := os.Mkdir(setupDirectory, 0o700); err != nil {
+	linked := filepath.Join(root, "linked.json")
+	if err := os.Symlink(valid, linked); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(root, "hard.json")
+	if err := os.Link(valid, hard); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "directory")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oversized := filepath.Join(root, "oversized.json")
+	if err := os.WriteFile(oversized, bytes.Repeat([]byte("x"), setupBundleMaxBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	realDirectory := filepath.Join(root, "real")
+	if err := os.Mkdir(realDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	redirect := filepath.Join(root, "redirect")
+	if err := os.Symlink(realDirectory, redirect); err != nil {
+		t.Fatal(err)
+	}
+	throughDirectoryLink := filepath.Join(redirect, "bundle.json")
+	if err := os.WriteFile(filepath.Join(realDirectory, "bundle.json"), []byte(validSetupBundleJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, setupPath := range []string{validSetupFile, missingSetupFile, symlinkedSetupFile, permissiveSetupFile, setupDirectory} {
-		stdout.Reset()
-		stderr.Reset()
-		if exitCode := RunSetup([]string{setupPath, "--server-url", "https://override.example"}, &stdout, &stderr); exitCode != 1 || stdout.Len() != 0 || stderr.String() != "Go setup installation is not available in this compatibility foundation.\n" {
-			t.Errorf("setup path %q = %d, stdout %q, stderr %q", setupPath, exitCode, stdout.String(), stderr.String())
+	for _, setupPath := range []string{filepath.Join(root, "missing.json"), linked, hard, directory, oversized, throughDirectoryLink} {
+		var stdout, stderr bytes.Buffer
+		if code := RunSetup([]string{setupPath}, &stdout, &stderr); code != 1 || stdout.Len() != 0 || stderr.Len() == 0 {
+			t.Errorf("unsafe setup path %q = %d, stdout %q, stderr %q", setupPath, code, stdout.String(), stderr.String())
 		}
+	}
+}
+
+func TestRunSetupRequiresNonRootThreeFDTerminalBeforeFileAccess(t *testing.T) {
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+
+	for _, name := range []string{"root", "stdin", "stdout", "stderr"} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			stdin := strings.NewReader("")
+			setupRuntime = setupRuntimeHooks{
+				effectiveUID: func() int {
+					if name == "root" {
+						return 0
+					}
+					return 1000
+				},
+				stdin: stdin,
+				isTerminal: func(value any) bool {
+					return !(name == "stdin" && value == stdin) && !(name == "stdout" && value == &stdout) && !(name == "stderr" && value == &stderr)
+				},
+				now: time.Now,
+			}
+			if code := RunSetup([]string{"/definitely/not/a/setup-file"}, &stdout, &stderr); code != 1 || stdout.Len() != 0 || stderr.Len() == 0 || strings.Contains(stderr.String(), "setup file") {
+				t.Fatalf("host gate = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
