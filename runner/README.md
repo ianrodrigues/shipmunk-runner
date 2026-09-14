@@ -1,6 +1,6 @@
 # Shipmunk runner (PHP, obsolete)
 
-This directory documents the original PHP supervisor. It is obsolete and scheduled for removal now that the Go release described in the [top-level README](../README.md) is the supported install path: the installed `run`/`connect` launchers there invoke the same `shipmunk-runner`/`shipmunk-profile` flag surface shown below, backed by the Go binaries instead of PHP. The PHP implementation and its tests remain here only for the transition; the commands below apply to it specifically.
+This directory documents the original PHP supervisor. It is obsolete and scheduled for removal now that the Go release described in the [top-level README](../README.md) is the supported install path: the installed `run`/`connect` launchers there invoke the same `shipmunk-runner`/`shipmunk-profile` flag surface shown below, backed by the Go binaries instead of PHP. The PHP implementation and its tests remain here only until that removal; the commands below apply to it specifically.
 
 The runner is a standalone PHP supervisor. It does not load Laravel, Composer's application autoloader, `.env`, `APP_KEY`, database credentials, GitHub credentials, or application configuration. Configure it only with explicit command options and a mode-0600 runner-token file:
 
@@ -24,7 +24,7 @@ Run `make runner-check`. The offline check requires a reachable Linux Docker eng
 
 ## Guided setup
 
-This is the obsolete PHP guided setup. The dashboard now displays the Go bootstrap command described in the [top-level README](../README.md#install-and-connect); use that path for a new installation. The PHP path below remains for existing PHP installations during the transition: register a runner in **Connections → Runners & Codex**, then run its displayed command with the downloaded setup file:
+This is the obsolete PHP guided setup. The dashboard now displays the Go bootstrap command described in the [top-level README](../README.md#install-and-connect); use that path for every installation. The PHP path below is obsolete and remains in this tree only until its scheduled removal, documented here for that removal work: register a runner in **Connections → Runners & Codex**, then run its displayed command with the downloaded setup file:
 
 ```sh
 bash runner/bin/shipmunk-setup ~/Downloads/shipmunk-setup-RUNNER.json
