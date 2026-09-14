@@ -3,6 +3,7 @@ package install
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,82 @@ func TestGuardUsesRuntimeAttemptAndProfileLocks(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("other profile", func(t *testing.T) {
+		root := installation(t)
+		other := "01nnnnnnnnnnnnnnnnnnnnnnnn"
+		store, err := profile.Open(filepath.Join(root, "profiles"), other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		err = store.WithExclusive(func(*profile.Store) error {
+			if err := (Guard{Root: root, Identity: identity}).Activate(configuration(root, identity, "v1.2.3"), []byte("profile"), []byte("execution")); err == nil {
+				t.Fatal("activation ignored another profile lock")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestPreflightRefusalDoesNotChangeExistingLayout(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	mustWrite(t, filepath.Join(root, "config.json"), configuration(root, Identity{BaseURL: "https://other.example", RunnerID: runnerID, ProfileID: profileID}, "v1.2.3"))
+	before := treeSnapshot(t, root)
+	if err := (Guard{Root: root, Identity: identity}).Preflight(); err == nil {
+		t.Fatal("preflight accepted changed identity")
+	}
+	after := treeSnapshot(t, root)
+	if before != after {
+		t.Fatalf("preflight changed layout\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestGuardRejectsProfileAddedWhileAcquiringLocks(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	guard := Guard{Root: root, Identity: identity, profilesLocked: func() {
+		mustMkdir(t, filepath.Join(root, "profiles", "01nnnnnnnnnnnnnnnnnnnnnnnn"))
+	}}
+	if err := guard.Activate(configuration(root, identity, "v1.2.3"), []byte("profile"), []byte("execution")); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("profile addition error = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "config.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("activation proceeded after profile addition")
+	}
+}
+
+func TestActivationSyncFailureHasTruthfulOutcome(t *testing.T) {
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	for _, test := range []struct {
+		name    string
+		failAt  int
+		outcome ActivationOutcome
+	}{
+		{"prepared files", 1, ActivationPreserved},
+		{"live files", 3, ActivationIndeterminate},
+		{"postcommit cleanup", 5, ActivationCommitted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := installation(t)
+			calls := 0
+			guard := Guard{Root: root, Identity: identity, Sync: func(string) error {
+				calls++
+				if calls == test.failAt {
+					return errors.New("injected sync failure")
+				}
+				return nil
+			}}
+			err := guard.Activate(configuration(root, identity, "v1.2.3"), []byte("profile"), []byte("execution"))
+			var activationErr *ActivationError
+			if !errors.As(err, &activationErr) || activationErr.Outcome != test.outcome {
+				t.Fatalf("activation error = %#v, want outcome %v", err, test.outcome)
+			}
+		})
+	}
 }
 
 func TestGuardRecoversDurableIncompleteActivation(t *testing.T) {
@@ -265,4 +342,27 @@ func mustWrite(t *testing.T, path string, raw []byte) {
 	if err := os.Chmod(path, 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func treeSnapshot(t *testing.T, root string) string {
+	t.Helper()
+	var snapshot strings.Builder
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&snapshot, "%s:%s:%o\n", strings.TrimPrefix(path, root), info.Mode().Type(), info.Mode().Perm())
+		if info.Mode().IsRegular() {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&snapshot, "%x\n", raw)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot.String()
 }

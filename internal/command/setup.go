@@ -257,12 +257,17 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Runner installation failed. Check the private home and release files, then retry.")
 		return 1
 	}
+	root := filepath.Join(home, ".shipmunk", "runners", bundle.RunnerID)
+	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}}
+	if err := guard.Preflight(); err != nil {
+		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
+		return 1
+	}
 	root, releases, err := prepareSetupDirectories(home, bundle.RunnerID, setupRuntime.effectiveUID())
 	if err != nil {
 		fmt.Fprintln(stderr, "Runner installation failed. Check the private home and release files, then retry.")
 		return 1
 	}
-	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}}
 	if err := guard.Validate(); err != nil {
 		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
 		return 1
@@ -282,8 +287,20 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		"expires_at": bundle.ExpiresAt.Format(time.RFC3339), "release_path": releasePath,
 		"release_version": manifest.Version, "platform": platform.OS + "-" + platform.Arch,
 	})
-	if err != nil || guard.Activate(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken)) != nil {
-		fmt.Fprintln(stderr, "Runner installation failed. Previous configuration was preserved.")
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner installation failed before configuration activation.")
+		return 1
+	}
+	if err := guard.Activate(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken)); err != nil {
+		var activationErr *install.ActivationError
+		switch {
+		case errors.As(err, &activationErr) && activationErr.Outcome == install.ActivationPreserved:
+			fmt.Fprintln(stderr, "Runner installation failed. Previous configuration was preserved.")
+		case errors.As(err, &activationErr) && activationErr.Outcome == install.ActivationCommitted:
+			fmt.Fprintln(stderr, "Runner configuration was committed, but cleanup could not be confirmed. Resolve installation state before running.")
+		default:
+			fmt.Fprintln(stderr, "Runner configuration activation is indeterminate. Resolve recovery state before running or retrying setup.")
+		}
 		return 1
 	}
 	fmt.Fprintln(stdout, "Installed the verified runner release. Setup did not start queued work.")

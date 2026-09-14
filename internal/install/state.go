@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ const maxConfigBytes = 16 << 10
 
 const activationJournalName = ".activation.json"
 
-var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 
 type Identity struct {
 	BaseURL   string
@@ -29,10 +30,28 @@ type Identity struct {
 }
 
 type Guard struct {
-	Root     string
-	Identity Identity
-	Rename   func(string, string) error
+	Root           string
+	Identity       Identity
+	Rename         func(string, string) error
+	Sync           func(string) error
+	profilesLocked func()
 }
+
+type ActivationOutcome uint8
+
+const (
+	ActivationIndeterminate ActivationOutcome = iota
+	ActivationPreserved
+	ActivationCommitted
+)
+
+type ActivationError struct {
+	Outcome ActivationOutcome
+	Err     error
+}
+
+func (err *ActivationError) Error() string { return err.Err.Error() }
+func (err *ActivationError) Unwrap() error { return err.Err }
 
 func (guard Guard) Validate() error {
 	return guard.withLocks(func(state *attemptstate.Store) error {
@@ -41,6 +60,34 @@ func (guard Guard) Validate() error {
 		}
 		return guard.validateLocked(state)
 	})
+}
+
+func (guard Guard) Preflight() error {
+	if protocol.ValidateProfileID(guard.Identity.RunnerID) != nil || protocol.ValidateProfileID(guard.Identity.ProfileID) != nil ||
+		!filepath.IsAbs(guard.Root) || filepath.Clean(guard.Root) != guard.Root || filepath.Base(guard.Root) != guard.Identity.RunnerID {
+		return errors.New("runner installation identity is invalid")
+	}
+	if _, err := os.Lstat(guard.Root); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := rejectSymlinkComponents(guard.Root); err != nil {
+		return err
+	}
+	if err := privateDirectory(guard.Root); err != nil {
+		return fmt.Errorf("runner installation directory is unsafe: %w", err)
+	}
+	if err := guard.validateExistingIdentity(); err != nil {
+		return err
+	}
+	if err := optionalPrivateDirectory(filepath.Join(guard.Root, "state")); err != nil {
+		return fmt.Errorf("runner state layout is unsafe: %w", err)
+	}
+	if err := absent(filepath.Join(guard.Root, "state", "active-attempt.json")); err != nil {
+		return fmt.Errorf("runner attempt recovery must be resolved before renewal: %w", err)
+	}
+	return guard.validateProfilesReadOnly()
 }
 
 func (guard Guard) validateLocked(state *attemptstate.Store) error {
@@ -67,6 +114,10 @@ func (guard Guard) validateLocked(state *attemptstate.Store) error {
 	if err != nil || active != nil {
 		return fmt.Errorf("runner attempt recovery must be resolved before renewal: %w", err)
 	}
+	return guard.validateProfilesReadOnly()
+}
+
+func (guard Guard) validateProfilesReadOnly() error {
 	profiles := filepath.Join(guard.Root, "profiles")
 	if err := optionalPrivateDirectory(profiles); err != nil {
 		return fmt.Errorf("runner profile layout is unsafe: %w", err)
@@ -153,12 +204,78 @@ func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
 		return fmt.Errorf("runner is active or its state is unsafe: %w", err)
 	}
 	defer state.Close()
-	store, err := profile.Open(filepath.Join(guard.Root, "profiles"), guard.Identity.ProfileID)
+	profilesRoot := filepath.Join(guard.Root, "profiles")
+	names, err := profileNames(profilesRoot)
 	if err != nil {
-		return fmt.Errorf("runner profile is unsafe: %w", err)
+		return err
 	}
-	defer store.Close()
-	return store.WithExclusive(func(*profile.Store) error { return operation(state) })
+	if !contains(names, guard.Identity.ProfileID) {
+		names = append(names, guard.Identity.ProfileID)
+		sort.Strings(names)
+	}
+	stores := make([]*profile.Store, 0, len(names))
+	for _, name := range names {
+		store, err := profile.Open(profilesRoot, name)
+		if err != nil {
+			return fmt.Errorf("runner profile is unsafe: %w", err)
+		}
+		stores = append(stores, store)
+		defer store.Close()
+	}
+	var lock func(int) error
+	lock = func(index int) error {
+		if index == len(stores) {
+			if guard.profilesLocked != nil {
+				guard.profilesLocked()
+			}
+			current, err := profileNames(profilesRoot)
+			if err != nil || !equalStrings(names, current) {
+				return errors.New("runner profiles changed while acquiring locks")
+			}
+			return operation(state)
+		}
+		return stores[index].WithExclusive(func(*profile.Store) error { return lock(index + 1) })
+	}
+	return lock(0)
+}
+
+func profileNames(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect runner profiles: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || protocol.ValidateProfileID(entry.Name()) != nil {
+			return nil, errors.New("runner profile layout is unsafe")
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (guard Guard) activateLocked(values map[string][]byte) error {
@@ -179,12 +296,15 @@ func (guard Guard) activateLocked(values map[string][]byte) error {
 			return guard.abortPreparation(err)
 		}
 	}
+	if err := guard.sync(); err != nil {
+		return guard.preparationError(err)
+	}
 	raw, _ := json.Marshal(journal)
 	if err := writePrivateExclusive(filepath.Join(guard.Root, activationJournalName), raw); err != nil {
 		return guard.abortPreparation(err)
 	}
-	if err := syncPrivateDirectory(guard.Root); err != nil {
-		return err
+	if err := guard.sync(); err != nil {
+		return &ActivationError{Outcome: ActivationIndeterminate, Err: err}
 	}
 	rename := guard.Rename
 	if rename == nil {
@@ -192,13 +312,25 @@ func (guard Guard) activateLocked(values map[string][]byte) error {
 	}
 	for _, name := range activationOrder {
 		if err := rename(guard.pending(name), filepath.Join(guard.Root, name)); err != nil {
-			return errors.Join(fmt.Errorf("activate runner configuration: %w", err), guard.recover())
+			cause := fmt.Errorf("activate runner configuration: %w", err)
+			if recoveryErr := guard.recover(); recoveryErr != nil {
+				return &ActivationError{Outcome: ActivationIndeterminate, Err: errors.Join(cause, recoveryErr)}
+			}
+			return &ActivationError{Outcome: ActivationPreserved, Err: cause}
 		}
 	}
-	if err := syncPrivateDirectory(guard.Root); err != nil {
-		return err
+	if err := guard.sync(); err != nil {
+		return &ActivationError{Outcome: ActivationIndeterminate, Err: err}
 	}
-	return guard.finishActivation()
+	committed, err := guard.finishActivation()
+	if err != nil {
+		outcome := ActivationIndeterminate
+		if committed {
+			outcome = ActivationCommitted
+		}
+		return &ActivationError{Outcome: outcome, Err: err}
+	}
+	return nil
 }
 
 func (guard Guard) recover() error {
@@ -240,31 +372,49 @@ func (guard Guard) recover() error {
 			return err
 		}
 	}
-	if err := syncPrivateDirectory(guard.Root); err != nil {
+	if err := guard.sync(); err != nil {
 		return err
 	}
-	return guard.finishActivation()
+	_, err = guard.finishActivation()
+	return err
 }
 
-func (guard Guard) finishActivation() error {
+func (guard Guard) finishActivation() (bool, error) {
 	if err := os.Remove(filepath.Join(guard.Root, activationJournalName)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return false, err
 	}
-	if err := syncPrivateDirectory(guard.Root); err != nil {
-		return err
+	if err := guard.sync(); err != nil {
+		return false, err
 	}
 	for _, name := range activationOrder {
 		for _, path := range []string{guard.backup(name), guard.pending(name)} {
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
+				return true, err
 			}
 		}
 	}
-	return syncPrivateDirectory(guard.Root)
+	return true, guard.sync()
 }
 
 func (guard Guard) abortPreparation(cause error) error {
-	return errors.Join(cause, guard.removePreparation())
+	return guard.preparationError(cause)
+}
+
+func (guard Guard) preparationError(cause error) error {
+	if cleanupErr := guard.removePreparation(); cleanupErr != nil {
+		return &ActivationError{Outcome: ActivationIndeterminate, Err: errors.Join(cause, cleanupErr)}
+	}
+	if err := guard.sync(); err != nil {
+		return &ActivationError{Outcome: ActivationIndeterminate, Err: errors.Join(cause, err)}
+	}
+	return &ActivationError{Outcome: ActivationPreserved, Err: cause}
+}
+
+func (guard Guard) sync() error {
+	if guard.Sync != nil {
+		return guard.Sync(guard.Root)
+	}
+	return syncPrivateDirectory(guard.Root)
 }
 
 func (guard Guard) removePreparation() error {
