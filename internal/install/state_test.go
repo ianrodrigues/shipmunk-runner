@@ -172,6 +172,76 @@ func TestActivationSyncFailureHasTruthfulOutcome(t *testing.T) {
 	}
 }
 
+func TestJournalWriteFailureRemovesAndSyncsMarkerBeforeCleanup(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	guard := Guard{Root: root, Identity: identity}
+	guard.Write = func(path string, raw []byte) error {
+		mustWrite(t, path, raw)
+		return errors.New("injected journal close failure")
+	}
+	syncCalls := 0
+	guard.Sync = func(string) error {
+		syncCalls++
+		if syncCalls == 2 {
+			return errors.New("injected marker directory sync failure")
+		}
+		return nil
+	}
+	err := guard.Activate(configuration(root, identity, "v1.2.3"), []byte("profile"), []byte("execution"))
+	var activationErr *ActivationError
+	if !errors.As(err, &activationErr) || activationErr.Outcome != ActivationIndeterminate {
+		t.Fatalf("activation error = %#v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, activationJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("failed journal marker still blocks runtime")
+	}
+	if _, err := os.Lstat(guard.pending("config.json")); err != nil {
+		t.Fatal("backup assets were removed before marker removal became durable")
+	}
+}
+
+func TestLegacyConfigurationMigratesOnlyForSameIdentity(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	legacy := `{"image_id":"sha256:` + strings.Repeat("a", 64) + `","base_url":"https://shipmunk.example","runner_id":"` + runnerID + `","profile_id":"` + profileID + `","expires_at":"2099-01-01T00:00:00+00:00"}`
+	mustWrite(t, filepath.Join(root, "config.json"), []byte(legacy))
+	mustWrite(t, filepath.Join(root, "profile.token"), []byte("old-profile"))
+	mustWrite(t, filepath.Join(root, "execution.token"), []byte("old-execution"))
+	mustMkdir(t, filepath.Join(root, "profiles", profileID))
+	mustWrite(t, filepath.Join(root, "profiles", profileID, "active.json"), []byte(`{"preserve":true}`))
+	guard := Guard{Root: root, Identity: identity}
+	if err := guard.Preflight(); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.Activate(configuration(root, identity, "v1.2.3"), []byte("new-profile"), []byte("new-execution")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeConfiguration(mustRead(t, filepath.Join(root, "config.json"))); err != nil {
+		t.Fatal("legacy configuration was not replaced by strict Go schema")
+	}
+	if string(mustRead(t, filepath.Join(root, "profiles", profileID, "active.json"))) != `{"preserve":true}` {
+		t.Fatal("profile state changed during legacy migration")
+	}
+	for _, mutate := range []func(string) string{
+		func(value string) string {
+			return strings.Replace(value, `"profile_id":"`, `"unknown":true,"profile_id":"`, 1)
+		},
+		func(value string) string { return strings.Replace(value, `"image_id":"sha256:`, `"image_id":"tag:`, 1) },
+		func(value string) string { return strings.Replace(value, identity.BaseURL, "https://other.example", 1) },
+		func(value string) string {
+			return strings.Replace(value, `"runner_id":`, `"runner_id":"`+runnerID+`","runner_id":`, 1)
+		},
+	} {
+		candidateRoot := installation(t)
+		mustWrite(t, filepath.Join(candidateRoot, "config.json"), []byte(mutate(legacy)))
+		candidate := Guard{Root: candidateRoot, Identity: identity}
+		if err := candidate.Preflight(); err == nil {
+			t.Fatal("accepted malformed or changed legacy configuration")
+		}
+	}
+}
+
 func TestGuardRecoversDurableIncompleteActivation(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
@@ -357,6 +427,15 @@ func mustWrite(t *testing.T, path string, raw []byte) {
 	if err := os.Chmod(path, 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func treeSnapshot(t *testing.T, root string) string {
