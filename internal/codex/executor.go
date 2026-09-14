@@ -319,7 +319,11 @@ func normalizeExecution(ctx context.Context, claim protocol.Claim, stream Stream
 	}
 	var usage any
 	if stream.Usage != nil {
-		usage = map[string]any{"input_tokens": stream.Usage.InputTokens, "cached_input_tokens": stream.Usage.CachedInputTokens, "output_tokens": stream.Usage.OutputTokens}
+		usage = map[string]any{
+			"input_tokens":        usageToken(stream.Usage.InputTokens),
+			"cached_input_tokens": usageToken(stream.Usage.CachedInputTokens),
+			"output_tokens":       usageToken(stream.Usage.OutputTokens),
+		}
 	}
 	execution := supervisor.Execution{Events: events, Result: map[string]any{"protocol_version": "1.0", "run_id": claim.RunID, "attempt_id": claim.AttemptID, "fence": claim.Fence, "outcome": stream.Result.Outcome, "summary": stream.Result.Summary, "findings": findings, "tests": tests, "patch_artifact": nil, "usage": usage}}
 	if claim.Manifest["kind"] == "review" || stream.Result.Outcome != "changes_proposed" {
@@ -344,6 +348,13 @@ func normalizeExecution(ctx context.Context, claim protocol.Claim, stream Stream
 	digest := sha256.Sum256(artifact)
 	execution.Artifacts = []supervisor.Artifact{{Kind: "patch", Bytes: artifact, SHA256: hex.EncodeToString(digest[:])}}
 	return execution, nil
+}
+
+func usageToken(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func selectSource(workspace string) (string, error) {

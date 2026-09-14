@@ -31,7 +31,7 @@ func TestParseValidCompleteStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stream.ThreadID != "thread-1" || stream.Result.Summary != "Done." || stream.Result.Outcome != "no_findings" || stream.Usage == nil || stream.Usage.CachedInputTokens != 3 {
+	if stream.ThreadID != "thread-1" || stream.Result.Summary != "Done." || stream.Result.Outcome != "no_findings" || stream.Usage == nil || stream.Usage.CachedInputTokens == nil || *stream.Usage.CachedInputTokens != 3 {
 		t.Fatalf("unexpected stream: %#v", stream)
 	}
 	if len(stream.Events) != 3 || stream.Events[0] != (Event{Type: "item.started", ItemID: "tool-1", ItemType: "command_execution"}) {
@@ -39,6 +39,20 @@ func TestParseValidCompleteStream(t *testing.T) {
 	}
 	if strings.Contains(stream.String(), "private") {
 		t.Fatal("provider diagnostics escaped parsing")
+	}
+}
+
+func TestParsePreservesUnavailableNativeUsageAsNull(t *testing.T) {
+	stream := strings.Replace(
+		validStream(validResult),
+		`{"input_tokens":10,"cached_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":2}`,
+		`{"input_tokens":null,"output_tokens":4}`,
+		1,
+	)
+
+	parsed, err := Parse([]byte(stream), nil)
+	if err != nil || parsed.Usage == nil || parsed.Usage.InputTokens != nil || parsed.Usage.CachedInputTokens != nil || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 4 {
+		t.Fatalf("usage = %#v, err = %v", parsed.Usage, err)
 	}
 }
 

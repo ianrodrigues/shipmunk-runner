@@ -72,9 +72,9 @@ type Result struct {
 }
 
 type Usage struct {
-	InputTokens       int64
-	CachedInputTokens int64
-	OutputTokens      int64
+	InputTokens       *int64
+	CachedInputTokens *int64
+	OutputTokens      *int64
 }
 
 type Stream struct {
@@ -301,18 +301,18 @@ func parseUsage(value any) (*Usage, error) {
 			return nil, ErrMalformedOutput
 		}
 	}
-	input, ok := nonnegativeInteger(object["input_tokens"])
+	input, ok := nullableNonnegativeInteger(object["input_tokens"])
 	if !ok {
 		return nil, ErrMalformedOutput
 	}
-	output, ok := nonnegativeInteger(object["output_tokens"])
+	output, ok := nullableNonnegativeInteger(object["output_tokens"])
 	if !ok {
 		return nil, ErrMalformedOutput
 	}
-	cached := int64(0)
+	var cached *int64
 	if raw, exists := object["cached_input_tokens"]; exists {
-		cached, ok = nonnegativeInteger(raw)
-		if !ok || cached > input {
+		cached, ok = nullableNonnegativeInteger(raw)
+		if !ok || (input != nil && cached != nil && *cached > *input) {
 			return nil, ErrMalformedOutput
 		}
 	}
@@ -424,6 +424,17 @@ func nonnegativeInteger(value any) (int64, bool) {
 	}
 	integer, err := number.Int64()
 	return integer, err == nil && integer >= 0 && integer <= protocol.MaxSafeInteger
+}
+
+func nullableNonnegativeInteger(value any) (*int64, bool) {
+	if value == nil {
+		return nil, true
+	}
+	integer, ok := nonnegativeInteger(value)
+	if !ok {
+		return nil, false
+	}
+	return &integer, true
 }
 
 func positiveInteger(value any) (int64, bool) {

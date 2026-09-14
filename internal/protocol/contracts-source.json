@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ianrodrigues/shipmunk-server",
-  "commit": "6fba1a6502caf7843e41aefbc35f7548fd6ec6be",
+  "commit": "9edd2c2383718ec19843652faed0cac07da8c180",
   "files": {
     "contracts/v1/event-batch.schema.json": {
       "source": "contracts/v1/event-batch.schema.json",
@@ -20,7 +20,7 @@
     },
     "testdata/contracts/v1/fixtures/invalid/invented-cost.json": {
       "source": "contracts/v1/fixtures/invalid/invented-cost.json",
-      "sha256": "2f42bd066bfb9085498daaae56267741fedb49464a47ba2d214c73eb84978540"
+      "sha256": "82113eb0d63f7ae5aaecf82f5d4ab64a6e45bd33d702ba42e5055c1195a93f00"
     },
     "testdata/contracts/v1/fixtures/invalid/major-version.json": {
       "source": "contracts/v1/fixtures/invalid/major-version.json",
@@ -88,7 +88,7 @@
     },
     "contracts/v1/result.schema.json": {
       "source": "contracts/v1/result.schema.json",
-      "sha256": "1256b905c4fe645603bb544f2e040ececcc4f20f63d23e98ad99e365a0605eb7"
+      "sha256": "41d6eeead2a2943de77de75e262270ad21635a14347180a1cdb063216eb13725"
     },
     "contracts/v1/run-input.schema.json": {
       "source": "contracts/v1/run-input.schema.json",

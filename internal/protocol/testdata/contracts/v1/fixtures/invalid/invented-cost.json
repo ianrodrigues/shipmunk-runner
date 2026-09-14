@@ -12,8 +12,8 @@
     "tests": [],
     "usage": {
       "input_tokens": null,
+      "cached_input_tokens": null,
       "output_tokens": null,
-      "native_limit": null,
       "cost_usd": 1
     }
   }
