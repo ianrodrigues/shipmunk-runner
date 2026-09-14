@@ -201,47 +201,6 @@ func TestJournalWriteFailureRemovesAndSyncsMarkerBeforeCleanup(t *testing.T) {
 	}
 }
 
-func TestLegacyConfigurationMigratesOnlyForSameIdentity(t *testing.T) {
-	root := installation(t)
-	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	legacy := `{"image_id":"sha256:` + strings.Repeat("a", 64) + `","base_url":"https://shipmunk.example","runner_id":"` + runnerID + `","profile_id":"` + profileID + `","expires_at":"2099-01-01T00:00:00+00:00"}`
-	mustWrite(t, filepath.Join(root, "config.json"), []byte(legacy))
-	mustWrite(t, filepath.Join(root, "profile.token"), []byte("old-profile"))
-	mustWrite(t, filepath.Join(root, "execution.token"), []byte("old-execution"))
-	mustMkdir(t, filepath.Join(root, "profiles", profileID))
-	mustWrite(t, filepath.Join(root, "profiles", profileID, "active.json"), []byte(`{"preserve":true}`))
-	guard := Guard{Root: root, Identity: identity}
-	if err := guard.Preflight(); err != nil {
-		t.Fatal(err)
-	}
-	if err := guard.Activate(configuration(root, identity, "v1.2.3"), []byte("new-profile"), []byte("new-execution")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := decodeConfiguration(mustRead(t, filepath.Join(root, "config.json"))); err != nil {
-		t.Fatal("legacy configuration was not replaced by strict Go schema")
-	}
-	if string(mustRead(t, filepath.Join(root, "profiles", profileID, "active.json"))) != `{"preserve":true}` {
-		t.Fatal("profile state changed during legacy migration")
-	}
-	for _, mutate := range []func(string) string{
-		func(value string) string {
-			return strings.Replace(value, `"profile_id":"`, `"unknown":true,"profile_id":"`, 1)
-		},
-		func(value string) string { return strings.Replace(value, `"image_id":"sha256:`, `"image_id":"tag:`, 1) },
-		func(value string) string { return strings.Replace(value, identity.BaseURL, "https://other.example", 1) },
-		func(value string) string {
-			return strings.Replace(value, `"runner_id":`, `"runner_id":"`+runnerID+`","runner_id":`, 1)
-		},
-	} {
-		candidateRoot := installation(t)
-		mustWrite(t, filepath.Join(candidateRoot, "config.json"), []byte(mutate(legacy)))
-		candidate := Guard{Root: candidateRoot, Identity: identity}
-		if err := candidate.Preflight(); err == nil {
-			t.Fatal("accepted malformed or changed legacy configuration")
-		}
-	}
-}
-
 func TestGuardRecoversDurableIncompleteActivation(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
@@ -339,6 +298,17 @@ func TestGuardRejectsChangedIdentityAndRecoveryJournals(t *testing.T) {
 				t.Fatal("unsafe renewal was accepted")
 			}
 		})
+	}
+}
+
+func TestGuardRejectsLegacyPHPInstallation(t *testing.T) {
+	root := installation(t)
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	legacy := `{"image_id":"sha256:` + strings.Repeat("a", 64) + `","base_url":"https://shipmunk.example","runner_id":"` + runnerID + `","profile_id":"` + profileID + `","expires_at":"2099-01-01T00:00:00+00:00"}`
+	mustWrite(t, filepath.Join(root, "config.json"), []byte(legacy))
+
+	if err := (Guard{Root: root, Identity: identity}).Preflight(); err == nil {
+		t.Fatal("legacy PHP installation was accepted without a launcher migration")
 	}
 }
 
