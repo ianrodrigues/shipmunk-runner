@@ -176,6 +176,10 @@ func Install(archive io.Reader, releases string, platform shipmunkrelease.Platfo
 		if err != nil {
 			return "", err
 		}
+		if err := handle.Chmod(mode); err != nil {
+			_ = handle.Close()
+			return "", err
+		}
 		_, writeErr := handle.Write(files[index])
 		syncErr := handle.Sync()
 		closeErr := handle.Close()

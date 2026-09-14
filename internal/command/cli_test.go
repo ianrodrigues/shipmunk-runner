@@ -3,6 +3,7 @@ package command
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -420,7 +421,9 @@ func TestCompiledSetupInstallsIntoCleanHomeWithoutStartingWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(root, "shipmunk-setup")
-	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./cmd/shipmunk-setup")
+	buildContext, cancelBuild := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelBuild()
+	build := exec.CommandContext(buildContext, "go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./cmd/shipmunk-setup")
 	build.Dir = repository
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build setup: %v: %s", err, output)
