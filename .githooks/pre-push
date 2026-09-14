@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Git supplies local-ref local-object remote-ref remote-object on stdin.
-while read -r local_ref local_object remote_ref remote_object extra; do
+while read -r local_ref local_object remote_ref remote_object extra || [[ -n "$local_ref$local_object$remote_ref$remote_object$extra" ]]; do
     if [[ -z "$local_ref" || -z "$local_object" || -z "$remote_ref" || -z "$remote_object" || -n "$extra" ]]; then
         echo 'pre-push: malformed ref update from Git.' >&2
         exit 1

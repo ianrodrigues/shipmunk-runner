@@ -32,6 +32,11 @@ assert_unchanged() {
     [[ "$(git hash-object -- "$checked_path")" == "$worktree_hash" ]] || fail 'hook mutated the worktree'
 }
 
+# Installation must distinguish an absent setting from an unreadable config.
+printf '[broken config\n' > "$temporary/broken-config"
+expect_failure 'invalid global config' env GIT_CONFIG_GLOBAL="$temporary/broken-config" make hooks
+if git config --local --get core.hooksPath > /dev/null; then fail 'config error changed the local hook path'; fi
+
 # Installation must preserve both an explicit hook path and default local hooks.
 git config core.hooksPath custom-hooks
 expect_failure 'custom hook path' make hooks
@@ -141,6 +146,8 @@ for local_ref in refs/heads/feature refs/heads/main '(delete)'; do
 done
 printf '(delete) %s refs/heads/main %s\n' "$zero" "$object" > "$push_record"
 expect_failure 'main deletion protected' .githooks/pre-push < "$push_record"
+printf 'refs/heads/feature %s refs/heads/main %s' "$object" "$zero" > "$push_record"
+expect_failure 'unterminated main update' .githooks/pre-push < "$push_record"
 printf 'refs/heads/main %s refs/heads/feature %s\nrefs/tags/main %s refs/tags/main %s\n' "$object" "$zero" "$object" "$zero" > "$push_record"
 expect_ok 'feature and tag push' .githooks/pre-push < "$push_record"
 expect_ok 'empty push' .githooks/pre-push < /dev/null
