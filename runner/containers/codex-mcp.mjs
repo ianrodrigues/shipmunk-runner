@@ -73,7 +73,12 @@ async function emit(value) {
     }
 }
 
-async function command(command) {
+// exchangeBridge writes one fenceless request to the protected local bridge
+// and waits for the trusted host supervisor's matching response. The request
+// and response shapes are op-specific and validated by the caller: this
+// function only enforces the generic file protocol (fresh files, size caps,
+// matching sequence id).
+async function exchangeBridge(fields) {
     const id = ++sequence;
     for (const path of ['/bridge/request.json', '/bridge/response.json']) {
         try {
@@ -94,7 +99,7 @@ async function command(command) {
         0o600,
     );
     try {
-        await handle.writeFile(JSON.stringify({ id, command }));
+        await handle.writeFile(JSON.stringify({ id, ...fields }));
         await handle.sync();
     } finally {
         await handle.close();
@@ -138,25 +143,198 @@ async function command(command) {
             await response.close();
         }
         if (
-            !object(value, ['id', 'stdout', 'stderr', 'exit_code']) ||
-            value.id !== id ||
-            typeof value.stdout !== 'string' ||
-            typeof value.stderr !== 'string' ||
-            !Number.isInteger(value.exit_code) ||
-            value.exit_code < 0 ||
-            value.exit_code > 255
+            value === null ||
+            typeof value !== 'object' ||
+            Array.isArray(value) ||
+            value.id !== id
         ) {
             throw new Error('Invalid response.');
         }
         await unlink('/bridge/response.json');
         await unlink('/bridge/request.json');
-        return {
-            content: [{ type: 'text', text: JSON.stringify(value) }],
-            isError: value.exit_code !== 0,
-        };
+        return value;
     }
     throw new Error('Bridge deadline exceeded.');
 }
+
+async function commandBridge(text) {
+    const value = await exchangeBridge({ command: text });
+    if (
+        !object(value, ['id', 'stdout', 'stderr', 'exit_code']) ||
+        typeof value.stdout !== 'string' ||
+        typeof value.stderr !== 'string' ||
+        !Number.isInteger(value.exit_code) ||
+        value.exit_code < 0 ||
+        value.exit_code > 255
+    ) {
+        throw new Error('Invalid response.');
+    }
+    return {
+        content: [{ type: 'text', text: JSON.stringify(value) }],
+        isError: value.exit_code !== 0,
+    };
+}
+
+async function reviewBridge(op, args) {
+    const value = await exchangeBridge({ op, ...args });
+    if (
+        !object(value, ['id', 'ok', 'output', 'truncated']) ||
+        typeof value.ok !== 'boolean' ||
+        typeof value.output !== 'string' ||
+        typeof value.truncated !== 'boolean'
+    ) {
+        throw new Error('Invalid response.');
+    }
+    return {
+        content: [{ type: 'text', text: value.output }],
+        isError: !value.ok,
+    };
+}
+
+function validSnapshot(value) {
+    return value === 'baseline' || value === 'workspace';
+}
+
+function validPath(value) {
+    return (
+        typeof value === 'string' &&
+        Buffer.byteLength(value) <= 1024 &&
+        !value.includes('\0')
+    );
+}
+
+const reviewSnapshotSchema = { type: 'string', enum: ['baseline', 'workspace'] };
+const reviewPathSchema = {
+    type: 'string',
+    maxLength: 1024,
+    description: 'Path relative to the snapshot root. Use "" for the root.',
+};
+
+// The active tool set is chosen once from the fixed launch argument the
+// runner supplies; it never changes for the life of this process, and a
+// review process never advertises or accepts repository_command.
+const mode = process.argv[2] === 'review' ? 'review' : 'repository';
+
+const toolsByMode = {
+    repository: [
+        {
+            name: 'repository_command',
+            description:
+                'Execute a command in the isolated task repository. Credentials and native configuration are unavailable there.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    command: { type: 'string', minLength: 1, maxLength: 8192 },
+                },
+                required: ['command'],
+                additionalProperties: false,
+            },
+            validate: (args) =>
+                object(args, ['command']) &&
+                typeof args.command === 'string' &&
+                args.command.trim() !== '' &&
+                !args.command.includes('\0') &&
+                Buffer.byteLength(args.command) <= 8192,
+            call: (args) => commandBridge(args.command),
+        },
+    ],
+    review: [
+        {
+            name: 'review_list',
+            description:
+                'List the immediate entries of a directory in the authorized baseline or workspace snapshot.',
+            inputSchema: {
+                type: 'object',
+                properties: { snapshot: reviewSnapshotSchema, path: reviewPathSchema },
+                required: ['snapshot', 'path'],
+                additionalProperties: false,
+            },
+            validate: (args) =>
+                object(args, ['snapshot', 'path']) &&
+                validSnapshot(args.snapshot) &&
+                validPath(args.path),
+            call: (args) =>
+                reviewBridge('review_list', { snapshot: args.snapshot, path: args.path }),
+        },
+        {
+            name: 'review_search',
+            description:
+                'Search file contents for a literal substring in the authorized baseline or workspace snapshot, optionally scoped to a path.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    snapshot: reviewSnapshotSchema,
+                    path: reviewPathSchema,
+                    query: { type: 'string', minLength: 1, maxLength: 256 },
+                },
+                required: ['snapshot', 'path', 'query'],
+                additionalProperties: false,
+            },
+            validate: (args) =>
+                object(args, ['snapshot', 'path', 'query']) &&
+                validSnapshot(args.snapshot) &&
+                validPath(args.path) &&
+                typeof args.query === 'string' &&
+                args.query !== '' &&
+                Buffer.byteLength(args.query) <= 256 &&
+                !args.query.includes('\0'),
+            call: (args) =>
+                reviewBridge('review_search', {
+                    snapshot: args.snapshot,
+                    path: args.path,
+                    query: args.query,
+                }),
+        },
+        {
+            name: 'review_read',
+            description:
+                'Read a bounded window of lines from one file in the authorized baseline or workspace snapshot.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    snapshot: reviewSnapshotSchema,
+                    path: reviewPathSchema,
+                    start_line: { type: 'integer', minimum: 1 },
+                    line_count: { type: 'integer', minimum: 1, maximum: 400 },
+                },
+                required: ['snapshot', 'path', 'start_line', 'line_count'],
+                additionalProperties: false,
+            },
+            validate: (args) =>
+                object(args, ['snapshot', 'path', 'start_line', 'line_count']) &&
+                validSnapshot(args.snapshot) &&
+                validPath(args.path) &&
+                args.path !== '' &&
+                Number.isSafeInteger(args.start_line) &&
+                args.start_line >= 1 &&
+                Number.isSafeInteger(args.line_count) &&
+                args.line_count >= 1 &&
+                args.line_count <= 400,
+            call: (args) =>
+                reviewBridge('review_read', {
+                    snapshot: args.snapshot,
+                    path: args.path,
+                    start_line: args.start_line,
+                    line_count: args.line_count,
+                }),
+        },
+        {
+            name: 'review_diff',
+            description:
+                'Return the changed-file list (path "") or a bounded unified diff for one path between the authorized baseline and workspace snapshots.',
+            inputSchema: {
+                type: 'object',
+                properties: { path: reviewPathSchema },
+                required: ['path'],
+                additionalProperties: false,
+            },
+            validate: (args) => object(args, ['path']) && validPath(args.path),
+            call: (args) => reviewBridge('review_diff', { path: args.path }),
+        },
+    ],
+};
+
+const activeTools = toolsByMode[mode];
 
 async function dispatch(message) {
     if (
@@ -233,47 +411,30 @@ async function dispatch(message) {
         metadata(params._meta)
     ) {
         result = {
-            tools: [
-                {
-                    name: 'repository_command',
-                    description:
-                        'Execute a command in the isolated task repository. Credentials and native configuration are unavailable there.',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            command: {
-                                type: 'string',
-                                minLength: 1,
-                                maxLength: 8192,
-                            },
-                        },
-                        required: ['command'],
-                        additionalProperties: false,
-                    },
-                },
-            ],
+            tools: activeTools.map(({ name, description, inputSchema }) => ({
+                name,
+                description,
+                inputSchema,
+            })),
         };
     } else if (message.method === 'tools/call') {
-        if (
-            !object(params, ['name', 'arguments', '_meta']) ||
-            params.name !== 'repository_command' ||
-            !object(params.arguments, ['command']) ||
-            typeof params.arguments.command !== 'string' ||
-            params.arguments.command.trim() === '' ||
-            params.arguments.command.includes('\0') ||
-            Buffer.byteLength(params.arguments.command) > 8192 ||
-            !metadata(params._meta)
-        ) {
-            return error(-32602, 'Invalid repository command.');
+        const tool =
+            object(params, ['name', 'arguments', '_meta']) &&
+            metadata(params._meta) &&
+            typeof params.name === 'string'
+                ? activeTools.find((candidate) => candidate.name === params.name)
+                : undefined;
+        if (!tool || !tool.validate(params.arguments)) {
+            return error(-32602, 'Invalid tool arguments.');
         }
-        result = await command(params.arguments.command);
+        result = await tool.call(params.arguments);
         const envelope = { jsonrpc: '2.0', id, result };
         if (Buffer.byteLength(JSON.stringify(envelope) + '\n') > outputLimit) {
             result = {
                 content: [
                     {
                         type: 'text',
-                        text: 'Repository command finished, but its response exceeds the MCP output limit. Inspect results with a command that produces less output.',
+                        text: 'Tool call finished, but its response exceeds the MCP output limit. Request a narrower result.',
                     },
                 ],
                 isError: true,

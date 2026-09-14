@@ -62,6 +62,7 @@ type DockerTransport struct {
 	bridge          string
 	workspaceVolume string
 	mediator        *Mediator
+	reviewMediator  *ReviewMediator
 	patch           *Patch
 	patchCollected  bool
 	fence           int64
@@ -210,6 +211,16 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 		return nil, errors.New("cannot protect command bridge")
 	}
 	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence, profileHandle: handles[0], sourceHandle: handles[1], baselineHandle: handles[2]}
+	if cfg.Baseline != "" {
+		reviewMediator, err := NewReviewMediator(fence, cfg.MaxCommands, cfg.Source, handles[1], cfg.Baseline, handles[2])
+		if err != nil {
+			closeHandles()
+			_ = os.RemoveAll(bridge)
+			return nil, err
+		}
+		t.reviewMediator = reviewMediator
+		return t, nil
+	}
 	mediator, err := NewMediator(fence, cfg.MaxCommands, t)
 	if err != nil {
 		closeHandles()
@@ -275,7 +286,7 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	if t.cfg.Baseline != "" {
 		repo = append(repo, "--mount", "type=volume,src="+t.workspaceVolume+",dst=/baseline,volume-subpath=base,readonly")
 	}
-	repo = append(repo, "--pids-limit", "64", "--network", "none", "--workdir", "/workspace", "--mount", t.workspaceMount("/workspace", false), "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
+	repo = append(repo, "--pids-limit", "64", "--network", "none", "--workdir", "/workspace", "--mount", t.workspaceMount("/workspace", t.cfg.Baseline != ""), "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
 	if _, err = t.run(ctx, nil, repo...); err != nil {
 		return errors.New("cannot create repository container")
 	}
@@ -310,9 +321,11 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		if _, err = t.run(ctx, bytes.NewReader(archive), t.repoExec("tar", "-xf", "-", "-C", "/workspace")...); err != nil {
 			return errors.New("cannot populate repository container")
 		}
-	}
-	if _, err = t.run(ctx, nil, t.repoExec("sh", "-c", "test ! -e .git && git -c core.hooksPath=/dev/null init -q && git -c core.hooksPath=/dev/null add --all && git -c core.hooksPath=/dev/null -c user.name=Shipmunk -c user.email=runner@shipmunk.local commit -qm baseline --allow-empty")...); err != nil {
-		return errors.New("cannot initialize protected repository baseline")
+		// Review has no shell tool to consult this history, so only implement
+		// and fix runs get the synthetic local commit their prompt describes.
+		if _, err = t.run(ctx, nil, t.repoExec("sh", "-c", "test ! -e .git && git -c core.hooksPath=/dev/null init -q && git -c core.hooksPath=/dev/null add --all && git -c core.hooksPath=/dev/null -c user.name=Shipmunk -c user.email=runner@shipmunk.local commit -qm baseline --allow-empty")...); err != nil {
+			return errors.New("cannot initialize protected repository baseline")
+		}
 	}
 	t.started = true
 	return nil
@@ -500,6 +513,15 @@ func (t *DockerTransport) serviceBridge(ctx context.Context) error {
 	if readErr != nil || statErr != nil || closeErr != nil || !os.SameFile(info, opened) || len(raw) > MaxCommandRequestBytes {
 		return errors.New("repository command request is invalid")
 	}
+	if t.reviewMediator != nil {
+		return t.serviceReviewBridge(ctx, root, raw)
+	}
+	return t.serviceCommandBridge(ctx, root, raw)
+}
+
+// serviceCommandBridge mediates the freeform repository_command tool used by
+// implement and fix runs.
+func (t *DockerTransport) serviceCommandBridge(ctx context.Context, root *os.Root, raw []byte) error {
 	// The bundled bridge omits the host-only fence; bind it before strict decoding.
 	value, err := decodeBridgeRequest(raw)
 	if err != nil {
@@ -526,6 +548,44 @@ func (t *DockerTransport) serviceBridge(ctx context.Context) error {
 	if err != nil {
 		return errors.New("repository command response is invalid")
 	}
+	return t.writeBridgeResponse(root, wire)
+}
+
+// serviceReviewBridge mediates the bounded review_list, review_search,
+// review_read and review_diff tools used by review runs. It never execs into
+// a container: every op resolves against the host-side snapshots already
+// pinned by the transport.
+func (t *DockerTransport) serviceReviewBridge(ctx context.Context, root *os.Root, raw []byte) error {
+	// The bundled bridge omits the host-only fence; bind it before strict decoding.
+	parsed, err := decodeReviewRequest(raw, false)
+	if err != nil {
+		return err
+	}
+	framed, err := encodeFencedReviewRequest(t.fence, parsed)
+	if err != nil {
+		return errors.New("review request schema is invalid")
+	}
+	response, err := t.reviewMediator.Handle(ctx, framed)
+	if err != nil {
+		return err
+	}
+	var host reviewResponse
+	if err = json.Unmarshal(response, &host); err != nil {
+		return errors.New("review response is invalid")
+	}
+	wire, err := json.Marshal(struct {
+		ID        int64  `json:"id"`
+		OK        bool   `json:"ok"`
+		Output    string `json:"output"`
+		Truncated bool   `json:"truncated"`
+	}{host.ID, host.OK, host.Output, host.Truncated})
+	if err != nil {
+		return errors.New("review response is invalid")
+	}
+	return t.writeBridgeResponse(root, wire)
+}
+
+func (t *DockerTransport) writeBridgeResponse(root *os.Root, wire []byte) error {
 	tmp, err := root.OpenFile("response.tmp", os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return errors.New("cannot write repository response")
@@ -598,7 +658,12 @@ func (t *DockerTransport) CollectPatch(ctx context.Context) (_ *Patch, err error
 		return t.patch, nil
 	}
 	t.sealed = true
-	t.mediator.Seal()
+	if t.mediator != nil {
+		t.mediator.Seal()
+	}
+	if t.reviewMediator != nil {
+		t.reviewMediator.Seal()
+	}
 	defer func() {
 		if err != nil {
 			if cleanup := t.cleanup(context.Background()); cleanup != nil {

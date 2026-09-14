@@ -520,7 +520,7 @@ func TestDockerReviewHasNoWritableBaselineAlias(t *testing.T) {
 		}
 		if strings.HasPrefix(line, "create --name "+testTransportName+"-repo ") {
 			repository++
-			for _, required := range []string{",dst=/baseline,volume-subpath=base,readonly", ",dst=/workspace,volume-subpath=head", "--read-only", "--network none", "--cap-drop ALL"} {
+			for _, required := range []string{",dst=/baseline,volume-subpath=base,readonly", ",dst=/workspace,volume-subpath=head,readonly", "--read-only", "--network none", "--cap-drop ALL"} {
 				if !strings.Contains(line, required) {
 					t.Fatalf("repository omitted %q: %s", required, line)
 				}
