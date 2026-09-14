@@ -1,5 +1,8 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := check
+VERSION ?= development
+GO_VERSION_PACKAGE := github.com/ianrodrigues/shipmunk-runner/internal/command
+GO_RELEASE_LDFLAGS := -s -w -X $(GO_VERSION_PACKAGE).Version=$(VERSION)
 
 .PHONY: check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check
 
@@ -7,7 +10,7 @@ check: lint package-check runner-check native-image-check go-check go-parity-che
 
 go-runtime-check: runner-check
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-runtime.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
-	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog; \
+	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog; \
 	SHIPMUNK_PROFILE_DOCKER_TEST=1 SHIPMUNK_PROFILE_IMAGE=shipmunk-profile-test:local go test -race -count=1 ./internal/profile; \
 	SHIPMUNK_SANDBOX_DOCKER_TEST=1 SHIPMUNK_RUNNER_IMAGE=shipmunk-runner-test:local SHIPMUNK_WATCHDOG_BINARY="$$build_dir/shipmunk-watchdog" go test -race -count=1 ./internal/sandbox ./internal/supervisor
 
@@ -23,10 +26,10 @@ go-check:
 
 go-build:
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-build.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
-	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-runner" ./cmd/shipmunk-runner; \
-	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-profile" ./cmd/shipmunk-profile; \
-	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-setup" ./cmd/shipmunk-setup; \
-	go build -trimpath -buildvcs=false -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog
+	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-runner" ./cmd/shipmunk-runner; \
+	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-profile" ./cmd/shipmunk-profile; \
+	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-setup" ./cmd/shipmunk-setup; \
+	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog
 
 lint:
 	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'PHP 8.5 or newer is required.' >&2; exit 1; }

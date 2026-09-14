@@ -133,6 +133,34 @@ func TestRunnerAndProfileCommandsRemainFailClosedAndSafe(t *testing.T) {
 	}
 }
 
+func TestCommandsReportInjectedReleaseVersion(t *testing.T) {
+	original := Version
+	Version = "v1.2.3-alpha.4"
+	t.Cleanup(func() { Version = original })
+
+	for name, run := range map[string]func(*bytes.Buffer, *bytes.Buffer) int{
+		"shipmunk-runner": func(stdout, stderr *bytes.Buffer) int {
+			return RunRunner([]string{"--version"}, stdout, stderr)
+		},
+		"shipmunk-profile": func(stdout, stderr *bytes.Buffer) int {
+			return RunProfile([]string{"--version"}, stdout, stderr)
+		},
+		"shipmunk-setup": func(stdout, stderr *bytes.Buffer) int {
+			return RunSetup([]string{"--version"}, stdout, stderr)
+		},
+		"shipmunk-watchdog": func(stdout, stderr *bytes.Buffer) int {
+			return RunWatchdog([]string{"--version"}, strings.NewReader(""), stdout, stderr)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(&stdout, &stderr); code != 0 || stdout.String() != name+" v1.2.3-alpha.4\n" || stderr.Len() != 0 {
+				t.Fatalf("version = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 	original := runNativeProfile
 	t.Cleanup(func() { runNativeProfile = original })

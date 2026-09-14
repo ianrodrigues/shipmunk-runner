@@ -165,7 +165,7 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if options.Version {
-		fmt.Fprintln(stdout, "shipmunk-setup "+developmentVersion)
+		fmt.Fprintln(stdout, "shipmunk-setup "+Version)
 		return 0
 	}
 	fmt.Fprintln(stderr, "Go setup installation is not available in this compatibility foundation.")
