@@ -34,3 +34,69 @@ jobs:
           runner_temp=$(mktemp -d "${RUNNER_TEMP}/shipmunk-runner-check.XXXXXX")
           trap 'rm -rf "$runner_temp"' EXIT
           TMPDIR="$runner_temp" make check
+
+  # Builds the release archive and the smoke test's fixtures with the Go
+  # toolchain, then hands them to install-smoke as opaque artifacts so that
+  # job can install and drive the release without PHP or Go on its own PATH,
+  # matching a real designated execution host.
+  install-smoke-build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the release archive and the smoke test fixtures
+        run: |
+          set -eu
+          dist="${RUNNER_TEMP}/install-smoke-dist"
+          mkdir -p "$dist/upstub"
+          go run ./cmd/shipmunk-package . "$dist" v0.0.0-installsmoke
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$dist/upstub/upstub-linux-$arch" ./internal/installsmoke/testdata/upstub
+          done
+          go test -c -o "$dist/install-smoke.test" ./internal/installsmoke
+          echo "SMOKE_DIST=$dist" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-smoke-fixtures
+          path: ${{ env.SMOKE_DIST }}
+          retention-days: 1
+          if-no-files-found: error
+
+  # Installs the built release inside a container with neither PHP nor Go on
+  # its PATH. Only linux-amd64 is wired here, matching this self-hosted
+  # runner's native architecture; SHIPMUNK_INSTALL_SMOKE_ARCH is a real
+  # parameter (see internal/installsmoke) so a linux-arm64 job can be added
+  # once a matching runner or registered emulation is available.
+  install-smoke:
+    needs: install-smoke-build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        arch: [amd64]
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: install-smoke-fixtures
+          path: dist
+      - name: Run the clean-container install smoke test
+        run: |
+          set -eu
+          command -v expect >/dev/null 2>&1 || { echo 'install-smoke: expect is missing; install it on this runner to provide an operator terminal.' >&2; exit 1; }
+          chmod +x dist/install-smoke.test dist/upstub/upstub-linux-amd64 dist/upstub/upstub-linux-arm64
+          runner_temp=$(mktemp -d "${RUNNER_TEMP}/shipmunk-install-smoke.XXXXXX")
+          trap 'rm -rf "$runner_temp"' EXIT
+          TMPDIR="$runner_temp" \
+          SHIPMUNK_INSTALL_SMOKE_TEST=1 \
+          SHIPMUNK_INSTALL_SMOKE_ARCH="${{ matrix.arch }}" \
+          SHIPMUNK_INSTALL_SMOKE_ARCHIVE_DIR="$PWD/dist" \
+          SHIPMUNK_INSTALL_SMOKE_UPSTUB_DIR="$PWD/dist/upstub" \
+          ./dist/install-smoke.test -test.v -test.timeout=10m
