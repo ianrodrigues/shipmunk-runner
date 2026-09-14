@@ -3,7 +3,8 @@ set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/.." && pwd)
 # Tests may themselves run from a hook; never inherit its real index/worktree.
-for variable in $(git rev-parse --local-env-vars); do unset "$variable"; done
+git_variables=$(git rev-parse --local-env-vars)
+for variable in $git_variables; do unset "$variable"; done
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/shipmunk-hooks-test.XXXXXX")
