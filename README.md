@@ -6,7 +6,7 @@ The initial version is `v0.1.0-alpha.1`. Runner versions and release tags are in
 
 ## Install and connect
 
-Use **Connections → Runners & Codex** in your Shipmunk application to register a runner and download its short-lived setup file. The dashboard also shows a hosted bootstrap command for the dedicated execution host; running it downloads the exact public Go release pinned by the application, verifies the platform archive's SHA-256 digest against the signed manifest, and runs the verified `shipmunk-setup` binary from that archive. No PHP, Go toolchain, application checkout or database access is needed on the runner host — only `curl`, `tar`, `sha256sum`/`shasum`, Bash and a reachable Linux Docker engine (Docker Desktop on macOS can provide it). Run as the designated non-root account.
+Use **Connections → Runners & Codex** in your Shipmunk application to register a runner and download its short-lived setup file. The dashboard also shows a hosted bootstrap command for the dedicated execution host; running it downloads the exact public Go release pinned by the application, verifies the platform archive's SHA-256 digest against the digests recorded in the release manifest and `SHA256SUMS`, and runs the verified `shipmunk-setup` binary from that archive. No PHP, Go toolchain, application checkout or database access is needed on the runner host — only `curl`, `tar`, `sha256sum`/`shasum`, Bash and a reachable Linux Docker engine (Docker Desktop on macOS can provide it). Run as the designated non-root account.
 
 To install without the hosted bootstrap script, download and verify the release yourself:
 
@@ -17,7 +17,7 @@ platform=linux-amd64 # or linux-arm64, darwin-amd64, darwin-arm64
 curl -fsSLO "https://github.com/ianrodrigues/shipmunk-runner/releases/download/$version/runner-release.json"
 curl -fsSLO "https://github.com/ianrodrigues/shipmunk-runner/releases/download/$version/SHA256SUMS"
 curl -fsSLO "https://github.com/ianrodrigues/shipmunk-runner/releases/download/$version/shipmunk-runner-$version-$platform.tar"
-sha256sum --ignore-missing -c SHA256SUMS
+if command -v sha256sum >/dev/null 2>&1; then sha256sum --ignore-missing -c SHA256SUMS; else shasum -a 256 --ignore-missing -c SHA256SUMS; fi
 tar -xf "shipmunk-runner-$version-$platform.tar" bin/shipmunk-setup
 
 ./bin/shipmunk-setup ~/Downloads/shipmunk-setup-RUNNER.json \
