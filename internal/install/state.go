@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,11 +29,10 @@ type Identity struct {
 }
 
 type Guard struct {
-	Root           string
-	Identity       Identity
-	Rename         func(string, string) error
-	Sync           func(string) error
-	profilesLocked func()
+	Root     string
+	Identity Identity
+	Rename   func(string, string) error
+	Sync     func(string) error
 }
 
 type ActivationOutcome uint8
@@ -130,6 +128,12 @@ func (guard Guard) validateProfilesReadOnly() error {
 		return fmt.Errorf("inspect runner profiles: %w", err)
 	}
 	for _, entry := range entries {
+		if entry.Name() == ".lock" {
+			if err := validateOptionalFile(filepath.Join(profiles, entry.Name())); err != nil {
+				return errors.New("runner profile layout is unsafe")
+			}
+			continue
+		}
 		if protocol.ValidateProfileID(entry.Name()) != nil || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return errors.New("runner profile layout is unsafe")
 		}
@@ -205,77 +209,7 @@ func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
 	}
 	defer state.Close()
 	profilesRoot := filepath.Join(guard.Root, "profiles")
-	names, err := profileNames(profilesRoot)
-	if err != nil {
-		return err
-	}
-	if !contains(names, guard.Identity.ProfileID) {
-		names = append(names, guard.Identity.ProfileID)
-		sort.Strings(names)
-	}
-	stores := make([]*profile.Store, 0, len(names))
-	for _, name := range names {
-		store, err := profile.Open(profilesRoot, name)
-		if err != nil {
-			return fmt.Errorf("runner profile is unsafe: %w", err)
-		}
-		stores = append(stores, store)
-		defer store.Close()
-	}
-	var lock func(int) error
-	lock = func(index int) error {
-		if index == len(stores) {
-			if guard.profilesLocked != nil {
-				guard.profilesLocked()
-			}
-			current, err := profileNames(profilesRoot)
-			if err != nil || !equalStrings(names, current) {
-				return errors.New("runner profiles changed while acquiring locks")
-			}
-			return operation(state)
-		}
-		return stores[index].WithExclusive(func(*profile.Store) error { return lock(index + 1) })
-	}
-	return lock(0)
-}
-
-func profileNames(root string) ([]string, error) {
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("inspect runner profiles: %w", err)
-	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || protocol.ValidateProfileID(entry.Name()) != nil {
-			return nil, errors.New("runner profile layout is unsafe")
-		}
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
-	return names, nil
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-func equalStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return profile.WithRootExclusive(profilesRoot, func() error { return operation(state) })
 }
 
 func (guard Guard) activateLocked(values map[string][]byte) error {

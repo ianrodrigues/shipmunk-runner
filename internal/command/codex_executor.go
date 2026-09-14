@@ -74,6 +74,8 @@ func (e *profileExecutor) Renew(claim protocol.Claim, expiry time.Time) error {
 	return nil
 }
 
+func (e *profileExecutor) close() error { return e.store.Close() }
+
 func validateExecutionProfile(store *profile.Store, claim protocol.Claim) error {
 	active, err := store.Read("active")
 	if err != nil || active == nil {

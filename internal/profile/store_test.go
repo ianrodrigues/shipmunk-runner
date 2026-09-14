@@ -233,6 +233,34 @@ func TestStoreRequiresExactLockPermissionsAndRejectsLockLinks(t *testing.T) {
 	}
 }
 
+func TestProfileRootLockCoordinatesStoreLifetimes(t *testing.T) {
+	store, root := openTestStore(t)
+	if err := WithRootExclusive(root, func() error { return nil }); err == nil {
+		t.Fatal("installer lock passed an open profile store")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithRootExclusive(root, func() error {
+		if _, err := Open(root, "01k4w000000000000000000002"); err == nil {
+			t.Fatal("profile store opened under installer lock")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(root, ".lock")
+	if mode := fileMode(t, lockPath); mode != 0600 {
+		t.Fatalf("root lock mode %#o, want 0600", mode)
+	}
+	if err := os.Chmod(lockPath, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root, "01k4w000000000000000000002"); err == nil {
+		t.Fatal("accepted unsafe profile root lock permissions")
+	}
+}
+
 func TestExclusiveLockSpansCallbackAndIsPerProfile(t *testing.T) {
 	store, root := openTestStore(t)
 	other, err := Open(root, testProfileID)
