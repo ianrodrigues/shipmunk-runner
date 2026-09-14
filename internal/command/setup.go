@@ -3,12 +3,15 @@ package command
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -18,7 +21,12 @@ import (
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/install"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 )
+
+var setupCheckServer = checkSetupServer
+var setupBuildImage = buildSetupImage
+var setupImageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 const (
 	setupBundleMaxBytes   = 16 * 1024
@@ -199,6 +207,9 @@ func ParseSetupBundle(raw []byte, serverURLOverride string, now time.Time) (Setu
 }
 
 func RunSetup(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "run" || args[0] == "connect") {
+		return runInstalledSetup(args, stdout, stderr)
+	}
 	options, err := ParseSetupOptions(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "Invalid setup options. Run shipmunk-setup --help for usage.")
@@ -282,16 +293,26 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Runner installation failed. Check the private home and release files, then retry.")
 		return 1
 	}
+	if err := setupCheckServer(bundle.BaseURL); err != nil {
+		fmt.Fprintln(stderr, "The server health check failed. Check its address and connectivity, then retry. No runner configuration was changed.")
+		return 1
+	}
+	imageID, err := setupBuildImage(root, releasePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "Runtime image preparation failed. Check the Linux Docker engine, then retry. Previous configuration was preserved.")
+		return 1
+	}
 	config, err := json.Marshal(map[string]any{
 		"base_url": bundle.BaseURL, "runner_id": bundle.RunnerID, "profile_id": bundle.ProfileID,
 		"expires_at": bundle.ExpiresAt.Format(time.RFC3339), "release_path": releasePath,
-		"release_version": manifest.Version, "platform": platform.OS + "-" + platform.Arch,
+		"release_version": manifest.Version, "platform": platform.OS + "-" + platform.Arch, "image_id": imageID,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "Runner installation failed before configuration activation.")
 		return 1
 	}
-	if err := guard.Activate(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken)); err != nil {
+	setupBinary := filepath.Join(releasePath, "bin", "shipmunk-setup")
+	if err := guard.ActivateLaunchers(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken), setupLaunchers(setupBinary, root)); err != nil {
 		var activationErr *install.ActivationError
 		switch {
 		case errors.As(err, &activationErr) && activationErr.Outcome == install.ActivationPreserved:
@@ -303,8 +324,68 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	fmt.Fprintln(stdout, "Installed the verified runner release. Setup did not start queued work.")
+	fmt.Fprintf(stdout, "Installed the verified runner release. Setup did not start queued work.\n\nCommands for this runner:\n  Login/retry: %s\n  Probe:       %s probe\n  Poll once:   %s --once\n  Run:         %s\n", filepath.Join(root, "connect"), filepath.Join(root, "connect"), filepath.Join(root, "run"), filepath.Join(root, "run"))
 	return 0
+}
+
+func checkSetupServer(baseURL string) error {
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
+	request, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/up", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	count, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 32*1024+1))
+	if readErr != nil || count > 32*1024 || response.StatusCode != http.StatusOK {
+		return errors.New("server is unavailable")
+	}
+	return nil
+}
+
+func buildSetupImage(root, releasePath string) (string, error) {
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		return "", err
+	}
+	if serverOS, err := dockerPreflight(context.Background(), docker, "version", "--format", "{{.Server.Os}}"); err != nil || serverOS != "linux" {
+		return "", errors.New("a Linux Docker engine is required")
+	}
+	contextRoot, err := os.MkdirTemp(root, ".image-context-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(contextRoot)
+	containers := filepath.Join(contextRoot, "runner", "containers")
+	if err := os.MkdirAll(containers, 0700); err != nil {
+		return "", err
+	}
+	for _, name := range []string{"Dockerfile", "Dockerfile.dockerignore", "codex-mcp.mjs", "codex-result.schema.json"} {
+		raw, err := os.ReadFile(filepath.Join(releasePath, "containers", name))
+		if err != nil || os.WriteFile(filepath.Join(containers, name), raw, 0600) != nil {
+			return "", errors.New("runtime image input is unavailable")
+		}
+	}
+	iid := filepath.Join(root, ".image-id-"+filepath.Base(contextRoot))
+	defer os.Remove(iid)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, docker, "build", "--iidfile", iid, "--file", filepath.Join(containers, "Dockerfile"), contextRoot)
+	command.Env = append(sandbox.ClientEnvironment(), "DOCKER_BUILDKIT=1")
+	command.Stdout, command.Stderr = io.Discard, io.Discard
+	if err := command.Run(); err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(iid)
+	imageID := strings.TrimSpace(string(raw))
+	if err != nil || !setupImageIDPattern.MatchString(imageID) {
+		return "", errors.New("Docker returned an invalid image identity")
+	}
+	return imageID, nil
 }
 
 func readProtectedSetupFile(path string, effectiveUID int) ([]byte, error) {
