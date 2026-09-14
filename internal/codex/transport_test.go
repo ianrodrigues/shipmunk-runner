@@ -109,8 +109,45 @@ func TestDockerTransportPinsSourceAndProfileDirectories(t *testing.T) {
 	for _, call := range calls {
 		all += strings.Join(call, " ") + "\n"
 	}
-	if runtime.GOOS == "linux" && !strings.Contains(all, "src=/proc/") {
-		t.Fatal("profile bind did not use a pinned descriptor path")
+	if runtime.GOOS == "linux" && !strings.HasPrefix(transport.cfg.Source, "/proc/") {
+		t.Fatal("source path did not use a pinned descriptor path")
+	}
+	if strings.Contains(all, "src=/proc/") && strings.Contains(all, "dst=/profile") {
+		t.Fatal("profile bind used a client descriptor path")
+	}
+	if !strings.Contains(all, "src="+transport.cfg.ProfileHome+",dst=/profile") {
+		t.Fatal("profile bind did not use the canonical profile path")
+	}
+}
+
+func TestDockerTransportRejectsReplacedProfileHomeBeforeNativeContainerCreation(t *testing.T) {
+	d := new(recordedDocker)
+	transport := transportFixture(t, d)
+	profile := transport.cfg.ProfileHome
+	if err := os.Rename(profile, profile+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(profile, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := transport.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Codex profile directory changed before container setup") {
+		t.Fatalf("replaced profile home was accepted: %v", err)
+	}
+
+	d.mu.Lock()
+	calls := append([][]string(nil), d.calls...)
+	d.mu.Unlock()
+	for _, call := range calls {
+		if len(call) == 0 || call[0] != "create" {
+			continue
+		}
+		for index, argument := range call[:len(call)-1] {
+			if argument == "--name" && call[index+1] == testTransportName {
+				t.Fatal("native container was created after the profile home changed")
+			}
+		}
 	}
 }
 
