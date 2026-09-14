@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/attemptstate"
 	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
@@ -17,6 +19,8 @@ import (
 const maxConfigBytes = 16 << 10
 
 const activationJournalName = ".activation.json"
+
+var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 
 type Identity struct {
 	BaseURL   string
@@ -102,8 +106,8 @@ func (guard Guard) validateLocked(state *attemptstate.Store) error {
 }
 
 func (guard Guard) Activate(config, profileToken, executionToken []byte) error {
-	identity, err := decodeIdentity(config)
-	if err != nil || identity != guard.Identity {
+	configuration, err := decodeConfiguration(config)
+	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
 		return errors.New("new runner configuration identity does not match the installation")
 	}
 	if err := validToken(profileToken); err != nil {
@@ -291,45 +295,60 @@ func (guard Guard) validateExistingIdentity() error {
 	if err != nil {
 		return fmt.Errorf("existing runner configuration is unsafe: %w", err)
 	}
-	identity, err := decodeIdentity(raw)
-	if err != nil || identity != guard.Identity {
+	configuration, err := decodeConfiguration(raw)
+	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
 		return errors.New("setup identity differs from the existing runner")
 	}
 	return nil
 }
 
-func decodeIdentity(raw []byte) (Identity, error) {
+type installedConfiguration struct {
+	Identity       Identity
+	ExpiresAt      string
+	ReleasePath    string
+	ReleaseVersion string
+	Platform       string
+}
+
+func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	if len(raw) == 0 || len(raw) > maxConfigBytes {
-		return Identity{}, errors.New("runner configuration is invalid")
+		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
 	value, err := protocol.Decode(raw, maxConfigBytes)
 	data, ok := value.(map[string]any)
-	if err != nil || !ok || (len(data) != 4 && len(data) != 5) {
-		return Identity{}, errors.New("runner configuration is invalid")
+	if err != nil || !ok || len(data) != 7 {
+		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
-	for _, key := range []string{"image_id", "base_url", "runner_id", "profile_id"} {
+	for _, key := range []string{"base_url", "runner_id", "profile_id", "expires_at", "release_path", "release_version", "platform"} {
 		if _, ok := data[key]; !ok {
-			return Identity{}, errors.New("runner configuration is invalid")
-		}
-	}
-	for key := range data {
-		if key != "image_id" && key != "base_url" && key != "runner_id" && key != "profile_id" && key != "expires_at" {
-			return Identity{}, errors.New("runner configuration is invalid")
-		}
-	}
-	if expires, present := data["expires_at"]; present {
-		if value, ok := expires.(string); !ok || value == "" {
-			return Identity{}, errors.New("runner configuration is invalid")
+			return installedConfiguration{}, errors.New("runner configuration is invalid")
 		}
 	}
 	baseURL, baseOK := data["base_url"].(string)
 	runnerID, runnerOK := data["runner_id"].(string)
 	profileID, profileOK := data["profile_id"].(string)
-	image, imageOK := data["image_id"].(string)
-	if !baseOK || !runnerOK || !profileOK || !imageOK || baseURL == "" || image == "" {
-		return Identity{}, errors.New("runner configuration identity is incomplete")
+	expiresAt, expiresOK := data["expires_at"].(string)
+	releasePath, releasePathOK := data["release_path"].(string)
+	releaseVersion, releaseVersionOK := data["release_version"].(string)
+	platform, platformOK := data["platform"].(string)
+	if !baseOK || !runnerOK || !profileOK || !expiresOK || !releasePathOK || !releaseVersionOK || !platformOK ||
+		baseURL == "" || len(baseURL) > 2048 || protocol.ValidateProfileID(runnerID) != nil || protocol.ValidateProfileID(profileID) != nil ||
+		len(expiresAt) > 64 || len(releasePath) > 4096 || !filepath.IsAbs(releasePath) || filepath.Clean(releasePath) != releasePath ||
+		!releaseVersionPattern.MatchString(releaseVersion) || (platform != "linux-amd64" && platform != "linux-arm64" && platform != "darwin-amd64" && platform != "darwin-arm64") {
+		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
-	return Identity{BaseURL: baseURL, RunnerID: runnerID, ProfileID: profileID}, nil
+	if parsed, err := time.Parse(time.RFC3339, expiresAt); err != nil || parsed.Format(time.RFC3339) != expiresAt {
+		return installedConfiguration{}, errors.New("runner configuration is invalid")
+	}
+	return installedConfiguration{Identity: Identity{BaseURL: baseURL, RunnerID: runnerID, ProfileID: profileID}, ExpiresAt: expiresAt, ReleasePath: releasePath, ReleaseVersion: releaseVersion, Platform: platform}, nil
+}
+
+func (guard Guard) validateReleaseBinding(configuration installedConfiguration) error {
+	releases := filepath.Join(filepath.Dir(filepath.Dir(guard.Root)), "releases")
+	if filepath.Dir(configuration.ReleasePath) != releases || !digestPattern.MatchString(filepath.Base(configuration.ReleasePath)) {
+		return errors.New("runner release path is not bound to the installation")
+	}
+	return nil
 }
 
 func validToken(value []byte) error {

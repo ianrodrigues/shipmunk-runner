@@ -21,7 +21,7 @@ const (
 func TestGuardPreservesStateAndProfilesDuringRenewal(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	config := configuration(identity, "new-image")
+	config := configuration(root, identity, "v1.2.3-new")
 	profileHome := filepath.Join(root, "profiles", profileID, "home")
 	mustMkdir(t, profileHome)
 	mustWrite(t, filepath.Join(profileHome, "auth.json"), []byte("preserve"))
@@ -45,9 +45,9 @@ func TestGuardPreservesStateAndProfilesDuringRenewal(t *testing.T) {
 
 func TestGuardUsesRuntimeAttemptAndProfileLocks(t *testing.T) {
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	config := configuration(identity, "image")
 	t.Run("attempt", func(t *testing.T) {
 		root := installation(t)
+		config := configuration(root, identity, "v1.2.3")
 		state, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -62,6 +62,7 @@ func TestGuardUsesRuntimeAttemptAndProfileLocks(t *testing.T) {
 	})
 	t.Run("profile", func(t *testing.T) {
 		root := installation(t)
+		config := configuration(root, identity, "v1.2.3")
 		store, err := profile.Open(filepath.Join(root, "profiles"), profileID)
 		if err != nil {
 			t.Fatal(err)
@@ -82,7 +83,7 @@ func TestGuardUsesRuntimeAttemptAndProfileLocks(t *testing.T) {
 func TestGuardRecoversDurableIncompleteActivation(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	old := map[string][]byte{"config.json": configuration(identity, "old"), "profile.token": []byte("old-profile"), "execution.token": []byte("old-execution")}
+	old := map[string][]byte{"config.json": configuration(root, identity, "v1.2.3-old"), "profile.token": []byte("old-profile"), "execution.token": []byte("old-execution")}
 	guard := Guard{Root: root, Identity: identity}
 	journal := activationJournal{Version: 1, Files: map[string]bool{}}
 	for _, name := range activationOrder {
@@ -110,18 +111,22 @@ func TestGuardRecoversDurableIncompleteActivation(t *testing.T) {
 func TestGuardRejectsDuplicateAndUnknownConfiguration(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	valid := string(configuration(identity, "image"))
+	valid := string(configuration(root, identity, "v1.2.3"))
 	for _, raw := range []string{
 		strings.Replace(valid, `"base_url":`, `"base_url":"https://other.example","base_url":`, 1),
 		strings.TrimSuffix(valid, "}") + `,"unknown":true}`,
+		strings.Replace(valid, `"expires_at":"2099-01-01T00:00:00Z"`, `"expires_at":"not-a-time"`, 1),
+		strings.Replace(valid, `"release_version":"v1.2.3"`, `"release_version":"development"`, 1),
+		strings.Replace(valid, `"platform":"linux-amd64"`, `"platform":"windows-amd64"`, 1),
+		strings.Replace(valid, filepath.Join(filepath.Dir(filepath.Dir(root)), "releases"), filepath.Join(root, "other-releases"), 1),
 	} {
 		if err := (Guard{Root: root, Identity: identity}).Activate([]byte(raw), []byte("profile"), []byte("execution")); err == nil {
 			t.Fatal("accepted non-strict configuration")
 		}
 	}
-	legacy := strings.TrimSuffix(valid, "}") + `,"expires_at":"2099-01-01T00:00:00Z"}`
-	if decoded, err := decodeIdentity([]byte(legacy)); err != nil || decoded != identity {
-		t.Fatalf("legacy configuration identity = %#v, %v", decoded, err)
+	legacy := `{"image_id":"sha256:old","base_url":"https://shipmunk.example","runner_id":"` + runnerID + `","profile_id":"` + profileID + `"}`
+	if _, err := decodeConfiguration([]byte(legacy)); err == nil {
+		t.Fatal("accepted legacy runner configuration")
 	}
 }
 
@@ -150,7 +155,7 @@ func TestGuardRejectsChangedIdentityAndRecoveryJournals(t *testing.T) {
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
 	for name, prepare := range map[string]func(*testing.T, string){
 		"changed server": func(t *testing.T, root string) {
-			mustWrite(t, filepath.Join(root, "config.json"), configuration(Identity{BaseURL: "https://other.example", RunnerID: runnerID, ProfileID: profileID}, "image"))
+			mustWrite(t, filepath.Join(root, "config.json"), configuration(root, Identity{BaseURL: "https://other.example", RunnerID: runnerID, ProfileID: profileID}, "v1.2.3"))
 		},
 		"active attempt": func(t *testing.T, root string) {
 			mustMkdir(t, filepath.Join(root, "state"))
@@ -179,7 +184,7 @@ func TestActivateRollsBackEveryPriorFileAfterInjectedFailure(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
 	previous := map[string][]byte{
-		"config.json":     configuration(identity, "old-image"),
+		"config.json":     configuration(root, identity, "v1.2.3-old"),
 		"profile.token":   []byte("old-profile-token"),
 		"execution.token": []byte("old-execution-token"),
 	}
@@ -194,7 +199,7 @@ func TestActivateRollsBackEveryPriorFileAfterInjectedFailure(t *testing.T) {
 		}
 		return os.Rename(old, new)
 	}}
-	if err := guard.Activate(configuration(identity, "new-image"), []byte("new-profile-token"), []byte("new-execution-token")); err == nil {
+	if err := guard.Activate(configuration(root, identity, "v1.2.3-new"), []byte("new-profile-token"), []byte("new-execution-token")); err == nil {
 		t.Fatal("injected failure was ignored")
 	}
 	for name, want := range previous {
@@ -237,8 +242,9 @@ func canonicalPrivateTemp(t *testing.T) string {
 	return root
 }
 
-func configuration(identity Identity, image string) []byte {
-	return []byte("{\"image_id\":\"" + image + "\",\"base_url\":\"" + identity.BaseURL + "\",\"runner_id\":\"" + identity.RunnerID + "\",\"profile_id\":\"" + identity.ProfileID + "\"}")
+func configuration(root string, identity Identity, version string) []byte {
+	release := filepath.Join(filepath.Dir(filepath.Dir(root)), "releases", strings.Repeat("a", 64))
+	return []byte("{\"base_url\":\"" + identity.BaseURL + "\",\"runner_id\":\"" + identity.RunnerID + "\",\"profile_id\":\"" + identity.ProfileID + "\",\"expires_at\":\"2099-01-01T00:00:00Z\",\"release_path\":\"" + release + "\",\"release_version\":\"" + version + "\",\"platform\":\"linux-amd64\"}")
 }
 
 func mustMkdir(t *testing.T, path string) {
