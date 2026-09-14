@@ -165,6 +165,20 @@ func TestRunnerTokenRejectsPathReplacementDuringRead(t *testing.T) {
 	}
 }
 
+func TestRunnerTokenRefusesIncompleteConfigurationActivation(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "runner.token")
+	if err := os.WriteFile(path, []byte("123|synthetic-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".activation.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRunnerToken(path); err == nil || !strings.Contains(err.Error(), "activation") {
+		t.Fatalf("incomplete activation error = %v", err)
+	}
+}
+
 func TestFileIsTerminalRejectsNullDeviceAndPipes(t *testing.T) {
 	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
 	if err != nil {
