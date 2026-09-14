@@ -235,6 +235,11 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 			}
 		}
 	}()
+	if t.cfg.Baseline != "" {
+		if err = requireDocker(ctx, t.docker); err != nil {
+			return err
+		}
+	}
 	nativeID, err := t.imageID(ctx, t.cfg.NativeImage)
 	if err != nil {
 		return err

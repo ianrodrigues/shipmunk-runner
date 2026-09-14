@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ianrodrigues/shipmunk-runner/internal/codex"
 	"github.com/ianrodrigues/shipmunk-runner/internal/install"
 )
 
@@ -207,7 +208,7 @@ func TestSetupPreflightFailuresPreserveConfiguration(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("guided setup refuses root")
 	}
-	for _, failure := range []string{"health", "image"} {
+	for _, failure := range []string{"health", "image", "docker version"} {
 		t.Run(failure, func(t *testing.T) {
 			home, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
@@ -230,16 +231,44 @@ func TestSetupPreflightFailuresPreserveConfiguration(t *testing.T) {
 				return nil
 			}
 			setupBuildImage = func(string, string) (string, error) {
+				if failure == "docker version" {
+					return "", codex.ErrDockerRequirements
+				}
 				if failure == "image" {
 					return "", errors.New("failed")
 				}
 				return "sha256:" + strings.Repeat("c", 64), nil
 			}
-			if code := RunSetup(setupCommandArgs(bundle, manifest, archive), &bytes.Buffer{}, &bytes.Buffer{}); code != 1 {
+			var stderr bytes.Buffer
+			if code := RunSetup(setupCommandArgs(bundle, manifest, archive), &bytes.Buffer{}, &stderr); code != 1 {
 				t.Fatalf("failure code = %d", code)
+			}
+			if failure == "docker version" && !strings.Contains(stderr.String(), "Docker client and Linux engine 26.0 or newer") {
+				t.Fatalf("unsupported Docker diagnostic missing: %s", stderr.String())
 			}
 			if _, err := os.Stat(filepath.Join(home, ".shipmunk", "runners", testRunnerID, "config.json")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("preflight failure activated configuration")
+			}
+		})
+	}
+}
+
+func TestSetupRejectsOldDockerBeforeBuildingImage(t *testing.T) {
+	for _, versions := range []string{"25.0.5\n29.0.0\nlinux", "29.0.0\n25.0.5\nlinux"} {
+		t.Run(strings.ReplaceAll(versions, "\n", "_"), func(t *testing.T) {
+			root := t.TempDir()
+			bin := t.TempDir()
+			script := "#!/bin/sh\n[ \"$1\" = version ] || exit 99\nprintf '%s\\n' '" + versions + "'\n"
+			if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if _, err := buildSetupImage(root, filepath.Join(root, "missing-release")); !errors.Is(err, codex.ErrDockerRequirements) {
+				t.Fatalf("preflight did not reject old Docker: %v", err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("unsupported Docker reached image preparation: %v %v", entries, err)
 			}
 		})
 	}

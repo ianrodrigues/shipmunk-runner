@@ -481,7 +481,7 @@ func TestCompiledSetupInstallsIntoCleanHomeWithoutStartingWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := filepath.Join(dockerDirectory, "docker")
-	dockerScript := "#!/bin/sh\nif [ \"$1\" = version ]; then echo linux; exit 0; fi\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --iidfile ]; then shift; printf 'sha256:" + strings.Repeat("d", 64) + "\\n' > \"$1\"; exit 0; fi; shift; done\nexit 1\n"
+	dockerScript := "#!/bin/sh\nif [ \"$1\" = version ]; then printf '26.0.0\\n26.0.0\\nlinux\\n'; exit 0; fi\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --iidfile ]; then shift; printf 'sha256:" + strings.Repeat("d", 64) + "\\n' > \"$1\"; exit 0; fi; shift; done\nexit 1\n"
 	if err := os.WriteFile(docker, []byte(dockerScript), 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -57,6 +57,9 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 	if d.failCreate && len(args) > 0 && args[0] == "create" {
 		return transportResult{exitCode: 1}, nil
 	}
+	if args[0] == "version" {
+		return transportResult{stdout: []byte("26.0.0\n26.0.0\nlinux\n")}, nil
+	}
 	if len(args) >= 3 && args[0] == "image" {
 		return transportResult{stdout: []byte("sha256:" + strings.Repeat("a", 64) + "\n")}, nil
 	}
