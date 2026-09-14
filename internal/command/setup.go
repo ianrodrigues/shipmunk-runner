@@ -52,8 +52,6 @@ type setupRuntimeHooks struct {
 	goarch       string
 }
 
-// SetupOptions contains parsed setup command arguments. ServerURL overrides
-// the bundle's base_url when provided.
 type SetupOptions struct {
 	SetupFile       string
 	ServerURL       string
@@ -63,8 +61,6 @@ type SetupOptions struct {
 	Version         bool
 }
 
-// SetupBundle is the validated setup file data needed by the installation
-// workflow. Tokens are held only in memory and are never rendered to output.
 type SetupBundle struct {
 	Version        int
 	RuntimeVersion string
@@ -76,7 +72,6 @@ type SetupBundle struct {
 	ExecutionToken string
 }
 
-// ParseSetupOptions accepts options before or after the setup file operand.
 func ParseSetupOptions(args []string) (SetupOptions, error) {
 	var options SetupOptions
 	serverURLProvided := false
@@ -134,9 +129,6 @@ func ParseSetupOptions(args []string) (SetupOptions, error) {
 	return options, nil
 }
 
-// ParseSetupBundle strictly parses and validates a setup bundle without
-// changing the source bytes. now is injectable so expiry checks stay
-// deterministic in tests.
 func ParseSetupBundle(raw []byte, serverURLOverride string, now time.Time) (SetupBundle, error) {
 	value, err := protocol.Decode(raw, setupBundleMaxBytes)
 	if err != nil {
