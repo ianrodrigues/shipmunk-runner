@@ -69,7 +69,15 @@ type Builder struct {
 	Platforms    []Platform
 }
 
-func (b Builder) Build(ctx context.Context, root, output, version string) (Manifest, error) {
+func (b Builder) Build(ctx context.Context, root, output, version string) (manifest Manifest, returnedErr error) {
+	created := make([]string, 0, len(supportedPlatforms)+2)
+	defer func() {
+		if returnedErr != nil {
+			for _, path := range created {
+				_ = os.Remove(path)
+			}
+		}
+	}()
 	if !versionPattern.MatchString(version) {
 		return Manifest{}, errors.New("release version must be a semantic version tag beginning with v")
 	}
@@ -99,7 +107,7 @@ func (b Builder) Build(ctx context.Context, root, output, version string) (Manif
 	if repository == "" {
 		repository = "ianrodrigues/shipmunk-runner"
 	}
-	manifest := Manifest{SchemaVersion: 1, Version: version, Platforms: make(map[string]PlatformRelease)}
+	manifest = Manifest{SchemaVersion: 1, Version: version, Platforms: make(map[string]PlatformRelease)}
 	manifest.NativeImage.Platforms = []string{"linux-amd64", "linux-arm64"}
 	platforms := b.Platforms
 	if platforms == nil {
@@ -130,9 +138,11 @@ func (b Builder) Build(ctx context.Context, root, output, version string) (Manif
 			return Manifest{}, archiveErr
 		}
 		name := "shipmunk-runner-" + version + "-" + key + ".tar"
-		if err := writeExclusive(filepath.Join(output, name), archive, 0644); err != nil {
+		assetPath := filepath.Join(output, name)
+		if err := writeExclusive(assetPath, archive, 0644); err != nil {
 			return Manifest{}, err
 		}
+		created = append(created, assetPath)
 		digest := sha256.Sum256(archive)
 		manifest.Platforms[key] = PlatformRelease{OS: platform.OS, Arch: platform.Arch, Archive: Artifact{Name: name, URL: "https://github.com/" + repository + "/releases/download/" + version + "/" + name, SHA256: hex.EncodeToString(digest[:]), Size: int64(len(archive))}, Files: archiveFiles}
 	}
@@ -141,9 +151,11 @@ func (b Builder) Build(ctx context.Context, root, output, version string) (Manif
 		return Manifest{}, err
 	}
 	raw = append(raw, '\n')
-	if err := writeExclusive(filepath.Join(output, ManifestName), raw, 0644); err != nil {
+	manifestPath := filepath.Join(output, ManifestName)
+	if err := writeExclusive(manifestPath, raw, 0644); err != nil {
 		return Manifest{}, err
 	}
+	created = append(created, manifestPath)
 	checksums := make([]string, 0, len(manifest.Platforms)+1)
 	for _, entry := range manifest.Platforms {
 		checksums = append(checksums, entry.Archive.SHA256+"  "+entry.Archive.Name)
@@ -151,9 +163,11 @@ func (b Builder) Build(ctx context.Context, root, output, version string) (Manif
 	digest := sha256.Sum256(raw)
 	checksums = append(checksums, hex.EncodeToString(digest[:])+"  "+ManifestName)
 	sort.Strings(checksums)
-	if err := writeExclusive(filepath.Join(output, ChecksumsName), []byte(strings.Join(checksums, "\n")+"\n"), 0644); err != nil {
+	checksumsPath := filepath.Join(output, ChecksumsName)
+	if err := writeExclusive(checksumsPath, []byte(strings.Join(checksums, "\n")+"\n"), 0644); err != nil {
 		return Manifest{}, err
 	}
+	created = append(created, checksumsPath)
 	return manifest, nil
 }
 
@@ -271,5 +285,9 @@ func writeExclusive(path string, contents []byte, mode os.FileMode) error {
 	_, writeErr := io.Copy(file, bytes.NewReader(contents))
 	syncErr := file.Sync()
 	closeErr := file.Close()
-	return errors.Join(writeErr, syncErr, closeErr)
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }

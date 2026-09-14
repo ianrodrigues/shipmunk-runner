@@ -101,8 +101,12 @@ func TestBuilderRejectsInvalidVersionDuplicatePlatformAndExistingAsset(t *testin
 		t.Fatal("accepted a leading-zero numeric prerelease identifier")
 	}
 	builder.Platforms = []Platform{{"linux", "amd64"}, {"linux", "amd64"}}
-	if _, err := builder.Build(context.Background(), root, t.TempDir(), "v1.2.3"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+	partialOutput := t.TempDir()
+	if _, err := builder.Build(context.Background(), root, partialOutput, "v1.2.3"); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate platform error = %v", err)
+	}
+	if entries, err := os.ReadDir(partialOutput); err != nil || len(entries) != 0 {
+		t.Fatalf("failed build retained %d partial assets: %v", len(entries), err)
 	}
 	builder.Platforms = []Platform{{"windows", "amd64"}}
 	if _, err := builder.Build(context.Background(), root, t.TempDir(), "v1.2.3"); err == nil || !strings.Contains(err.Error(), "unsupported") {
