@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -18,6 +19,7 @@ type recordedDocker struct {
 	calls            [][]string
 	blockNative      bool
 	failCreate       bool
+	failSnapshot     bool
 	inspectUncertain bool
 	lastInput        []byte
 	owned            bool
@@ -48,6 +50,9 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 	d.mu.Unlock()
 	if onNativeStart != nil {
 		onNativeStart()
+	}
+	if d.failSnapshot && len(args) > 2 && args[0] == "exec" && args[1] == "-i" && args[2] == testTransportName+"-diff" {
+		return transportResult{exitCode: 1}, nil
 	}
 	if d.failCreate && len(args) > 0 && args[0] == "create" {
 		return transportResult{exitCode: 1}, nil
@@ -280,7 +285,7 @@ func TestDockerTransportCollectsPatchFromPinnedSource(t *testing.T) {
 
 const testTransportName = "shipmunk-codex-01aaaaaaaaaaaaaaaaaaaaaaaa-1"
 
-func transportFixture(t *testing.T, docker dockerCommand) *DockerTransport {
+func transportFixture(t *testing.T, docker dockerCommand, review ...bool) *DockerTransport {
 	t.Helper()
 	root := t.TempDir()
 	profile := filepath.Join(root, "profile")
@@ -294,7 +299,17 @@ func transportFixture(t *testing.T, docker dockerCommand) *DockerTransport {
 	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("original\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	transport, err := newDockerTransport(TransportConfig{Name: testTransportName, ProfileHome: profile, Source: source, NativeImage: "native:pinned", RepositoryImage: "repo:pinned", MaxCommands: 2}, docker)
+	baseline := ""
+	if len(review) > 0 && review[0] {
+		baseline = filepath.Join(root, "baseline")
+		if err := os.Mkdir(baseline, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(baseline, "base.txt"), []byte("base\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport, err := newDockerTransport(TransportConfig{Name: testTransportName, ProfileHome: profile, Source: source, Baseline: baseline, NativeImage: "native:pinned", RepositoryImage: "repo:pinned", MaxCommands: 2}, docker)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,6 +341,9 @@ func TestDockerTransportCreatesSeparatedBoundaries(t *testing.T) {
 		if !strings.Contains(all, "--name "+resource) || !strings.Contains(all, "shipmunk.codex-owner="+testTransportName) {
 			t.Fatalf("Codex boundary %s omitted its watchdog ownership label", resource)
 		}
+	}
+	if !strings.Contains(all, "o=size=256m,") {
+		t.Fatal("single-source volume capacity changed")
 	}
 	if !strings.Contains(all, "volume create --label shipmunk.codex=true --label shipmunk.codex-owner="+testTransportName) {
 		t.Fatal("Codex workspace volume omitted its watchdog ownership label")
@@ -482,4 +500,114 @@ func tarFileFixture(t *testing.T, name, contents string) []byte {
 		t.Fatal(err)
 	}
 	return []byte(b.String())
+}
+
+func TestDockerReviewHasNoWritableBaselineAlias(t *testing.T) {
+	d := new(recordedDocker)
+	transport := transportFixture(t, d, true)
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var repoStart, writerRemoved, repository int
+	var boundedVolume bool
+	for index, args := range d.calls {
+		line := strings.Join(args, " ")
+		if strings.HasPrefix(line, "volume create ") && strings.Contains(line, "o=size=512m,") {
+			boundedVolume = true
+		}
+		if strings.HasPrefix(line, "create --name "+testTransportName+"-repo ") {
+			repository++
+			for _, required := range []string{",dst=/baseline,volume-subpath=base,readonly", ",dst=/workspace,volume-subpath=head", "--read-only", "--network none", "--cap-drop ALL"} {
+				if !strings.Contains(line, required) {
+					t.Fatalf("repository omitted %q: %s", required, line)
+				}
+			}
+			if strings.Contains(line, "dst=/snapshots") {
+				t.Fatal("repository received writable snapshot parent")
+			}
+		}
+		if line == "start "+testTransportName+"-repo" {
+			repoStart = index
+		}
+		if line == "rm --force "+testTransportName+"-diff" {
+			writerRemoved = index
+		}
+	}
+	if !boundedVolume {
+		t.Fatal("review snapshot volume omitted its aggregate capacity bound")
+	}
+	if repository != 1 || repoStart == 0 || writerRemoved <= repoStart {
+		t.Fatal("tmpfs snapshot writer lifetime is invalid")
+	}
+	if transport.workspaceMount("/snapshot-source", true) != "type=volume,src="+testTransportName+"-workspace,dst=/snapshot-source,volume-subpath=head,readonly" {
+		t.Fatal("collector mount includes baseline or permits writing")
+	}
+}
+
+func TestDockerReviewPopulationFailureCleansEveryResource(t *testing.T) {
+	d := &recordedDocker{owned: true, failSnapshot: true}
+	transport := transportFixture(t, d, true)
+	source, baseline := transport.sourceHandle, transport.baselineHandle
+	if err := transport.Start(context.Background()); err == nil {
+		t.Fatal("snapshot population failure was ignored")
+	}
+	for _, resource := range []string{testTransportName, testTransportName + "-repo", testTransportName + "-diff", testTransportName + "-workspace"} {
+		if !d.removed[resource] {
+			t.Fatalf("cleanup omitted %s", resource)
+		}
+	}
+	for _, handle := range []*os.File{source, baseline} {
+		if _, err := handle.Stat(); err == nil {
+			t.Fatal("source descriptor leaked after failure")
+		}
+	}
+}
+
+func TestDockerReviewCancellationClosesBothSnapshots(t *testing.T) {
+	d := &recordedDocker{owned: true, blockNative: true}
+	transport := transportFixture(t, d, true)
+	source, baseline := transport.sourceHandle, transport.baselineHandle
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := transport.RunNative(ctx, []string{"codex", "exec"}, nil); err == nil {
+		t.Fatal("cancellation was ignored")
+	}
+	for _, resource := range []string{testTransportName, testTransportName + "-repo", testTransportName + "-diff", testTransportName + "-workspace"} {
+		if !d.removed[resource] {
+			t.Fatalf("cleanup omitted %s", resource)
+		}
+	}
+	for _, handle := range []*os.File{source, baseline} {
+		if _, err := handle.Stat(); err == nil {
+			t.Fatal("source descriptor leaked on cancellation")
+		}
+	}
+}
+
+func TestDockerReviewRejectsUnsafeBaselineContents(t *testing.T) {
+	for _, kind := range []string{"symlink", "fifo", "git"} {
+		t.Run(kind, func(t *testing.T) {
+			d := new(recordedDocker)
+			transport := transportFixture(t, d, true)
+			baseline := transport.baselineHandle.Name()
+			var err error
+			switch kind {
+			case "symlink":
+				err = os.Symlink(t.TempDir(), filepath.Join(baseline, "unsafe"))
+			case "fifo":
+				err = syscall.Mkfifo(filepath.Join(baseline, "unsafe"), 0600)
+			case "git":
+				err = os.Mkdir(filepath.Join(baseline, ".git"), 0700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := transport.Start(context.Background()); err == nil {
+				t.Fatal("accepted unsafe baseline contents")
+			}
+		})
+	}
 }

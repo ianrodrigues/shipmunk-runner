@@ -76,3 +76,5 @@ native-image-check:
 	DOCKER_BUILDKIT=1 docker build --pull=false --build-arg CODEX_FIXTURE_BASE=shipmunk-profile-native-test:local --tag shipmunk-codex-supervisor-test:local --file runner/tests/fixtures/codex-supervisor/Dockerfile .
 	OPENAI_API_KEY=SYNTHETIC_CONFLICT SHIPMUNK_CODEX_SUPERVISOR_IMAGE=shipmunk-codex-supervisor-test:local php runner/tests/CodexSupervisorTest.php
 	SHIPMUNK_CODEX_BOUNDARY_IMAGE=shipmunk-profile-native-test:local php runner/tests/CodexBoundaryTest.php
+
+	SHIPMUNK_CODEX_DOCKER_TEST=1 SHIPMUNK_CODEX_TEST_IMAGE=shipmunk-profile-native-test:local go test -race -count=1 ./internal/codex

@@ -36,11 +36,11 @@ var transportNamePattern = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp
 // TransportConfig describes the three-container Codex boundary. Image names are
 // resolved to immutable IDs before any container is created.
 type TransportConfig struct {
-	Name, ProfileHome, Source, NativeImage, RepositoryImage string
-	DockerExecutable                                        string
-	MaxCommands                                             int
-	CommandTimeout                                          time.Duration
-	sourceHandle                                            *os.File
+	Name, ProfileHome, Source, Baseline, NativeImage, RepositoryImage string
+	DockerExecutable                                                  string
+	MaxCommands                                                       int
+	CommandTimeout                                                    time.Duration
+	sourceHandle, baselineHandle                                      *os.File
 }
 
 type transportResult struct {
@@ -67,6 +67,7 @@ type DockerTransport struct {
 	fence           int64
 	profileHandle   *os.File
 	sourceHandle    *os.File
+	baselineHandle  *os.File
 }
 
 func NewDockerTransport(cfg TransportConfig) (*DockerTransport, error) {
@@ -104,7 +105,7 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 	if cfg.CommandTimeout <= 0 {
 		cfg.CommandTimeout = 30 * time.Second
 	}
-	var handles [2]*os.File
+	var handles [3]*os.File
 	closeHandles := func() {
 		for _, handle := range handles {
 			if handle != nil {
@@ -112,9 +113,18 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 			}
 		}
 	}
-	for index, root := range []string{cfg.ProfileHome, cfg.Source} {
-		if index == 1 && cfg.sourceHandle != nil {
-			handle := cfg.sourceHandle
+	for index, root := range []string{cfg.ProfileHome, cfg.Source, cfg.Baseline} {
+		if index == 2 && root == "" && cfg.baselineHandle == nil {
+			continue
+		}
+		var supplied *os.File
+		if index == 1 {
+			supplied = cfg.sourceHandle
+		} else if index == 2 {
+			supplied = cfg.baselineHandle
+		}
+		if supplied != nil {
+			handle := supplied
 			info, statErr := handle.Stat()
 			if statErr != nil || !info.IsDir() {
 				closeHandles()
@@ -127,7 +137,11 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 			} else if runtime.GOOS == "darwin" {
 				stable = fmt.Sprintf("/dev/fd/%d", handle.Fd())
 			}
-			cfg.Source = stable
+			if index == 1 {
+				cfg.Source = stable
+			} else {
+				cfg.Baseline = stable
+			}
 			continue
 		}
 		info, err := os.Lstat(root)
@@ -169,12 +183,21 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 			} else if runtime.GOOS == "darwin" {
 				stable = fmt.Sprintf("/dev/fd/%d", handle.Fd())
 			}
-			cfg.Source = stable
+			if index == 1 {
+				cfg.Source = stable
+			} else {
+				cfg.Baseline = stable
+			}
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(cfg.Source, ".git")); err == nil || !errors.Is(err, os.ErrNotExist) {
-		closeHandles()
-		return nil, errors.New("repository input must not contain Git metadata")
+	for _, source := range []string{cfg.Source, cfg.Baseline} {
+		if source == "" {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(source, ".git")); err == nil || !errors.Is(err, os.ErrNotExist) {
+			closeHandles()
+			return nil, errors.New("repository input must not contain Git metadata")
+		}
 	}
 	bridge, err := os.MkdirTemp("", "shipmunk-codex-bridge-")
 	if err != nil {
@@ -186,7 +209,7 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 		_ = os.RemoveAll(bridge)
 		return nil, errors.New("cannot protect command bridge")
 	}
-	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence, profileHandle: handles[0], sourceHandle: handles[1]}
+	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence, profileHandle: handles[0], sourceHandle: handles[1], baselineHandle: handles[2]}
 	mediator, err := NewMediator(fence, cfg.MaxCommands, t)
 	if err != nil {
 		closeHandles()
@@ -221,7 +244,12 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		return err
 	}
 	uid, gid := os.Geteuid(), os.Getegid()
-	if _, err = t.run(ctx, nil, "volume", "create", "--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner="+t.cfg.Name, "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", fmt.Sprintf("o=size=256m,uid=%d,gid=%d,mode=0700,nosuid,nodev", uid, gid), t.workspaceVolume); err != nil {
+	volumeMiB := 256
+	if t.cfg.Baseline != "" {
+		// Bound two 128 MiB inputs, synthetic head Git objects, and metadata.
+		volumeMiB = 512
+	}
+	if _, err = t.run(ctx, nil, "volume", "create", "--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner="+t.cfg.Name, "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", fmt.Sprintf("o=size=%dm,uid=%d,gid=%d,mode=0700,nosuid,nodev", volumeMiB, uid, gid), t.workspaceVolume); err != nil {
 		return errors.New("cannot create repository memory volume")
 	}
 	if err = t.verifyProfileHome(); err != nil {
@@ -233,8 +261,16 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	if _, err = t.run(ctx, nil, native...); err != nil {
 		return errors.New("cannot create native container")
 	}
+	if t.cfg.Baseline != "" {
+		if err = t.populateReviewSnapshots(ctx, repoID, common); err != nil {
+			return err
+		}
+	}
 	repo := append([]string{"create", "--name", t.cfg.Name + "-repo"}, common...)
-	repo = append(repo, "--pids-limit", "64", "--network", "none", "--workdir", "/workspace", "--mount", "type=volume,src="+t.workspaceVolume+",dst=/workspace", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
+	if t.cfg.Baseline != "" {
+		repo = append(repo, "--mount", "type=volume,src="+t.workspaceVolume+",dst=/baseline,volume-subpath=base,readonly")
+	}
+	repo = append(repo, "--pids-limit", "64", "--network", "none", "--workdir", "/workspace", "--mount", t.workspaceMount("/workspace", false), "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
 	if _, err = t.run(ctx, nil, repo...); err != nil {
 		return errors.New("cannot create repository container")
 	}
@@ -251,18 +287,70 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 			}
 		}
 	}
-	archive, err := archiveDirectory(t.cfg.Source, MaxSnapshotBytes)
-	if err != nil {
-		return err
+	if t.cfg.Baseline != "" {
+		if _, err := t.run(ctx, nil, "rm", "--force", t.cfg.Name+"-diff"); err != nil {
+			return errors.New("cannot remove review snapshot writer")
+		}
+		result, err := t.rawRun(ctx, nil, "inspect", t.cfg.Name+"-diff")
+		if err != nil || result.exitCode == 0 || !strings.Contains(strings.ToLower(string(result.stdout)+string(result.stderr)), "no such") {
+			return errors.New("cannot confirm review snapshot writer is absent")
+		}
 	}
-	if _, err = t.run(ctx, bytes.NewReader(archive), t.repoExec("tar", "-xf", "-", "-C", "/workspace")...); err != nil {
-		return errors.New("cannot populate repository container")
+
+	if t.cfg.Baseline == "" {
+		archive, err := archiveDirectory(t.cfg.Source, MaxSnapshotBytes)
+		if err != nil {
+			return err
+		}
+		if _, err = t.run(ctx, bytes.NewReader(archive), t.repoExec("tar", "-xf", "-", "-C", "/workspace")...); err != nil {
+			return errors.New("cannot populate repository container")
+		}
 	}
 	if _, err = t.run(ctx, nil, t.repoExec("sh", "-c", "test ! -e .git && git -c core.hooksPath=/dev/null init -q && git -c core.hooksPath=/dev/null add --all && git -c core.hooksPath=/dev/null -c user.name=Shipmunk -c user.email=runner@shipmunk.local commit -qm baseline --allow-empty")...); err != nil {
 		return errors.New("cannot initialize protected repository baseline")
 	}
 	t.started = true
 	return nil
+}
+
+// Review snapshots share the existing bounded volume, but only disjoint
+// subdirectories are mounted into the repository. Its read-only base mount has
+// no writable alias. Keep the writer mounted until the repository starts so the
+// tmpfs volume is not emptied by Docker, then remove it before enabling tools.
+func (t *DockerTransport) populateReviewSnapshots(ctx context.Context, image string, common []string) error {
+	args := append([]string{"create", "--name", t.cfg.Name + "-diff"}, common...)
+	args = append(args, "--pids-limit", "64", "--network", "none", "--workdir", "/empty", "--mount", "type=volume,src="+t.workspaceVolume+",dst=/snapshots", "--entrypoint", "/usr/bin/env", image, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
+	if _, err := t.run(ctx, nil, args...); err != nil {
+		return errors.New("cannot create review snapshot writer")
+	}
+	if _, err := t.run(ctx, nil, "start", t.cfg.Name+"-diff"); err != nil {
+		return errors.New("cannot start review snapshot writer")
+	}
+	if _, err := t.run(ctx, nil, "exec", t.cfg.Name+"-diff", "/bin/mkdir", "-m", "0700", "/snapshots/base", "/snapshots/head"); err != nil {
+		return errors.New("cannot prepare review snapshot directories")
+	}
+	for _, input := range []struct{ source, destination string }{{t.cfg.Baseline, "/snapshots/base"}, {t.cfg.Source, "/snapshots/head"}} {
+		archive, err := archiveDirectory(input.source, MaxSnapshotBytes)
+		if err != nil {
+			return err
+		}
+		if _, err := t.run(ctx, bytes.NewReader(archive), "exec", "-i", t.cfg.Name+"-diff", "/bin/tar", "-xf", "-", "-C", input.destination); err != nil {
+			return errors.New("cannot populate review snapshot")
+		}
+	}
+
+	return nil
+}
+
+func (t *DockerTransport) workspaceMount(destination string, readonly bool) string {
+	mount := "type=volume,src=" + t.workspaceVolume + ",dst=" + destination
+	if t.cfg.Baseline != "" {
+		mount += ",volume-subpath=head"
+	}
+	if readonly {
+		mount += ",readonly"
+	}
+	return mount
 }
 
 func (t *DockerTransport) verifyProfileHome() error {
@@ -521,7 +609,7 @@ func (t *DockerTransport) CollectPatch(ctx context.Context) (_ *Patch, err error
 		return nil, err
 	}
 	uid, gid := os.Geteuid(), os.Getegid()
-	args := []string{"create", "--name", t.cfg.Name + "-diff", "--label", "shipmunk.codex=true", "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "64", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2", "--network", "none", "--workdir", "/empty", "--mount", "type=volume,src=" + t.workspaceVolume + ",dst=/snapshot-source,readonly", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800"}
+	args := []string{"create", "--name", t.cfg.Name + "-diff", "--label", "shipmunk.codex=true", "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "64", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2", "--network", "none", "--workdir", "/empty", "--mount", t.workspaceMount("/snapshot-source", true), "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--entrypoint", "/usr/bin/env", repoID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800"}
 	args = append(args[:5], append([]string{"--label", "shipmunk.codex-owner=" + t.cfg.Name}, args[5:]...)...)
 	if _, err = t.run(ctx, nil, args...); err != nil {
 		return nil, errors.New("cannot create patch collector")
@@ -625,6 +713,10 @@ finished:
 	if t.sourceHandle != nil {
 		_ = t.sourceHandle.Close()
 		t.sourceHandle = nil
+	}
+	if t.baselineHandle != nil {
+		_ = t.baselineHandle.Close()
+		t.baselineHandle = nil
 	}
 	if failed {
 		return errors.New("cannot confirm all Codex process trees are absent")
