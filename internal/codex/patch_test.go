@@ -97,6 +97,31 @@ func TestCollectSnapshotsUsesPinnedDescriptorAfterSourceReplacement(t *testing.T
 	}
 }
 
+func TestCollectSnapshotsRejectsDescriptorForDifferentPinnedDirectory(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("descriptor paths are only used on supported Unix hosts")
+	}
+	sourceHandle, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sourceHandle.Close()
+	differentHandle, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer differentHandle.Close()
+	alias := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), sourceHandle.Fd())
+	if runtime.GOOS == "darwin" {
+		alias = fmt.Sprintf("/dev/fd/%d", sourceHandle.Fd())
+	}
+
+	_, err = collectSnapshots(alias, t.TempDir(), differentHandle)
+	if err == nil || err.Error() != "original snapshot: root changed while opening" {
+		t.Fatalf("different pinned directory was not rejected: %v", err)
+	}
+}
+
 func TestCollectPatchRejectsUnsafeEntries(t *testing.T) {
 	for name, setup := range map[string]func(*testing.T, string){
 		"symbolic link": func(t *testing.T, root string) {
