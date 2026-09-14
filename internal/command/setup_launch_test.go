@@ -126,7 +126,11 @@ func TestInstalledDispatchExcludesConcurrentActivation(t *testing.T) {
 	setupRunRunner = func([]string, io.Writer, io.Writer) int { close(started); <-release; return 0 }
 	done := make(chan int, 1)
 	go func() { done <- runInstalledSetup([]string{"run", root, "--once"}, io.Discard, io.Discard) }()
-	<-started
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("installed dispatch did not acquire its generation lock")
+	}
 	configuration, err := install.LoadConfiguration(root)
 	if err != nil {
 		t.Fatal(err)
