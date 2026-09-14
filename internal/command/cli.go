@@ -122,10 +122,11 @@ func writeUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "  --operation-id ULID   Profile operation identifier")
 		fmt.Fprintln(output, "  --version             Print version")
 	case "shipmunk-setup":
-		fmt.Fprintln(output, "Usage: shipmunk-setup [--server-url URL] SETUP-FILE")
-		fmt.Fprintln(output, "       shipmunk-setup SETUP-FILE [--server-url URL]")
+		fmt.Fprintln(output, "Usage: shipmunk-setup --release-manifest FILE --release-archive FILE [--server-url URL] SETUP-FILE")
 		fmt.Fprintln(output, "Options:")
 		fmt.Fprintln(output, "  --server-url URL  Override the setup bundle server URL")
+		fmt.Fprintln(output, "  --release-manifest FILE  Verified public release manifest")
+		fmt.Fprintln(output, "  --release-archive FILE   Platform release archive")
 		fmt.Fprintln(output, "  --version         Print version")
 	}
 }
