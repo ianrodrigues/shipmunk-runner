@@ -80,7 +80,7 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 }
 
 func executionManifest() map[string]any {
-	return map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("10")}}
+	return map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("10")}}
 }
 
 type executorWatchdogLease struct {
@@ -132,8 +132,10 @@ func setupFailureWorkspace(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(workspace, "sources", "0"), 0700); err != nil {
-		t.Fatal(err)
+	for _, index := range []string{"0", "1"} {
+		if err := os.MkdirAll(filepath.Join(workspace, "sources", index), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return workspace
 }
@@ -154,7 +156,7 @@ func setupFailureExecutor(t *testing.T, startErr error) (*Executor, *executorTra
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(2 * time.Minute), Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "effective_config": map[string]any{"max_turns": json.Number("2")}}}
+	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(2 * time.Minute), Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "effective_config": map[string]any{"max_turns": json.Number("2")}}}
 	return executor, transport, lease, claim
 }
 
@@ -190,13 +192,15 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("2")}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
+	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("2")}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
 	workspace, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(workspace, "sources", "0"), 0700); err != nil {
-		t.Fatal(err)
+	for _, index := range []string{"0", "1"} {
+		if err := os.MkdirAll(filepath.Join(workspace, "sources", index), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	execution, err := executor.Execute(context.Background(), claim, nil, workspace)
 	if err != nil {
@@ -217,21 +221,5 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 	}
 	if err = executor.Cleanup(context.Background(), claim); err != nil || !transport.stopped {
 		t.Fatalf("cleanup=%v stopped=%t", err, transport.stopped)
-	}
-}
-
-func TestSelectSourceUsesReviewHead(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, index := range []string{"0", "1"} {
-		if err := os.MkdirAll(filepath.Join(root, "sources", index), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := selectSource(root)
-	if err != nil || got != filepath.Join(root, "sources", "1") {
-		t.Fatalf("source=%q err=%v", got, err)
 	}
 }

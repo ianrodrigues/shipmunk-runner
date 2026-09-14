@@ -34,3 +34,18 @@ Docker preflight, lifecycle commands and the independent watchdog share the host
 `make go-check` needs neither PHP nor the private server. The `make go-parity-check` target compares claim identities and the actual PHP and Go wire requests for claims, heartbeats, stopped acknowledgements, events, artifact upload/download, completion, and profile operations using synthetic data and an in-memory transport. Its PHP oracle is excluded from default Go tests by the `phpbaseline` build tag.
 
 During the transition, `make check` also runs that parity check, `make go-runtime-check`, and the existing PHP runner, packaging and native-container fixtures against synthetic accounts. `go-runtime-check` builds the watchdog and exercises the Go Docker lifecycle, supervisor parent-death cleanup, and the complete HTTP-to-supervisor fixture path. It requires PHP 8.5, a Linux Docker engine and the deliberately acquired fixture image described in the repository README. Those existing tests remain the behavioral reference until their Go equivalents and the separate live validation gates pass.
+
+
+## Review snapshots
+
+Go Codex review execution requires both ordered source archives from the claim: base at `/baseline` and head at `/workspace`. Workspace preparation verifies their artifact hashes and revisions before the executor retains both directory identities. Implement and fix runs require one head archive. A missing or invalid review snapshot fails execution instead of silently reviewing only the head.
+
+The two review snapshots occupy disjoint subdirectories of the attempt memory volume, bounded at 512 MiB for reviews to hold both 128 MiB input limits plus synthetic Git objects and metadata. Single-source runs retain their 256 MiB volume limit; per-container CPU, memory, and PID limits remain unchanged. Docker mounts the base subdirectory read-only and the head subdirectory writable, without exposing their parent. This requires a Linux Docker engine supporting `volume-subpath` mounts. The temporary snapshot writer is removed before repository tools are enabled. The local Git commit records the supplied head for edit collection; it is not pull-request history. Reviews compare `/baseline` and `/workspace`, including added and deleted files.
+
+The standalone `make check` gate includes a credential-free regression through the shipped repository MCP server, Go bridge/mediator, and real Docker repository. After the native fixture image has been built by the gate, rerun it locally with:
+
+```sh
+SHIPMUNK_CODEX_DOCKER_TEST=1 go test -race -count=1 -v ./internal/codex -run TestDockerReviewSnapshotsThroughRepositoryMCP
+```
+
+The test derives the changed-file set from distinct source contents, attempts baseline writes through direct and process/symlink paths, checks writable head behavior, and confirms cleanup. It establishes repository tool and isolation behavior using synthetic snapshots, not provider-account compatibility.
