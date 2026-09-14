@@ -9,6 +9,25 @@ import (
 	"syscall"
 )
 
+func withFileLock(path string, operation func() error) error {
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err := file.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !os.SameFile(info, current) || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || fileUID(info) != os.Geteuid() || fileNlink(info) != 1 {
+		return errors.New("lock file is unsafe")
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return err
+	}
+	defer syscall.Flock(fd, syscall.LOCK_UN)
+	return operation()
+}
+
 func fileUID(info os.FileInfo) int {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

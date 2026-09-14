@@ -8,11 +8,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -288,7 +292,10 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 		t.Skip("setup ownership fixture requires a non-root test account")
 	}
 	original := setupRuntime
-	t.Cleanup(func() { setupRuntime = original })
+	originalCheck, originalBuild := setupCheckServer, setupBuildImage
+	t.Cleanup(func() { setupRuntime = original; setupCheckServer = originalCheck; setupBuildImage = originalBuild })
+	setupCheckServer = func(string) error { return nil }
+	setupBuildImage = func(string, string) (string, error) { return "sha256:" + strings.Repeat("c", 64), nil }
 	home := ""
 	setupRuntime = setupRuntimeHooks{
 		effectiveUID: os.Geteuid,
@@ -455,14 +462,32 @@ func TestCompiledSetupInstallsIntoCleanHomeWithoutStartingWork(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build setup: %v: %s", err, output)
 	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/up" {
+			http.NotFound(response, request)
+			return
+		}
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
 	bundle := filepath.Join(root, "setup.json")
-	if err := os.WriteFile(bundle, []byte(validSetupBundleJSON), 0o600); err != nil {
+	bundleJSON := strings.Replace(validSetupBundleJSON, "https://runner.example", server.URL, 1)
+	if err := os.WriteFile(bundle, []byte(bundleJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest, archive := setupReleaseFixture(t, root)
+	dockerDirectory := filepath.Join(root, "bin")
+	if err := os.Mkdir(dockerDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	docker := filepath.Join(dockerDirectory, "docker")
+	dockerScript := "#!/bin/sh\nif [ \"$1\" = version ]; then echo linux; exit 0; fi\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --iidfile ]; then shift; printf 'sha256:" + strings.Repeat("d", 64) + "\\n' > \"$1\"; exit 0; fi; shift; done\nexit 1\n"
+	if err := os.WriteFile(docker, []byte(dockerScript), 0700); err != nil {
+		t.Fatal(err)
+	}
 	expectScript := "log_user 1\nset timeout 10\nspawn -noecho $env(SHIPMUNK_SETUP_BINARY) $env(SHIPMUNK_SETUP_BUNDLE) --release-manifest $env(SHIPMUNK_SETUP_MANIFEST) --release-archive $env(SHIPMUNK_SETUP_ARCHIVE)\nexpect \"Continue with this server and runner?\"\nsend \"y\\r\"\nexpect \"Setup did not start queued work.\"\nexit 0\n"
 	process := exec.Command("expect", "-c", expectScript)
-	process.Env = append(os.Environ(), "HOME="+root, "SHIPMUNK_SETUP_BINARY="+binary, "SHIPMUNK_SETUP_BUNDLE="+bundle, "SHIPMUNK_SETUP_MANIFEST="+manifest, "SHIPMUNK_SETUP_ARCHIVE="+archive)
+	process.Env = append(os.Environ(), "PATH="+dockerDirectory+":"+os.Getenv("PATH"), "HOME="+root, "SHIPMUNK_SETUP_BINARY="+binary, "SHIPMUNK_SETUP_BUNDLE="+bundle, "SHIPMUNK_SETUP_MANIFEST="+manifest, "SHIPMUNK_SETUP_ARCHIVE="+archive)
 	output, err := process.CombinedOutput()
 	if err != nil || !bytes.Contains(output, []byte("Installed the verified runner release")) || !bytes.Contains(output, []byte("did not start queued work")) {
 		t.Fatalf("compiled setup smoke: %v: %q", err, output)
@@ -562,26 +587,49 @@ func setupCommandArgs(bundle, manifest, archive string) []string {
 
 func setupReleaseFixture(t *testing.T, root string) (string, string) {
 	t.Helper()
-	contents := []byte("synthetic executable\n")
+	files := map[string]struct {
+		raw  []byte
+		mode int64
+	}{
+		"bin/shipmunk-profile":                {[]byte("synthetic profile\n"), 0755},
+		"bin/shipmunk-runner":                 {[]byte("synthetic runner\n"), 0755},
+		"bin/shipmunk-setup":                  {[]byte("synthetic setup\n"), 0755},
+		"containers/Dockerfile":               {[]byte("FROM scratch\nCOPY runner/containers/codex-mcp.mjs /tmp/\n"), 0644},
+		"containers/Dockerfile.dockerignore":  {[]byte("**\n!runner/\n"), 0644},
+		"containers/codex-mcp.mjs":            {[]byte("export {};\n"), 0644},
+		"containers/codex-result.schema.json": {[]byte("{}\n"), 0644},
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	slices.Sort(names)
 	var archive bytes.Buffer
 	w := tar.NewWriter(&archive)
-	if err := w.WriteHeader(&tar.Header{Name: "bin/shipmunk-setup", Mode: 0o755, Size: int64(len(contents)), ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write(contents); err != nil {
-		t.Fatal(err)
+	for _, name := range names {
+		file := files[name]
+		if err := w.WriteHeader(&tar.Header{Name: name, Mode: file.mode, Size: int64(len(file.raw)), ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(file.raw); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
 	archiveDigest := sha256.Sum256(archive.Bytes())
-	fileDigest := sha256.Sum256(contents)
 	artifact := shipmunkrelease.Artifact{Name: "runner.tar", URL: "https://runner.example/runner.tar", SHA256: hex.EncodeToString(archiveDigest[:]), Size: int64(archive.Len())}
-	file := shipmunkrelease.File{Path: "bin/shipmunk-setup", SHA256: hex.EncodeToString(fileDigest[:]), Size: int64(len(contents)), Mode: "0755"}
+	inventory := make([]shipmunkrelease.File, 0, len(names))
+	for _, name := range names {
+		file := files[name]
+		digest := sha256.Sum256(file.raw)
+		inventory = append(inventory, shipmunkrelease.File{Path: name, SHA256: hex.EncodeToString(digest[:]), Size: int64(len(file.raw)), Mode: fmt.Sprintf("%04o", file.mode)})
+	}
 	platforms := map[string]shipmunkrelease.PlatformRelease{}
 	for _, target := range []struct{ os, arch string }{{"darwin", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}, {"linux", "arm64"}} {
 		key := target.os + "-" + target.arch
-		platforms[key] = shipmunkrelease.PlatformRelease{OS: target.os, Arch: target.arch, Archive: artifact, Files: []shipmunkrelease.File{file}}
+		platforms[key] = shipmunkrelease.PlatformRelease{OS: target.os, Arch: target.arch, Archive: artifact, Files: inventory}
 	}
 	manifest := shipmunkrelease.Manifest{SchemaVersion: 1, Version: "v1.2.3", Platforms: platforms}
 	manifest.NativeImage.Platforms = []string{"linux-amd64", "linux-arm64"}

@@ -225,6 +225,10 @@ func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
 	if err := privateDirectory(guard.Root); err != nil {
 		return fmt.Errorf("runner installation directory is unsafe: %w", err)
 	}
+	return WithLaunchLock(guard.Root, func() error { return guard.withRuntimeLocks(operation) })
+}
+
+func (guard Guard) withRuntimeLocks(operation func(*attemptstate.Store) error) error {
 	state, err := attemptstate.Open(filepath.Join(guard.Root, "state", "active-attempt.json"))
 	if err != nil {
 		return fmt.Errorf("runner is active or its state is unsafe: %w", err)
@@ -232,6 +236,18 @@ func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
 	defer state.Close()
 	profilesRoot := filepath.Join(guard.Root, "profiles")
 	return profile.WithRootExclusive(profilesRoot, func() error { return operation(state) })
+}
+
+func WithLaunchLock(root string, operation func() error) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || rejectSymlinkComponents(root) != nil || privateDirectory(root) != nil {
+		return errors.New("runner installation path is unsafe")
+	}
+	return withFileLock(filepath.Join(root, ".launch.lock"), operation)
+}
+
+func ActivationPending(root string) bool {
+	_, err := os.Lstat(filepath.Join(root, activationJournalName))
+	return err == nil
 }
 
 func (guard Guard) activateLocked(values map[string][]byte, names []string) error {
