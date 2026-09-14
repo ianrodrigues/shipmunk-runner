@@ -21,6 +21,7 @@ const maxConfigBytes = 16 << 10
 const activationJournalName = ".activation.json"
 
 var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+var imageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 type Identity struct {
 	BaseURL   string
@@ -162,6 +163,10 @@ func (guard Guard) validateProfilesReadOnly() error {
 }
 
 func (guard Guard) Activate(config, profileToken, executionToken []byte) error {
+	return guard.ActivateLaunchers(config, profileToken, executionToken, nil)
+}
+
+func (guard Guard) ActivateLaunchers(config, profileToken, executionToken []byte, launchers map[string][]byte) error {
 	configuration, err := decodeConfiguration(config)
 	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
 		return errors.New("new runner configuration identity does not match the installation")
@@ -173,6 +178,15 @@ func (guard Guard) Activate(config, profileToken, executionToken []byte) error {
 		return fmt.Errorf("execution token is invalid: %w", err)
 	}
 	values := map[string][]byte{"config.json": config, "profile.token": profileToken, "execution.token": executionToken}
+	for _, name := range []string{"run", "connect"} {
+		value, ok := launchers[name]
+		if launchers != nil && (!ok || len(value) == 0 || len(value) > maxConfigBytes) {
+			return errors.New("runner launcher is invalid")
+		}
+		if ok {
+			values[name] = value
+		}
+	}
 	return guard.withLocks(func(state *attemptstate.Store) error {
 		if err := guard.recover(); err != nil {
 			return err
@@ -180,7 +194,7 @@ func (guard Guard) Activate(config, profileToken, executionToken []byte) error {
 		if err := guard.validateLocked(state); err != nil {
 			return err
 		}
-		return guard.activateLocked(values)
+		return guard.activateLocked(values, activationNames(launchers != nil))
 	})
 }
 
@@ -190,6 +204,13 @@ type activationJournal struct {
 }
 
 var activationOrder = []string{"profile.token", "execution.token", "config.json"}
+
+func activationNames(withLaunchers bool) []string {
+	if withLaunchers {
+		return []string{"profile.token", "execution.token", "run", "connect", "config.json"}
+	}
+	return activationOrder
+}
 
 func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
 	if protocol.ValidateProfileID(guard.Identity.RunnerID) != nil || protocol.ValidateProfileID(guard.Identity.ProfileID) != nil {
@@ -213,21 +234,21 @@ func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
 	return profile.WithRootExclusive(profilesRoot, func() error { return operation(state) })
 }
 
-func (guard Guard) activateLocked(values map[string][]byte) error {
+func (guard Guard) activateLocked(values map[string][]byte, names []string) error {
 	journal := activationJournal{Version: 1, Files: make(map[string]bool)}
-	for _, name := range activationOrder {
+	for _, name := range names {
 		journal.Files[name] = false
 		path := filepath.Join(guard.Root, name)
-		old, err := readPrivateFile(path, maxConfigBytes)
+		old, err := readActivatedFile(path, name)
 		if err == nil {
 			journal.Files[name] = true
-			if err := writePrivateExclusive(guard.backup(name), old); err != nil {
+			if err := writeActivatedFile(guard.backup(name), name, old); err != nil {
 				return guard.abortPreparation(err)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return guard.abortPreparation(err)
 		}
-		if err := writePrivateExclusive(guard.pending(name), values[name]); err != nil {
+		if err := writeActivatedFile(guard.pending(name), name, values[name]); err != nil {
 			return guard.abortPreparation(err)
 		}
 	}
@@ -246,7 +267,7 @@ func (guard Guard) activateLocked(values map[string][]byte) error {
 	if rename == nil {
 		rename = os.Rename
 	}
-	for _, name := range activationOrder {
+	for _, name := range names {
 		if err := rename(guard.pending(name), filepath.Join(guard.Root, name)); err != nil {
 			cause := fmt.Errorf("activate runner configuration: %w", err)
 			if recoveryErr := guard.recover(); recoveryErr != nil {
@@ -258,7 +279,7 @@ func (guard Guard) activateLocked(values map[string][]byte) error {
 	if err := guard.sync(); err != nil {
 		return &ActivationError{Outcome: ActivationIndeterminate, Err: err}
 	}
-	committed, err := guard.finishActivation()
+	committed, err := guard.finishActivation(names)
 	if err != nil {
 		outcome := ActivationIndeterminate
 		if committed {
@@ -283,22 +304,26 @@ func (guard Guard) recover() error {
 		return errors.New("activation recovery journal is invalid")
 	}
 	files, ok := object["files"].(map[string]any)
-	if !ok || len(files) != len(activationOrder) {
+	if !ok || (len(files) != 3 && len(files) != 5) {
 		return errors.New("activation recovery journal is invalid")
 	}
-	for _, name := range activationOrder {
+	names := activationOrder
+	if len(files) == 5 {
+		names = activationNames(true)
+	}
+	for _, name := range names {
 		existed, ok := files[name].(bool)
 		if !ok {
 			return errors.New("activation recovery journal is invalid")
 		}
 		path := filepath.Join(guard.Root, name)
 		if existed {
-			old, err := readPrivateFile(guard.backup(name), maxConfigBytes)
+			old, err := readActivatedFile(guard.backup(name), name)
 			if err != nil {
 				return errors.New("activation backup is unavailable")
 			}
 			_ = os.Remove(guard.pending(name))
-			if err := writePrivateExclusive(guard.pending(name), old); err != nil {
+			if err := writeActivatedFile(guard.pending(name), name, old); err != nil {
 				return err
 			}
 			if err := os.Rename(guard.pending(name), path); err != nil {
@@ -311,18 +336,18 @@ func (guard Guard) recover() error {
 	if err := guard.sync(); err != nil {
 		return err
 	}
-	_, err = guard.finishActivation()
+	_, err = guard.finishActivation(names)
 	return err
 }
 
-func (guard Guard) finishActivation() (bool, error) {
+func (guard Guard) finishActivation(names []string) (bool, error) {
 	if err := os.Remove(filepath.Join(guard.Root, activationJournalName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
 	if err := guard.sync(); err != nil {
 		return false, err
 	}
-	for _, name := range activationOrder {
+	for _, name := range names {
 		for _, path := range []string{guard.backup(name), guard.pending(name)} {
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return true, err
@@ -372,7 +397,7 @@ func (guard Guard) write(path string, raw []byte) error {
 
 func (guard Guard) removePreparation() error {
 	var result error
-	for _, name := range activationOrder {
+	for _, name := range activationNames(true) {
 		for _, path := range []string{guard.backup(name), guard.pending(name)} {
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				result = errors.Join(result, err)
@@ -380,6 +405,20 @@ func (guard Guard) removePreparation() error {
 		}
 	}
 	return result
+}
+
+func readActivatedFile(path, name string) ([]byte, error) {
+	if name != "run" && name != "connect" {
+		return readPrivateFile(path, maxConfigBytes)
+	}
+	return readExecutableFile(path, maxConfigBytes)
+}
+
+func writeActivatedFile(path, name string, raw []byte) error {
+	if name == "run" || name == "connect" {
+		return writeExecutableExclusive(path, raw)
+	}
+	return writePrivateExclusive(path, raw)
 }
 
 func (guard Guard) backup(name string) string {
@@ -411,6 +450,43 @@ type installedConfiguration struct {
 	ReleasePath    string
 	ReleaseVersion string
 	Platform       string
+	ImageID        string
+}
+
+type Configuration = installedConfiguration
+
+func LoadConfiguration(root string) (Configuration, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || rejectSymlinkComponents(root) != nil || privateDirectory(root) != nil {
+		return Configuration{}, errors.New("runner installation path is unsafe")
+	}
+	raw, err := readPrivateFile(filepath.Join(root, "config.json"), maxConfigBytes)
+	if err != nil {
+		return Configuration{}, err
+	}
+	configuration, err := decodeConfiguration(raw)
+	if err != nil || filepath.Base(root) != configuration.Identity.RunnerID || (Guard{Root: root}).validateReleaseBinding(configuration) != nil {
+		return Configuration{}, errors.New("runner configuration is not bound to its installation")
+	}
+	return configuration, nil
+}
+
+func (guard Guard) Configuration() (Configuration, error) {
+	var configuration Configuration
+	err := guard.withLocks(func(state *attemptstate.Store) error {
+		if err := guard.recover(); err != nil {
+			return err
+		}
+		if err := guard.validateLocked(state); err != nil {
+			return err
+		}
+		raw, err := readPrivateFile(filepath.Join(guard.Root, "config.json"), maxConfigBytes)
+		if err != nil {
+			return err
+		}
+		configuration, err = decodeConfiguration(raw)
+		return err
+	})
+	return configuration, err
 }
 
 func decodeConfiguration(raw []byte) (installedConfiguration, error) {
@@ -419,10 +495,10 @@ func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	}
 	value, err := protocol.Decode(raw, maxConfigBytes)
 	data, ok := value.(map[string]any)
-	if err != nil || !ok || len(data) != 7 {
+	if err != nil || !ok || len(data) != 8 {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
-	for _, key := range []string{"base_url", "runner_id", "profile_id", "expires_at", "release_path", "release_version", "platform"} {
+	for _, key := range []string{"base_url", "runner_id", "profile_id", "expires_at", "release_path", "release_version", "platform", "image_id"} {
 		if _, ok := data[key]; !ok {
 			return installedConfiguration{}, errors.New("runner configuration is invalid")
 		}
@@ -434,16 +510,17 @@ func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	releasePath, releasePathOK := data["release_path"].(string)
 	releaseVersion, releaseVersionOK := data["release_version"].(string)
 	platform, platformOK := data["platform"].(string)
+	imageID, imageOK := data["image_id"].(string)
 	if !baseOK || !runnerOK || !profileOK || !expiresOK || !releasePathOK || !releaseVersionOK || !platformOK ||
 		baseURL == "" || len(baseURL) > 2048 || protocol.ValidateProfileID(runnerID) != nil || protocol.ValidateProfileID(profileID) != nil ||
 		len(expiresAt) > 64 || len(releasePath) > 4096 || !filepath.IsAbs(releasePath) || filepath.Clean(releasePath) != releasePath ||
-		!releaseVersionPattern.MatchString(releaseVersion) || (platform != "linux-amd64" && platform != "linux-arm64" && platform != "darwin-amd64" && platform != "darwin-arm64") {
+		!releaseVersionPattern.MatchString(releaseVersion) || !imageOK || !imageIDPattern.MatchString(imageID) || (platform != "linux-amd64" && platform != "linux-arm64" && platform != "darwin-amd64" && platform != "darwin-arm64") {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
 	if parsed, err := time.Parse(time.RFC3339, expiresAt); err != nil || parsed.Format(time.RFC3339) != expiresAt {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
 	}
-	return installedConfiguration{Identity: Identity{BaseURL: baseURL, RunnerID: runnerID, ProfileID: profileID}, ExpiresAt: expiresAt, ReleasePath: releasePath, ReleaseVersion: releaseVersion, Platform: platform}, nil
+	return installedConfiguration{Identity: Identity{BaseURL: baseURL, RunnerID: runnerID, ProfileID: profileID}, ExpiresAt: expiresAt, ReleasePath: releasePath, ReleaseVersion: releaseVersion, Platform: platform, ImageID: imageID}, nil
 }
 
 func (guard Guard) validateReleaseBinding(configuration installedConfiguration) error {

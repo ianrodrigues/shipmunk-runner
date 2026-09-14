@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -351,6 +352,55 @@ func TestActivateRollsBackEveryPriorFileAfterInjectedFailure(t *testing.T) {
 	}
 }
 
+func TestActivateLaunchersPreservesModesAndRollsBackEveryRename(t *testing.T) {
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	for failure := 1; failure <= 5; failure++ {
+		t.Run(fmt.Sprintf("rename-%d", failure), func(t *testing.T) {
+			root := installation(t)
+			previous := map[string][]byte{
+				"config.json": configuration(root, identity, "v1.2.3-old"), "profile.token": []byte("old-profile"),
+				"execution.token": []byte("old-execution"), "run": []byte("#!/bin/sh\nold-run\n"), "connect": []byte("#!/bin/sh\nold-connect\n"),
+			}
+			for name, raw := range previous {
+				if name == "run" || name == "connect" {
+					if err := os.WriteFile(filepath.Join(root, name), raw, 0700); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					mustWrite(t, filepath.Join(root, name), raw)
+				}
+			}
+			calls := 0
+			guard := Guard{Root: root, Identity: identity, Rename: func(old, new string) error {
+				calls++
+				if calls == failure {
+					return errors.New("injected rename failure")
+				}
+				return os.Rename(old, new)
+			}}
+			err := guard.ActivateLaunchers(configuration(root, identity, "v1.2.3-new"), []byte("new-profile"), []byte("new-execution"), map[string][]byte{
+				"run": []byte("#!/bin/sh\nnew-run\n"), "connect": []byte("#!/bin/sh\nnew-connect\n"),
+			})
+			if err == nil {
+				t.Fatal("injected failure was ignored")
+			}
+			for name, expected := range previous {
+				raw, readErr := os.ReadFile(filepath.Join(root, name))
+				if readErr != nil || !bytes.Equal(raw, expected) {
+					t.Fatalf("%s = %q, %v", name, raw, readErr)
+				}
+				mode := os.FileMode(0600)
+				if name == "run" || name == "connect" {
+					mode = 0700
+				}
+				if info, statErr := os.Stat(filepath.Join(root, name)); statErr != nil || info.Mode().Perm() != mode {
+					t.Fatalf("%s mode = %#o, %v", name, info.Mode().Perm(), statErr)
+				}
+			}
+		})
+	}
+}
+
 func installation(t *testing.T) string {
 	t.Helper()
 	temporary, err := filepath.EvalSymlinks(t.TempDir())
@@ -376,7 +426,7 @@ func canonicalPrivateTemp(t *testing.T) string {
 
 func configuration(root string, identity Identity, version string) []byte {
 	release := filepath.Join(filepath.Dir(filepath.Dir(root)), "releases", strings.Repeat("a", 64))
-	return []byte("{\"base_url\":\"" + identity.BaseURL + "\",\"runner_id\":\"" + identity.RunnerID + "\",\"profile_id\":\"" + identity.ProfileID + "\",\"expires_at\":\"2099-01-01T00:00:00Z\",\"release_path\":\"" + release + "\",\"release_version\":\"" + version + "\",\"platform\":\"linux-amd64\"}")
+	return []byte("{\"base_url\":\"" + identity.BaseURL + "\",\"runner_id\":\"" + identity.RunnerID + "\",\"profile_id\":\"" + identity.ProfileID + "\",\"expires_at\":\"2099-01-01T00:00:00Z\",\"release_path\":\"" + release + "\",\"release_version\":\"" + version + "\",\"platform\":\"linux-amd64\",\"image_id\":\"sha256:" + strings.Repeat("b", 64) + "\"}")
 }
 
 func mustMkdir(t *testing.T, path string) {
