@@ -310,7 +310,9 @@ func generatePatch(before, after map[string]fileState) (patch []byte, returnedEr
 		return nil, err
 	}
 	output := &boundedWriter{remaining: MaxPatchBytes + 1}
-	if err := runGit(ctx, temporary, work, output, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
+	// core.quotePath=false keeps each file header a single literal "diff --git
+	// a/<path> b/<path>" line, which review_diff matches without re-parsing.
+	if err := runGit(ctx, temporary, work, output, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
 		return nil, err
 	}
 	if output.buffer.Len() > MaxPatchBytes {
