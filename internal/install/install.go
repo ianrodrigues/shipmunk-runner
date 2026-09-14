@@ -83,23 +83,24 @@ func SelectPlatform(manifest shipmunkrelease.Manifest, goos, goarch string) (shi
 	if key != "linux-amd64" && key != "linux-arm64" && key != "darwin-amd64" && key != "darwin-arm64" {
 		return shipmunkrelease.PlatformRelease{}, fmt.Errorf("unsupported runner platform %s", key)
 	}
-	if manifest.SchemaVersion != 1 || manifest.Version == "" || len(manifest.Platforms) != 4 {
+	if manifest.SchemaVersion != 1 || !releaseVersionPattern.MatchString(manifest.Version) || len(manifest.Platforms) != 4 {
 		return shipmunkrelease.PlatformRelease{}, errors.New("runner release manifest is invalid")
 	}
 	if len(manifest.NativeImage.Platforms) != 2 || manifest.NativeImage.Platforms[0] != "linux-amd64" || manifest.NativeImage.Platforms[1] != "linux-arm64" {
 		return shipmunkrelease.PlatformRelease{}, errors.New("runner native image platforms are invalid")
 	}
-	for manifestKey, platform := range manifest.Platforms {
-		if manifestKey != platform.OS+"-"+platform.Arch {
+	for _, manifestKey := range []string{"darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"} {
+		platform, ok := manifest.Platforms[manifestKey]
+		if !ok || manifestKey != platform.OS+"-"+platform.Arch {
 			return shipmunkrelease.PlatformRelease{}, errors.New("runner release platform binding is invalid")
+		}
+		if err := validatePlatform(platform); err != nil {
+			return shipmunkrelease.PlatformRelease{}, err
 		}
 	}
 	platform, ok := manifest.Platforms[key]
 	if !ok {
 		return shipmunkrelease.PlatformRelease{}, fmt.Errorf("runner release does not support platform %s", key)
-	}
-	if err := validatePlatform(platform); err != nil {
-		return shipmunkrelease.PlatformRelease{}, err
 	}
 	return platform, nil
 }

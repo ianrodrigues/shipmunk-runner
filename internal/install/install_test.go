@@ -36,6 +36,26 @@ func TestSelectPlatformStrictlyBindsSupportedTuple(t *testing.T) {
 	if _, err := SelectPlatform(manifest, "linux", "amd64"); err == nil {
 		t.Fatal("accepted incorrectly bound platform")
 	}
+	manifest = manifestFixture(platform)
+	invalid := manifest.Platforms["darwin-arm64"]
+	invalid.Archive.SHA256 = "invalid"
+	manifest.Platforms["darwin-arm64"] = invalid
+	if _, err := SelectPlatform(manifest, "linux", "amd64"); err == nil {
+		t.Fatal("accepted invalid unselected platform")
+	}
+	manifest = manifestFixture(platform)
+	for _, version := range []string{"1.2.3", "v1.2.3-01"} {
+		manifest.Version = version
+		if _, err := SelectPlatform(manifest, "linux", "amd64"); err == nil {
+			t.Fatalf("accepted noncanonical release version %q", version)
+		}
+	}
+	manifest = manifestFixture(platform)
+	manifest.Platforms["windows-amd64"] = manifest.Platforms["darwin-amd64"]
+	delete(manifest.Platforms, "darwin-amd64")
+	if _, err := SelectPlatform(manifest, "linux", "amd64"); err == nil {
+		t.Fatal("accepted substituted platform tuple")
+	}
 }
 
 func TestParseManifestRejectsDuplicateAndUnknownFields(t *testing.T) {
