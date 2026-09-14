@@ -24,9 +24,11 @@ type recordedDocker struct {
 	removed          map[string]bool
 	labelOwner       string
 	collectorOutput  []byte
+	onNativeStart    func()
 }
 
 func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin io.Reader, args ...string) (transportResult, error) {
+	var onNativeStart func()
 	d.mu.Lock()
 	if d.removed == nil {
 		d.removed = make(map[string]bool)
@@ -38,7 +40,13 @@ func (d *recordedDocker) Run(ctx context.Context, _ time.Duration, _ int, stdin 
 	if len(args) > 2 && args[0] == "volume" && args[1] == "rm" {
 		d.removed[args[len(args)-1]] = true
 	}
+	if len(args) == 2 && args[0] == "start" && args[1] == testTransportName {
+		onNativeStart = d.onNativeStart
+	}
 	d.mu.Unlock()
+	if onNativeStart != nil {
+		onNativeStart()
+	}
 	if d.failCreate && len(args) > 0 && args[0] == "create" {
 		return transportResult{exitCode: 1}, nil
 	}
@@ -147,6 +155,34 @@ func TestDockerTransportRejectsReplacedProfileHomeBeforeNativeContainerCreation(
 			if argument == "--name" && call[index+1] == testTransportName {
 				t.Fatal("native container was created after the profile home changed")
 			}
+		}
+	}
+}
+
+func TestDockerTransportRejectsProfileHomeReplacedDuringNativeContainerStart(t *testing.T) {
+	d := new(recordedDocker)
+	transport := transportFixture(t, d)
+	profile := transport.cfg.ProfileHome
+	d.onNativeStart = func() {
+		if err := os.Rename(profile, profile+"-moved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(profile, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := transport.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Codex profile directory changed before container setup") {
+		t.Fatalf("profile home replaced during native start was accepted: %v", err)
+	}
+
+	d.mu.Lock()
+	calls := append([][]string(nil), d.calls...)
+	d.mu.Unlock()
+	for _, call := range calls {
+		if len(call) == 2 && call[0] == "start" && call[1] == testTransportName+"-repo" {
+			t.Fatal("repository container started after the profile home changed")
 		}
 	}
 }

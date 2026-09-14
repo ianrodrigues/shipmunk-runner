@@ -241,6 +241,11 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		if _, err = t.run(ctx, nil, "start", name); err != nil {
 			return errors.New("cannot start Codex boundary")
 		}
+		if name == t.cfg.Name {
+			if err = t.verifyProfileHome(); err != nil {
+				return err
+			}
+		}
 	}
 	archive, err := archiveDirectory(t.cfg.Source, MaxSnapshotBytes)
 	if err != nil {
