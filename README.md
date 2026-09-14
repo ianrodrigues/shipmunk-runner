@@ -1,20 +1,42 @@
 # Shipmunk runner
 
-The standalone execution host for Shipmunk. The Go runner runs Codex work in isolated Linux containers and connects to a separately deployed Shipmunk application. It does not load Laravel, Composer dependencies, application environment files, database credentials or GitHub credentials. The published PHP installer remains the supported installation path until the separate installer migration is complete.
+The standalone execution host for Shipmunk. The Go runner runs Codex work in isolated Linux containers and connects to a separately deployed Shipmunk application. It does not load Laravel, Composer dependencies, application environment files, database credentials or GitHub credentials. The verified Go release is the supported installation path; the PHP installer under `runner/bin` is obsolete and scheduled for removal in a separate change.
 
-The initial version is `v0.1.0-alpha.1`. This is a prerelease: offline checks establish the tested behavior, not live subscription compatibility or full product release readiness. Runner versions and release tags are independent of application versions.
+The initial version is `v0.1.0-alpha.1`. Runner versions and release tags are independent of application versions; each deployment pins a specific published tag from its own `runner-release.json`. Every tag remains a prerelease until noted otherwise: offline checks establish the tested behavior, not live subscription compatibility or full product release readiness.
 
 ## Install and connect
 
-Use **Connections → Runners & Codex** in your Shipmunk application to register a runner and download its short-lived setup file. Run the displayed setup command on the dedicated execution host. The hosted bootstrap downloads the exact public runner release pinned by the application, checks its SHA-256 digest and complete file manifest, and installs into a private directory before loading the downloaded code. The public release contains code and its license; registration tokens remain in your private setup download.
+Use **Connections → Runners & Codex** in your Shipmunk application to register a runner and download its short-lived setup file. The dashboard also shows a hosted bootstrap command for the dedicated execution host; running it downloads the exact public Go release pinned by the application, verifies the platform archive's SHA-256 digest against the signed manifest, and runs the verified `shipmunk-setup` binary from that archive. No PHP, Go toolchain, application checkout or database access is needed on the runner host — only `curl`, `tar`, `sha256sum`/`shasum`, Bash and a reachable Linux Docker engine (Docker Desktop on macOS can provide it). Run as the designated non-root account.
 
-For a source checkout, use:
+To install without the hosted bootstrap script, download and verify the release yourself:
 
 ```sh
-bash runner/bin/shipmunk-setup ~/Downloads/shipmunk-setup-RUNNER.json
+version=vX.Y.Z # the tag pinned by your application, or one you built with `go run ./cmd/shipmunk-package . dist vX.Y.Z`
+platform=linux-amd64 # or linux-arm64, darwin-amd64, darwin-arm64
+
+curl -fsSLO "https://github.com/ianrodrigues/shipmunk-runner/releases/download/$version/runner-release.json"
+curl -fsSLO "https://github.com/ianrodrigues/shipmunk-runner/releases/download/$version/SHA256SUMS"
+curl -fsSLO "https://github.com/ianrodrigues/shipmunk-runner/releases/download/$version/shipmunk-runner-$version-$platform.tar"
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xf "shipmunk-runner-$version-$platform.tar" bin/shipmunk-setup
+
+./bin/shipmunk-setup ~/Downloads/shipmunk-setup-RUNNER.json \
+  --release-manifest runner-release.json \
+  --release-archive "shipmunk-runner-$version-$platform.tar"
 ```
 
-The host needs PHP 8.5 with `pcntl` and `posix`, Bash, and a reachable Linux Docker engine. Run as the designated non-root account. `PHP_BIN=/path/to/php` selects another PHP executable. Setup offers native terminal login and prints runner commands; it does not automatically start queued work. See [runner operation and isolation](runner/README.md) for manual commands and supported boundaries.
+Run on an operator terminal: stdin, stdout and stderr must all be a TTY. Append `--server-url=https://your-runner-reachable-server` for a runner host separate from the application; loopback HTTP is only for same-host development. Setup verifies the archive against the manifest, confirms the server and runner interactively, checks `/up` and the Docker preflight, builds the pinned runtime image, and activates private configuration and the `run`/`connect` launchers under `~/.shipmunk/runners/<runner-id>/`. It never starts queued work.
+
+Once installed, use the printed launchers directly:
+
+```sh
+~/.shipmunk/runners/RUNNER/connect        # native terminal login
+~/.shipmunk/runners/RUNNER/connect probe  # recheck an existing connection
+~/.shipmunk/runners/RUNNER/run --once     # handle at most one claim
+~/.shipmunk/runners/RUNNER/run            # poll continuously
+```
+
+Each launcher invokes the installed `shipmunk-setup` binary by absolute path, which strictly rebuilds the `shipmunk-runner`/`shipmunk-profile` arguments described in [runner operation and isolation](runner/README.md) from the protected installation; setup never starts queued work itself. Renewing tokens (downloading setup again for the same runner) preserves profile credentials and pending operation journals; it never repeats login or discards a confirmed home.
 
 ## Check the standalone repository
 
