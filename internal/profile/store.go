@@ -29,6 +29,7 @@ type Store struct {
 	root      string
 	directory string
 	profileID string
+	rootLock  *os.File
 	lock      *os.File
 	mu        sync.Mutex
 	locked    bool
@@ -46,11 +47,16 @@ func Open(root, profileID string) (*Store, error) {
 	if err := prepareProfileRoot(root); err != nil {
 		return nil, fmt.Errorf("prepare profile root: %w", err)
 	}
+	rootLock, err := openProfileRootLock(filepath.Join(root, ".lock"), false)
+	if err != nil {
+		return nil, fmt.Errorf("profile root is in use or unsafe: %w", err)
+	}
 	directory := filepath.Join(root, profileID)
 	if err := ensureProfileDirectory(directory); err != nil {
+		_ = unlockProfileLock(rootLock)
 		return nil, fmt.Errorf("prepare profile directory: %w", err)
 	}
-	store := &Store{root: root, directory: directory, profileID: profileID}
+	store := &Store{root: root, directory: directory, profileID: profileID, rootLock: rootLock}
 	return store, nil
 }
 
@@ -106,11 +112,38 @@ func (store *Store) WithExclusive(operation func(*Store) error) error {
 func (store *Store) Close() error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if store.closed {
+		return nil
+	}
 	if store.locked {
 		return errors.New("cannot close a profile store while its lock is held")
 	}
 	store.closed = true
-	return nil
+	return unlockProfileLock(store.rootLock)
+}
+
+func WithRootExclusive(root string, operation func() error) error {
+	if operation == nil {
+		return errors.New("profile root operation is required")
+	}
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || strings.Contains(root, "..") || strings.Contains(root, ",") {
+		return errors.New("profile root must be an absolute canonical path")
+	}
+	if err := prepareProfileRoot(root); err != nil {
+		return fmt.Errorf("prepare profile root: %w", err)
+	}
+	lock, err := openProfileRootLock(filepath.Join(root, ".lock"), true)
+	if err != nil {
+		return fmt.Errorf("profile root is in use or unsafe: %w", err)
+	}
+	defer unlockProfileLock(lock)
+	if err := prepareProfileRoot(root); err != nil {
+		return fmt.Errorf("profile root changed while locked: %w", err)
+	}
+	if err := validateHeldProfileLock(lock, filepath.Join(root, ".lock")); err != nil {
+		return err
+	}
+	return operation()
 }
 
 // Home returns the private native home path for this profile.

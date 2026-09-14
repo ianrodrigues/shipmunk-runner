@@ -110,14 +110,21 @@ func (r *codexProfileRouter) build(claim protocol.Claim) (supervisor.Executor, e
 	}
 	sessions, err := codexsession.Open(filepath.Join(r.profilesDir, profileID, "sessions"))
 	if err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	watchdog := sandbox.NewWatchdog(sandbox.Config{DockerExecutable: r.dockerExecutable, WatchdogExecutable: r.watchdogExecutable})
 	delegate, err := codex.NewExecutor(codex.ExecutorConfig{ProfileHome: store.Home(), NativeImage: r.nativeImage, RepositoryImage: r.repositoryImage, DockerExecutable: r.dockerExecutable, Sessions: sessions, SessionMode: r.sessionMode, Watchdog: watchdog})
 	if err != nil {
+		_ = store.Close()
 		return nil, err
 	}
-	return newProfileExecutor(store, delegate)
+	executor, err := newProfileExecutor(store, delegate)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return executor, nil
 }
 func (r *codexProfileRouter) Execute(ctx context.Context, claim protocol.Claim, input map[string]any, workspace string) (supervisor.Execution, error) {
 	executor, err := r.build(claim)
@@ -144,6 +151,11 @@ func (r *codexProfileRouter) Cleanup(ctx context.Context, claim protocol.Claim) 
 	}
 	if err := executor.Cleanup(ctx, claim); err != nil {
 		return err
+	}
+	if owned, ok := executor.(*profileExecutor); ok {
+		if err := owned.close(); err != nil {
+			return err
+		}
 	}
 	r.mu.Lock()
 	delete(r.active, key)

@@ -113,17 +113,32 @@ func TestPreflightRefusalDoesNotChangeExistingLayout(t *testing.T) {
 	}
 }
 
-func TestGuardRejectsProfileAddedWhileAcquiringLocks(t *testing.T) {
+func TestNewProfileCannotStartDuringActivation(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	guard := Guard{Root: root, Identity: identity, profilesLocked: func() {
-		mustMkdir(t, filepath.Join(root, "profiles", "01nnnnnnnnnnnnnnnnnnnnnnnn"))
+	started := make(chan struct{})
+	resume := make(chan struct{})
+	result := make(chan error, 1)
+	guard := Guard{Root: root, Identity: identity, Rename: func(old, new string) error {
+		select {
+		case <-started:
+		default:
+			close(started)
+			<-resume
+		}
+		return os.Rename(old, new)
 	}}
-	if err := guard.Activate(configuration(root, identity, "v1.2.3"), []byte("profile"), []byte("execution")); err == nil || !strings.Contains(err.Error(), "changed") {
-		t.Fatalf("profile addition error = %v", err)
+	go func() {
+		result <- guard.Activate(configuration(root, identity, "v1.2.3"), []byte("profile"), []byte("execution"))
+	}()
+	<-started
+	if store, err := profile.Open(filepath.Join(root, "profiles"), "01nnnnnnnnnnnnnnnnnnnnnnnn"); err == nil {
+		store.Close()
+		t.Fatal("new profile opened during activation")
 	}
-	if _, err := os.Lstat(filepath.Join(root, "config.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("activation proceeded after profile addition")
+	close(resume)
+	if err := <-result; err != nil {
+		t.Fatal(err)
 	}
 }
 

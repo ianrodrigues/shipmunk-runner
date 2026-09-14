@@ -111,6 +111,9 @@ func validateProfileFile(info os.FileInfo) error {
 }
 
 func (store *Store) verifyDirectories() error {
+	if err := validateHeldProfileLock(store.rootLock, filepath.Join(store.root, ".lock")); err != nil {
+		return fmt.Errorf("unsafe profile root lock: %w", err)
+	}
 	if err := rejectSymlinkComponents(store.root); err != nil {
 		return fmt.Errorf("unsafe profile root: %w", err)
 	}
@@ -148,6 +151,18 @@ func validateProfileLeaf(path string) error {
 }
 
 func openProfileLock(path string) (*os.File, error) {
+	return openProfileCoordinationLock(path, syscall.LOCK_EX)
+}
+
+func openProfileRootLock(path string, exclusive bool) (*os.File, error) {
+	mode := syscall.LOCK_SH
+	if exclusive {
+		mode = syscall.LOCK_EX
+	}
+	return openProfileCoordinationLock(path, mode)
+}
+
+func openProfileCoordinationLock(path string, mode int) (*os.File, error) {
 	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_EXCL|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	created := err == nil
 	if errors.Is(err, syscall.EEXIST) {
@@ -178,7 +193,7 @@ func openProfileLock(path string) (*os.File, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(fd, mode|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
 		return nil, err
 	}
@@ -199,6 +214,15 @@ func unlockProfileLock(file *os.File) error {
 		return unlockErr
 	}
 	return closeErr
+}
+
+func validateHeldProfileLock(file *os.File, path string) error {
+	opened, statErr := file.Stat()
+	current, lstatErr := os.Lstat(path)
+	if statErr != nil || lstatErr != nil || !os.SameFile(opened, current) {
+		return errors.New("profile lock was replaced")
+	}
+	return validateProfileFile(opened)
 }
 
 func openProfileRead(path string) (*os.File, error) {
