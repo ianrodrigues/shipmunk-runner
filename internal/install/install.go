@@ -215,6 +215,9 @@ func installRelease(archive io.Reader, releases string, platform shipmunkrelease
 	}
 	if err := os.Rename(staging, destination); err != nil {
 		if _, statErr := os.Lstat(destination); statErr == nil && verifyRelease(destination, platform.Files) == nil {
+			if err := syncDir(releases); err != nil {
+				return "", err
+			}
 			return destination, nil
 		}
 		return "", errors.New("cannot activate runner release")
