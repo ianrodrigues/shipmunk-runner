@@ -466,7 +466,7 @@ func (t *DockerTransport) CollectPatch(ctx context.Context) (_ *Patch, err error
 	if err = extractSnapshot(bytes.NewReader(r.stdout), temporary); err != nil {
 		return nil, err
 	}
-	patch, err := CollectSnapshots(t.cfg.Source, temporary)
+	patch, err := collectSnapshots(t.cfg.Source, temporary, t.sourceHandle)
 	if err != nil {
 		return nil, err
 	}

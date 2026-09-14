@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -55,6 +56,44 @@ func TestCollectSnapshotsMatchesIndependentPatchVerification(t *testing.T) {
 	}
 	if generated.SHA256 != verified.SHA256 || !bytes.Equal(generated.Bytes, verified.Bytes) || !reflect.DeepEqual(generated.ChangedFiles, verified.ChangedFiles) {
 		t.Fatal("single-pass collection differs from independent supplied-patch verification")
+	}
+}
+
+func TestCollectSnapshotsUsesPinnedDescriptorAfterSourceReplacement(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("descriptor paths are only used on supported Unix hosts")
+	}
+	parent := t.TempDir()
+	source := filepath.Join(parent, "source")
+	if err := os.Mkdir(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, source, "value", "original\n", 0644)
+	handle, err := os.Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	if err := os.Rename(source, source+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, source, "value", "attacker\n", 0644)
+	after := t.TempDir()
+	writeFile(t, after, "value", "changed\n", 0644)
+	alias := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), handle.Fd())
+	if runtime.GOOS == "darwin" {
+		alias = fmt.Sprintf("/dev/fd/%d", handle.Fd())
+	}
+
+	result, err := collectSnapshots(alias, after, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || len(result.ChangedFiles) != 1 || result.ChangedFiles[0].BeforeSHA256 == nil || *result.ChangedFiles[0].BeforeSHA256 != sha256Hex("original\n") {
+		t.Fatalf("pinned source was not preserved: %#v", result)
 	}
 }
 
