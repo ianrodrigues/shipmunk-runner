@@ -1,16 +1,23 @@
 package command
 
 import (
+	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
+	shipmunkrelease "github.com/ianrodrigues/shipmunk-runner/internal/release"
 )
 
 const (
@@ -195,16 +202,16 @@ func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 
 func TestParseSetupOptionsAcceptsServerURLAfterFile(t *testing.T) {
 	for _, args := range [][]string{
-		{"setup.json", "--server-url", "https://runner.example"},
-		{"setup.json", "--server-url=https://runner.example"},
-		{"--server-url", "https://runner.example", "setup.json"},
-		{"--server-url=https://runner.example", "setup.json"},
+		{"setup.json", "--server-url", "https://runner.example", "--release-manifest=manifest.json", "--release-archive=archive.tar"},
+		{"setup.json", "--server-url=https://runner.example", "--release-manifest", "manifest.json", "--release-archive", "archive.tar"},
+		{"--server-url", "https://runner.example", "--release-manifest=manifest.json", "--release-archive=archive.tar", "setup.json"},
+		{"--server-url=https://runner.example", "--release-manifest=manifest.json", "--release-archive=archive.tar", "setup.json"},
 	} {
 		options, err := ParseSetupOptions(args)
 		if err != nil {
 			t.Fatalf("parse %#v: %v", args, err)
 		}
-		if options.SetupFile != "setup.json" || options.ServerURL != "https://runner.example" {
+		if options.SetupFile != "setup.json" || options.ServerURL != "https://runner.example" || options.ReleaseManifest != "manifest.json" || options.ReleaseArchive != "archive.tar" {
 			t.Fatalf("unexpected options for %#v: %#v", args, options)
 		}
 	}
@@ -254,11 +261,15 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 	}
 	original := setupRuntime
 	t.Cleanup(func() { setupRuntime = original })
+	home := ""
 	setupRuntime = setupRuntimeHooks{
 		effectiveUID: os.Geteuid,
 		stdin:        strings.NewReader("\n"),
 		isTerminal:   func(any) bool { return true },
 		now:          func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) },
+		homeDir:      func() (string, error) { return home, nil },
+		goos:         runtime.GOOS,
+		goarch:       runtime.GOARCH,
 	}
 
 	var stdout bytes.Buffer
@@ -282,11 +293,15 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	home = root
 	validSetupFile := filepath.Join(root, "valid.json")
 	if err := os.WriteFile(validSetupFile, []byte(validSetupBundleJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code := RunSetup([]string{validSetupFile, "--server-url", "https://override.example"}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+	manifest, archive := setupReleaseFixture(t, root)
+	args := setupCommandArgs(validSetupFile, manifest, archive)
+	args = append(args, "--server-url", "https://override.example")
+	if code := RunSetup(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("declined setup = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 	output := stdout.String()
@@ -302,7 +317,7 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 
 	stdout.Reset()
 	setupRuntime.stdin = strings.NewReader("y\n")
-	if code := RunSetup([]string{validSetupFile}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "installation is not available") {
+	if code := RunSetup(setupCommandArgs(validSetupFile, manifest, archive), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Installed the verified runner release") {
 		t.Fatalf("confirmed setup handoff = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 }
@@ -313,7 +328,7 @@ func TestRunSetupRejectsUnsafeFilesBeforeDisplayingBundle(t *testing.T) {
 	}
 	original := setupRuntime
 	t.Cleanup(func() { setupRuntime = original })
-	setupRuntime = setupRuntimeHooks{effectiveUID: os.Geteuid, stdin: strings.NewReader("\n"), isTerminal: func(any) bool { return true }, now: time.Now}
+	setupRuntime = setupRuntimeHooks{effectiveUID: os.Geteuid, stdin: strings.NewReader("\n"), isTerminal: func(any) bool { return true }, now: time.Now, goos: runtime.GOOS, goarch: runtime.GOARCH}
 
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -351,10 +366,11 @@ func TestRunSetupRejectsUnsafeFilesBeforeDisplayingBundle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(realDirectory, "bundle.json"), []byte(validSetupBundleJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	manifest, archive := setupReleaseFixture(t, root)
 
 	for _, setupPath := range []string{filepath.Join(root, "missing.json"), linked, hard, directory, oversized, throughDirectoryLink} {
 		var stdout, stderr bytes.Buffer
-		if code := RunSetup([]string{setupPath}, &stdout, &stderr); code != 1 || stdout.Len() != 0 || stderr.Len() == 0 {
+		if code := RunSetup(setupCommandArgs(setupPath, manifest, archive), &stdout, &stderr); code != 1 || stdout.Len() != 0 || stderr.Len() == 0 {
 			t.Errorf("unsafe setup path %q = %d, stdout %q, stderr %q", setupPath, code, stdout.String(), stderr.String())
 		}
 	}
@@ -381,11 +397,176 @@ func TestRunSetupRequiresNonRootThreeFDTerminalBeforeFileAccess(t *testing.T) {
 				},
 				now: time.Now,
 			}
-			if code := RunSetup([]string{"/definitely/not/a/setup-file"}, &stdout, &stderr); code != 1 || stdout.Len() != 0 || stderr.Len() == 0 || strings.Contains(stderr.String(), "setup file") {
+			if code := RunSetup(setupCommandArgs("/definitely/not/a/setup-file", "/missing/manifest", "/missing/archive"), &stdout, &stderr); code != 1 || stdout.Len() != 0 || stderr.Len() == 0 || strings.Contains(stderr.String(), "setup file") {
 				t.Fatalf("host gate = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 			}
 		})
 	}
+}
+
+func TestCompiledSetupInstallsIntoCleanHomeWithoutStartingWork(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("guided setup refuses root")
+	}
+	if _, err := exec.LookPath("expect"); err != nil {
+		t.Skip("expect is required to provide an operator terminal")
+	}
+	repository, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "shipmunk-setup")
+	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./cmd/shipmunk-setup")
+	build.Dir = repository
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build setup: %v: %s", err, output)
+	}
+	bundle := filepath.Join(root, "setup.json")
+	if err := os.WriteFile(bundle, []byte(validSetupBundleJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, archive := setupReleaseFixture(t, root)
+	expectScript := "log_user 1\nset timeout 10\nspawn -noecho $env(SHIPMUNK_SETUP_BINARY) $env(SHIPMUNK_SETUP_BUNDLE) --release-manifest $env(SHIPMUNK_SETUP_MANIFEST) --release-archive $env(SHIPMUNK_SETUP_ARCHIVE)\nexpect \"Continue with this server and runner?\"\nsend \"y\\r\"\nexpect \"Setup did not start queued work.\"\nexit 0\n"
+	process := exec.Command("expect", "-c", expectScript)
+	process.Env = append(os.Environ(), "HOME="+root, "SHIPMUNK_SETUP_BINARY="+binary, "SHIPMUNK_SETUP_BUNDLE="+bundle, "SHIPMUNK_SETUP_MANIFEST="+manifest, "SHIPMUNK_SETUP_ARCHIVE="+archive)
+	output, err := process.CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte("Installed the verified runner release")) || !bytes.Contains(output, []byte("did not start queued work")) {
+		t.Fatalf("compiled setup smoke: %v: %q", err, output)
+	}
+	configPath := filepath.Join(root, ".shipmunk", "runners", testRunnerID, "config.json")
+	config, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Contains(config, []byte(`"release_version":"v1.2.3"`)) || !bytes.Contains(config, []byte(`"release_path":"`)) {
+		t.Fatalf("installed config = %q, %v", config, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".shipmunk", "runners", testRunnerID, "state", "active-attempt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("setup started or journaled queued work")
+	}
+}
+
+func TestRunSetupBlocksRenewalBeforeInstallingRelease(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("setup ownership fixture requires a non-root test account")
+	}
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+
+	for name, block := range map[string]func(*testing.T, string){
+		"changed identity": func(t *testing.T, runnerRoot string) {
+			raw := `{"base_url":"https://other.example","runner_id":"` + testRunnerID + `","profile_id":"` + testProfileID + `"}`
+			if err := os.WriteFile(filepath.Join(runnerRoot, "config.json"), []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"unresolved attempt": func(t *testing.T, runnerRoot string) {
+			if err := os.WriteFile(filepath.Join(runnerRoot, "state", "active-attempt.json"), []byte("{}"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle := filepath.Join(home, "setup.json")
+			if err := os.WriteFile(bundle, []byte(validSetupBundleJSON), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manifest, archive := setupReleaseFixture(t, home)
+			runnerRoot, _, err := prepareSetupDirectories(home, testRunnerID, os.Geteuid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			block(t, runnerRoot)
+			setupRuntime = setupRuntimeHooks{
+				effectiveUID: os.Geteuid, stdin: strings.NewReader("y\n"), isTerminal: func(any) bool { return true },
+				now:     func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) },
+				homeDir: func() (string, error) { return home, nil }, goos: runtime.GOOS, goarch: runtime.GOARCH,
+			}
+			var stdout, stderr bytes.Buffer
+			if code := RunSetup(setupCommandArgs(bundle, manifest, archive), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "renewal is blocked") {
+				t.Fatalf("blocked renewal = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+			}
+			if _, err := os.Lstat(filepath.Join(home, ".shipmunk", "releases")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("blocked renewal mutated the release store")
+			}
+		})
+	}
+}
+
+func TestPublicReleaseFilesRejectLinksAndOversize(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	regular := filepath.Join(root, "release")
+	if err := os.WriteFile(regular, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(root, "linked")
+	if err := os.Symlink(regular, linked); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(root, "hard")
+	if err := os.Link(regular, hard); err != nil {
+		t.Fatal(err)
+	}
+	oversize := filepath.Join(root, "oversize")
+	if err := os.WriteFile(oversize, []byte("too large"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{regular, linked, hard, oversize} {
+		if _, err := readPublicSetupFile(path, 7); err == nil {
+			t.Fatalf("accepted unsafe release file %s", path)
+		}
+	}
+}
+
+func setupCommandArgs(bundle, manifest, archive string) []string {
+	return []string{bundle, "--release-manifest", manifest, "--release-archive", archive}
+}
+
+func setupReleaseFixture(t *testing.T, root string) (string, string) {
+	t.Helper()
+	contents := []byte("synthetic executable\n")
+	var archive bytes.Buffer
+	w := tar.NewWriter(&archive)
+	if err := w.WriteHeader(&tar.Header{Name: "bin/shipmunk-setup", Mode: 0o755, Size: int64(len(contents)), ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(contents); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := sha256.Sum256(archive.Bytes())
+	fileDigest := sha256.Sum256(contents)
+	artifact := shipmunkrelease.Artifact{Name: "runner.tar", URL: "https://runner.example/runner.tar", SHA256: hex.EncodeToString(archiveDigest[:]), Size: int64(archive.Len())}
+	file := shipmunkrelease.File{Path: "bin/shipmunk-setup", SHA256: hex.EncodeToString(fileDigest[:]), Size: int64(len(contents)), Mode: "0755"}
+	platforms := map[string]shipmunkrelease.PlatformRelease{}
+	for _, target := range []struct{ os, arch string }{{"darwin", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}, {"linux", "arm64"}} {
+		key := target.os + "-" + target.arch
+		platforms[key] = shipmunkrelease.PlatformRelease{OS: target.os, Arch: target.arch, Archive: artifact, Files: []shipmunkrelease.File{file}}
+	}
+	manifest := shipmunkrelease.Manifest{SchemaVersion: 1, Version: "v1.2.3", Platforms: platforms}
+	manifest.NativeImage.Platforms = []string{"linux-amd64", "linux-arm64"}
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, archivePath := filepath.Join(root, "runner-release.json"), filepath.Join(root, "runner.tar")
+	if err := os.WriteFile(manifestPath, manifestRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, archive.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return manifestPath, archivePath
 }
 
 const validSetupBundleJSON = `{"version":1,"runtime_version":"0.154.0","base_url":"https://runner.example","runner_id":"01k4w000000000000000000001","profile_id":"01k4w000000000000000000002","expires_at":"2099-01-01T00:00:00Z","profile_token":"1|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","execution_token":"2|BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","future_field":{"ignored":true}}`

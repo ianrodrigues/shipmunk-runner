@@ -2,6 +2,7 @@ package command
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,14 +11,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ianrodrigues/shipmunk-runner/internal/install"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
-const setupBundleMaxBytes = 16 * 1024
+const (
+	setupBundleMaxBytes   = 16 * 1024
+	setupManifestMaxBytes = 128 * 1024
+)
 
 var (
 	setupTokenPattern  = regexp.MustCompile(`^[0-9]+\|[A-Za-z0-9_]{40,160}$`)
@@ -29,7 +35,10 @@ var (
 			file, ok := value.(*os.File)
 			return ok && isTerminal(file)
 		},
-		now: time.Now,
+		now:     time.Now,
+		homeDir: os.UserHomeDir,
+		goos:    runtime.GOOS,
+		goarch:  runtime.GOARCH,
 	}
 )
 
@@ -38,15 +47,20 @@ type setupRuntimeHooks struct {
 	stdin        io.Reader
 	isTerminal   func(any) bool
 	now          func() time.Time
+	homeDir      func() (string, error)
+	goos         string
+	goarch       string
 }
 
 // SetupOptions contains parsed setup command arguments. ServerURL overrides
 // the bundle's base_url when provided.
 type SetupOptions struct {
-	SetupFile string
-	ServerURL string
-	Help      bool
-	Version   bool
+	SetupFile       string
+	ServerURL       string
+	ReleaseManifest string
+	ReleaseArchive  string
+	Help            bool
+	Version         bool
 }
 
 // SetupBundle is the validated setup file data needed by the installation
@@ -83,6 +97,22 @@ func ParseSetupOptions(args []string) (SetupOptions, error) {
 		case strings.HasPrefix(argument, "--server-url="):
 			options.ServerURL = strings.TrimPrefix(argument, "--server-url=")
 			serverURLProvided = true
+		case argument == "--release-manifest" || argument == "-release-manifest":
+			if index+1 >= len(args) {
+				return SetupOptions{}, errors.New("missing --release-manifest value")
+			}
+			index++
+			options.ReleaseManifest = args[index]
+		case strings.HasPrefix(argument, "--release-manifest="):
+			options.ReleaseManifest = strings.TrimPrefix(argument, "--release-manifest=")
+		case argument == "--release-archive" || argument == "-release-archive":
+			if index+1 >= len(args) {
+				return SetupOptions{}, errors.New("missing --release-archive value")
+			}
+			index++
+			options.ReleaseArchive = args[index]
+		case strings.HasPrefix(argument, "--release-archive="):
+			options.ReleaseArchive = strings.TrimPrefix(argument, "--release-archive=")
 		case strings.HasPrefix(argument, "-"):
 			return SetupOptions{}, errors.New("unknown setup option")
 		default:
@@ -97,6 +127,9 @@ func ParseSetupOptions(args []string) (SetupOptions, error) {
 	}
 	if !options.Help && !options.Version && options.SetupFile == "" {
 		return SetupOptions{}, errors.New("setup file is required")
+	}
+	if !options.Help && !options.Version && (options.ReleaseManifest == "" || options.ReleaseArchive == "") {
+		return SetupOptions{}, errors.New("release manifest and archive are required")
 	}
 	return options, nil
 }
@@ -205,15 +238,64 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
 	}
-	fmt.Fprintf(stdout, "Server: %s\nRunner: %s\nProfile: %s\nTokens expire: %s\n", bundle.BaseURL, bundle.RunnerID, bundle.ProfileID, bundle.ExpiresAt.Format(time.RFC3339))
-	fmt.Fprintln(stdout, "Setup installs private local files and builds the pinned runtime image. It does not start reviews.")
+	manifestRaw, err := readPublicSetupFile(options.ReleaseManifest, setupManifestMaxBytes)
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner release manifest is unsafe or invalid.")
+		return 1
+	}
+	manifest, err := install.ParseManifest(manifestRaw)
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner release manifest is unsafe or invalid.")
+		return 1
+	}
+	platform, err := install.SelectPlatform(manifest, setupRuntime.goos, setupRuntime.goarch)
+	if err != nil {
+		fmt.Fprintln(stderr, "This runner release does not support the current platform.")
+		return 1
+	}
+	fmt.Fprintf(stdout, "Server: %s\nRunner: %s\nProfile: %s\nTokens expire: %s\nRelease: %s (%s/%s)\n", bundle.BaseURL, bundle.RunnerID, bundle.ProfileID, bundle.ExpiresAt.Format(time.RFC3339), manifest.Version, platform.OS, platform.Arch)
+	fmt.Fprintln(stdout, "Setup installs the verified release and private local configuration. It does not start reviews.")
 	fmt.Fprint(stdout, "Continue with this server and runner? [y/N] ")
 	answer, _ := bufio.NewReader(setupRuntime.stdin).ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(answer)) != "y" {
 		return 0
 	}
-	fmt.Fprintln(stderr, "Go setup installation is not available in this compatibility foundation.")
-	return 1
+	home, err := setupRuntime.homeDir()
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner installation failed. Check the private home and release files, then retry.")
+		return 1
+	}
+	root, releases, err := prepareSetupDirectories(home, bundle.RunnerID, setupRuntime.effectiveUID())
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner installation failed. Check the private home and release files, then retry.")
+		return 1
+	}
+	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}}
+	if err := guard.Validate(); err != nil {
+		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
+		return 1
+	}
+	archive, err := readPublicSetupFile(options.ReleaseArchive, int(platform.Archive.Size))
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner release archive is unsafe or invalid.")
+		return 1
+	}
+	releasePath, err := install.Install(bytes.NewReader(archive), releases, platform)
+	if err != nil {
+		fmt.Fprintln(stderr, "Runner installation failed. Check the private home and release files, then retry.")
+		return 1
+	}
+	config, err := json.Marshal(map[string]any{
+		"base_url": bundle.BaseURL, "runner_id": bundle.RunnerID, "profile_id": bundle.ProfileID,
+		"expires_at": bundle.ExpiresAt.Format(time.RFC3339), "release_path": releasePath,
+		"release_version": manifest.Version, "platform": platform.OS + "-" + platform.Arch,
+	})
+	if err != nil || guard.Activate(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken)) != nil {
+		fmt.Fprintln(stderr, "Runner installation failed. Previous configuration was preserved.")
+		return 1
+	}
+	fmt.Fprintln(stdout, "Installed the verified runner release. Setup did not start queued work.")
+	return 0
 }
 
 func readProtectedSetupFile(path string, effectiveUID int) ([]byte, error) {
@@ -250,6 +332,65 @@ func readProtectedSetupFile(path string, effectiveUID int) ([]byte, error) {
 		return nil, errors.New("The setup file changed while it was being read.")
 	}
 	return raw, nil
+}
+
+func readPublicSetupFile(path string, limit int) ([]byte, error) {
+	if limit < 1 {
+		return nil, errors.New("release file size is invalid")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil || setupPathHasSymlink(abs) {
+		return nil, errors.New("release file path is unsafe")
+	}
+	expected, err := os.Lstat(abs)
+	if err != nil || !expected.Mode().IsRegular() || expected.Mode()&os.ModeSymlink != 0 || setupFileNlink(expected) != 1 {
+		return nil, errors.New("release file is unsafe")
+	}
+	file, err := os.Open(abs)
+	if err != nil {
+		return nil, errors.New("release file cannot be opened")
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(expected, opened) || setupFileNlink(opened) != 1 {
+		return nil, errors.New("release file changed while opening")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	afterOpen, openErr := file.Stat()
+	afterPath, pathErr := os.Lstat(abs)
+	if err != nil || len(raw) > limit || openErr != nil || pathErr != nil || !os.SameFile(afterOpen, afterPath) || setupFileNlink(afterOpen) != 1 {
+		return nil, errors.New("release file changed or exceeds its limit")
+	}
+	return raw, nil
+}
+
+func prepareSetupDirectories(home, runnerID string, effectiveUID int) (string, string, error) {
+	canonical, err := filepath.EvalSymlinks(home)
+	if err != nil || canonical != home || !filepath.IsAbs(home) || setupPathHasSymlink(home) {
+		return "", "", errors.New("runner home is unsafe")
+	}
+	shipmunk := filepath.Join(home, ".shipmunk")
+	paths := []string{shipmunk, filepath.Join(shipmunk, "runners"), filepath.Join(shipmunk, "runners", runnerID)}
+	for _, path := range paths {
+		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", "", err
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || setupFileUID(info) != uint32(effectiveUID) {
+			return "", "", errors.New("runner directory is unsafe")
+		}
+	}
+	root := paths[len(paths)-1]
+	for _, path := range []string{filepath.Join(root, "profiles"), filepath.Join(root, "state")} {
+		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", "", err
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || setupFileUID(info) != uint32(effectiveUID) {
+			return "", "", errors.New("runner directory is unsafe")
+		}
+	}
+	return root, filepath.Join(shipmunk, "releases"), nil
 }
 
 func setupPathHasSymlink(path string) bool {
