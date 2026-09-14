@@ -101,6 +101,25 @@ func TestInstallActivatesPrivateContentAddressedRelease(t *testing.T) {
 	}
 }
 
+func TestInstallSyncsNestedDirectoriesBottomUpBeforeRename(t *testing.T) {
+	platform, archive := customArchive(t, []archiveEntry{{"share/a/b/data", []byte("data\n"), 0644, tar.TypeReg}})
+	releases := canonicalTemp(t)
+	var synced []string
+	if _, err := installRelease(bytes.NewReader(archive), releases, platform, func(path string) error {
+		synced = append(synced, path)
+		return syncDirectory(path)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	positions := map[string]int{}
+	for index, path := range synced {
+		positions[filepath.Base(path)] = index
+	}
+	if !(positions["b"] < positions["a"] && positions["a"] < positions["share"] && positions["share"] < positions[filepath.Base(releases)]) {
+		t.Fatalf("directory sync order = %v", synced)
+	}
+}
+
 func TestInstallRejectsArchiveDigestAndSizeBeforeCreatingReleaseRoot(t *testing.T) {
 	platform, archive := archiveFixture(t)
 	parent := canonicalTemp(t)

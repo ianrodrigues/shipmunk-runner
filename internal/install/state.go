@@ -21,6 +21,7 @@ const maxConfigBytes = 16 << 10
 const activationJournalName = ".activation.json"
 
 var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+var legacyExpiryPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$`)
 
 type Identity struct {
 	BaseURL   string
@@ -33,6 +34,7 @@ type Guard struct {
 	Identity Identity
 	Rename   func(string, string) error
 	Sync     func(string) error
+	Write    func(string, []byte) error
 }
 
 type ActivationOutcome uint8
@@ -234,8 +236,9 @@ func (guard Guard) activateLocked(values map[string][]byte) error {
 		return guard.preparationError(err)
 	}
 	raw, _ := json.Marshal(journal)
-	if err := writePrivateExclusive(filepath.Join(guard.Root, activationJournalName), raw); err != nil {
-		return guard.abortPreparation(err)
+	journalPath := filepath.Join(guard.Root, activationJournalName)
+	if err := guard.write(journalPath, raw); err != nil {
+		return guard.abortJournal(err)
 	}
 	if err := guard.sync(); err != nil {
 		return &ActivationError{Outcome: ActivationIndeterminate, Err: err}
@@ -334,6 +337,16 @@ func (guard Guard) abortPreparation(cause error) error {
 	return guard.preparationError(cause)
 }
 
+func (guard Guard) abortJournal(cause error) error {
+	if err := os.Remove(filepath.Join(guard.Root, activationJournalName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return &ActivationError{Outcome: ActivationIndeterminate, Err: errors.Join(cause, err)}
+	}
+	if err := guard.sync(); err != nil {
+		return &ActivationError{Outcome: ActivationIndeterminate, Err: errors.Join(cause, err)}
+	}
+	return guard.preparationError(cause)
+}
+
 func (guard Guard) preparationError(cause error) error {
 	if cleanupErr := guard.removePreparation(); cleanupErr != nil {
 		return &ActivationError{Outcome: ActivationIndeterminate, Err: errors.Join(cause, cleanupErr)}
@@ -349,6 +362,13 @@ func (guard Guard) sync() error {
 		return guard.Sync(guard.Root)
 	}
 	return syncPrivateDirectory(guard.Root)
+}
+
+func (guard Guard) write(path string, raw []byte) error {
+	if guard.Write != nil {
+		return guard.Write(path, raw)
+	}
+	return writePrivateExclusive(path, raw)
 }
 
 func (guard Guard) removePreparation() error {
@@ -380,10 +400,43 @@ func (guard Guard) validateExistingIdentity() error {
 		return fmt.Errorf("existing runner configuration is unsafe: %w", err)
 	}
 	configuration, err := decodeConfiguration(raw)
-	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
+	if err == nil {
+		if configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
+			return errors.New("setup identity differs from the existing runner")
+		}
+		return nil
+	}
+	legacy, legacyErr := decodeLegacyConfiguration(raw)
+	if legacyErr != nil || legacy != guard.Identity {
 		return errors.New("setup identity differs from the existing runner")
 	}
 	return nil
+}
+
+func decodeLegacyConfiguration(raw []byte) (Identity, error) {
+	value, err := protocol.Decode(raw, maxConfigBytes)
+	data, ok := value.(map[string]any)
+	if err != nil || !ok || len(data) != 5 {
+		return Identity{}, errors.New("legacy runner configuration is invalid")
+	}
+	for _, key := range []string{"image_id", "base_url", "runner_id", "profile_id", "expires_at"} {
+		if _, ok := data[key]; !ok {
+			return Identity{}, errors.New("legacy runner configuration is invalid")
+		}
+	}
+	image, imageOK := data["image_id"].(string)
+	baseURL, baseOK := data["base_url"].(string)
+	runnerID, runnerOK := data["runner_id"].(string)
+	profileID, profileOK := data["profile_id"].(string)
+	expiresAt, expiresOK := data["expires_at"].(string)
+	if !imageOK || !baseOK || !runnerOK || !profileOK || !expiresOK || !strings.HasPrefix(image, "sha256:") || !digestPattern.MatchString(strings.TrimPrefix(image, "sha256:")) ||
+		baseURL == "" || len(baseURL) > 2048 || protocol.ValidateProfileID(runnerID) != nil || protocol.ValidateProfileID(profileID) != nil || !legacyExpiryPattern.MatchString(expiresAt) {
+		return Identity{}, errors.New("legacy runner configuration is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, expiresAt); err != nil {
+		return Identity{}, errors.New("legacy runner configuration is invalid")
+	}
+	return Identity{BaseURL: baseURL, RunnerID: runnerID, ProfileID: profileID}, nil
 }
 
 type installedConfiguration struct {

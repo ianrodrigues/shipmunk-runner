@@ -128,6 +128,10 @@ func validatePlatform(platform shipmunkrelease.PlatformRelease) error {
 // Install verifies the complete archive before writing and atomically activates
 // it under releases/<archive-sha256>. Existing releases are never repaired.
 func Install(archive io.Reader, releases string, platform shipmunkrelease.PlatformRelease) (string, error) {
+	return installRelease(archive, releases, platform, syncDirectory)
+}
+
+func installRelease(archive io.Reader, releases string, platform shipmunkrelease.PlatformRelease, syncDir func(string) error) (string, error) {
 	if err := validatePlatform(platform); err != nil {
 		return "", err
 	}
@@ -163,10 +167,14 @@ func Install(archive io.Reader, releases string, platform shipmunkrelease.Platfo
 	if err := os.Chmod(staging, 0700); err != nil {
 		return "", err
 	}
+	directories := map[string]bool{staging: true}
 	for index, file := range platform.Files {
 		path := filepath.Join(staging, filepath.FromSlash(file.Path))
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			return "", err
+		}
+		for directory := filepath.Dir(path); directory != staging; directory = filepath.Dir(directory) {
+			directories[directory] = true
 		}
 		mode := os.FileMode(0644)
 		if file.Mode == "0755" {
@@ -190,8 +198,17 @@ func Install(archive io.Reader, releases string, platform shipmunkrelease.Platfo
 	if err := verifyRelease(staging, platform.Files); err != nil {
 		return "", err
 	}
-	if err := syncDirectory(staging); err != nil {
-		return "", err
+	ordered := make([]string, 0, len(directories))
+	for directory := range directories {
+		ordered = append(ordered, directory)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		return strings.Count(ordered[left], string(filepath.Separator)) > strings.Count(ordered[right], string(filepath.Separator))
+	})
+	for _, directory := range ordered {
+		if err := syncDir(directory); err != nil {
+			return "", err
+		}
 	}
 	if err := os.Rename(staging, destination); err != nil {
 		if _, statErr := os.Lstat(destination); statErr == nil && verifyRelease(destination, platform.Files) == nil {
@@ -199,7 +216,7 @@ func Install(archive io.Reader, releases string, platform shipmunkrelease.Platfo
 		}
 		return "", errors.New("cannot activate runner release")
 	}
-	if err := syncDirectory(releases); err != nil {
+	if err := syncDir(releases); err != nil {
 		return "", err
 	}
 	return destination, nil
