@@ -1,4 +1,3 @@
-// Package codex implements the native Codex execution boundary.
 package codex
 
 import (
@@ -66,8 +65,8 @@ type Event struct {
 	ItemType string
 }
 
-// EvidenceRef.Snapshot is the real 40-character SHA of one of the attempt's
-// two snapshots, never the "baseline"/"workspace" label review_* tools use.
+// EvidenceRef.Snapshot is the real 40-character SHA of one attempt snapshot,
+// never the "baseline"/"workspace" label review_* tools use.
 type EvidenceRef struct {
 	Snapshot  string
 	Path      string
@@ -387,9 +386,9 @@ func parseUsage(value any) (*Usage, error) {
 }
 
 // parseResult's allowed-keys-by-outcome mirrors result.schema.json's allOf
-// conditionals: findings/no_findings require charter_version, coverage and
-// verification_state and permit questions; incomplete permits coverage alone;
-// every other outcome permits none of the four.
+// conditionals. findings and no_findings require charter_version, coverage,
+// and verification_state, plus optional questions. incomplete permits
+// coverage alone, and every other outcome permits none of the four.
 func parseResult(raw []byte) (Result, error) {
 	value, err := protocol.Decode(raw, MaxLineBytes)
 	if err != nil {

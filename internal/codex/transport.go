@@ -322,8 +322,8 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		if _, err = t.run(ctx, bytes.NewReader(archive), t.repoExec("tar", "-xf", "-", "-C", "/workspace")...); err != nil {
 			return errors.New("cannot populate repository container")
 		}
-		// Review has no shell tool to consult this history, so only implement
-		// and fix runs get the synthetic local commit their prompt describes.
+		// Review has no shell tool to consult this history. Only implement and
+		// fix runs get the synthetic local commit their prompt describes.
 		if _, err = t.run(ctx, nil, t.repoExec("sh", "-c", "test ! -e .git && git -c core.hooksPath=/dev/null init -q && git -c core.hooksPath=/dev/null add --all && git -c core.hooksPath=/dev/null -c user.name=Shipmunk -c user.email=runner@shipmunk.local commit -qm baseline --allow-empty")...); err != nil {
 			return errors.New("cannot initialize protected repository baseline")
 		}
@@ -332,10 +332,10 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	return nil
 }
 
-// Review snapshots share the existing bounded volume, but only disjoint
-// subdirectories are mounted into the repository. Its read-only base mount has
-// no writable alias. Keep the writer mounted until the repository starts so the
-// tmpfs volume is not emptied by Docker, then remove it before enabling tools.
+// Review snapshots share the existing bounded volume; only disjoint
+// subdirectories mount into the repository. The repository's read-only base
+// mount has no writable alias. Keep the writer mounted until the repository
+// starts, or Docker empties the tmpfs volume; remove it before enabling tools.
 func (t *DockerTransport) populateReviewSnapshots(ctx context.Context, image string, common []string) error {
 	args := append([]string{"create", "--name", t.cfg.Name + "-diff"}, common...)
 	args = append(args, "--pids-limit", "64", "--network", "none", "--workdir", "/empty", "--mount", "type=volume,src="+t.workspaceVolume+",dst=/snapshots", "--entrypoint", "/usr/bin/env", image, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
