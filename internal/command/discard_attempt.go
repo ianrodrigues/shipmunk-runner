@@ -69,7 +69,7 @@ func runDiscardAttempt(options RunnerOptions, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
-	sandboxConfirmed := bestEffortSandboxCleanup(options, *state)
+	sandboxConfirmed := discardSandboxCleanup(options, *state)
 	acknowledgeStoppedBestEffort(options, *state, stdout)
 	if err := workspaces.Remove(state.Workspace); err != nil {
 		fmt.Fprintf(stdout, "Could not remove the attempt workspace; the journal is discarded regardless: %v\n", err)
@@ -95,9 +95,14 @@ func sandboxIdentity(state attemptstate.State) string {
 	return "shipmunk-codex-" + state.AttemptID + "-" + strconv.FormatInt(state.Fence, 10)
 }
 
-// bestEffortSandboxCleanup tries to reconcile either the journaled raw Docker
-// sandbox or the deterministic composite-driver sandbox within
-// sandboxCleanupTimeout. It reports whether cleanup was confirmed.
+// discardSandboxCleanup is a package var so tests can stub it instead of
+// exercising the host Docker CLI.
+var discardSandboxCleanup = bestEffortSandboxCleanup
+
+// bestEffortSandboxCleanup mirrors supervisor.reconcile's Docker reconciliation
+// so discard does not silently strand a live container; it never blocks the
+// discard on failure, since the operator override exists precisely to avoid
+// waiting on that path.
 func bestEffortSandboxCleanup(options RunnerOptions, state attemptstate.State) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxCleanupTimeout)
 	defer cancel()

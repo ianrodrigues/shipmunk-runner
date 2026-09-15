@@ -15,6 +15,15 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
+// stubDiscardSandboxCleanup replaces the real Docker reconciliation with a
+// fixed result so tests never depend on the host Docker CLI.
+func stubDiscardSandboxCleanup(t *testing.T, confirmed bool) {
+	t.Helper()
+	original := discardSandboxCleanup
+	t.Cleanup(func() { discardSandboxCleanup = original })
+	discardSandboxCleanup = func(RunnerOptions, attemptstate.State) bool { return confirmed }
+}
+
 func discardAttemptOptions(t *testing.T, root, baseURL string) RunnerOptions {
 	t.Helper()
 	token := filepath.Join(root, "execution.token")
@@ -85,12 +94,23 @@ func TestDiscardAttemptRequiresConfirmationUnlessYes(t *testing.T) {
 			setupRuntime.effectiveUID = os.Geteuid
 			setupRuntime.stdin = strings.NewReader(test.stdin)
 			setupRuntime.isTerminal = func(any) bool { return true }
+			stubDiscardSandboxCleanup(t, true)
 
 			options := discardAttemptOptions(t, root, server.URL)
 			options.Confirmed = test.confirmed
 			var stdout, stderr bytes.Buffer
 			if code := runDiscardAttempt(options, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			wantSandboxLine := "sandbox shipmunk-codex-" + testOperation + "-1"
+			if !strings.Contains(stdout.String(), wantSandboxLine) {
+				t.Fatalf("sandbox identity line missing: stdout=%q", stdout.String())
+			}
+			if strings.Contains(stdout.String(), "capacity reservation") != test.wantRemove {
+				t.Fatalf("capacity reservation sentence presence = %t, stdout=%q", strings.Contains(stdout.String(), "capacity reservation"), stdout.String())
+			}
+			if strings.Contains(stdout.String(), "Sandbox cleanup was not confirmed") {
+				t.Fatalf("confirmed cleanup still warned about manual removal: %q", stdout.String())
 			}
 
 			store, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
@@ -127,6 +147,7 @@ func TestDiscardAttemptDiscardsJournalEvenWhenAcknowledgementFails(t *testing.T)
 	t.Cleanup(func() { setupRuntime = original })
 	setupRuntime.effectiveUID = os.Geteuid
 	setupRuntime.stdin = strings.NewReader("")
+	stubDiscardSandboxCleanup(t, false)
 
 	// The server is closed before use so the acknowledgement fails fast
 	// with a loopback connection refusal instead of a real DNS timeout.
@@ -141,6 +162,16 @@ func TestDiscardAttemptDiscardsJournalEvenWhenAcknowledgementFails(t *testing.T)
 	}
 	if !strings.Contains(stdout.String(), "did not confirm the stopped acknowledgement") {
 		t.Fatalf("unreachable control plane did not report the unconfirmed acknowledgement: %q", stdout.String())
+	}
+	wantSandboxLine := "sandbox shipmunk-codex-" + testOperation + "-1"
+	if !strings.Contains(stdout.String(), wantSandboxLine) {
+		t.Fatalf("sandbox identity line missing: stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `Sandbox cleanup was not confirmed; remove container and volume "`+wantSandboxLine[len("sandbox "):]+`"`) {
+		t.Fatalf("unconfirmed sandbox cleanup guidance missing: stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "capacity reservation") {
+		t.Fatalf("capacity reservation sentence missing: stdout=%q", stdout.String())
 	}
 	store, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
 	if err != nil {
