@@ -270,26 +270,64 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 	}
 }
 
-// task_context (including any <author_intent> block) is passed to the model as stdin, never
-// interpolated into the developer instructions argv element; this proves that boundary holds.
-func TestExecutionCommandKeepsTaskContextOutOfDeveloperInstructions(t *testing.T) {
-	const marker = "AUTHOR-CONTROLLED-DIRECTIVE"
-	taskContext := `<author_intent trust="untrusted">` + marker + `</author_intent>`
+func TestExecutionCommandOrdersReviewIntentAfterEvidenceBeforeApprovedInstructions(t *testing.T) {
+	const approvedInstructions = "Stay focused."
 	claim := protocol.Claim{Manifest: map[string]any{
-		"task_context":     taskContext,
-		"effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."},
+		"task_context":     "Review carefully.",
+		"effective_config": map[string]any{"model": "gpt-5", "instructions": approvedInstructions},
 	}}
 	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: []string{"a.go"}}
 
-	argv, stdin, err := executionCommand(claim, nil, "", true, evidence)
+	argv, _, err := executionCommand(claim, nil, "", true, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stdin != taskContext {
-		t.Fatalf("task context changed:\ngot  %q\nwant %q", stdin, taskContext)
+	developer := developerInstructionsArg(t, argv)
+	if count := strings.Count(developer, reviewIntentInstructions); count != 1 {
+		t.Fatalf("review intent instructions appear %d times, want exactly once:\n%s", count, developer)
 	}
-	if developer := developerInstructionsArg(t, argv); strings.Contains(developer, marker) {
-		t.Fatalf("task context leaked into developer instructions: %q", developer)
+	evidenceAt := strings.Index(developer, reviewEvidencePreamble(evidence))
+	intentAt := strings.Index(developer, reviewIntentInstructions)
+	approvedAt := strings.Index(developer, "Approved instructions:\n"+approvedInstructions)
+	if evidenceAt < 0 || evidenceAt >= intentAt || intentAt >= approvedAt {
+		t.Fatalf("review intent instructions are not between the evidence preamble and approved instructions:\n%s", developer)
+	}
+}
+
+// task_context (including any <author_intent> block) is passed to the model as stdin, never
+// interpolated into the developer instructions argv element; this proves that boundary holds.
+func TestExecutionCommandKeepsTaskContextOutOfDeveloperInstructions(t *testing.T) {
+	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: []string{"a.go"}}
+	taskContexts := map[string]string{
+		"empty declared intent":            `<author_intent trust="untrusted"></author_intent>`,
+		"vague declared intent":            `<author_intent trust="untrusted">Improve things.</author_intent>`,
+		"instruction-like declared intent": `<author_intent trust="untrusted">AUTHOR-CONTROLLED-DIRECTIVE</author_intent>`,
+	}
+	var referenceDeveloper string
+	for name, taskContext := range taskContexts {
+		t.Run(name, func(t *testing.T) {
+			claim := protocol.Claim{Manifest: map[string]any{
+				"task_context":     taskContext,
+				"effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."},
+			}}
+
+			argv, stdin, err := executionCommand(claim, nil, "", true, evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stdin != taskContext {
+				t.Fatalf("task context changed:\ngot  %q\nwant %q", stdin, taskContext)
+			}
+			developer := developerInstructionsArg(t, argv)
+			if strings.Contains(developer, taskContext) {
+				t.Fatalf("task context leaked into developer instructions: %q", developer)
+			}
+			if referenceDeveloper == "" {
+				referenceDeveloper = developer
+			} else if developer != referenceDeveloper {
+				t.Fatal("author-controlled task context changed developer instructions")
+			}
+		})
 	}
 }
 
