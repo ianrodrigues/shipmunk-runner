@@ -104,7 +104,8 @@ func New(config Config) (*Docker, error) {
 }
 
 // Name returns the stable Docker name that the coordinator must journal before
-// it calls Create. It deliberately matches the PHP runner's attempt/fence name.
+// it calls Create. Name deliberately matches the historical attempt/fence
+// naming scheme, for on-disk compatibility.
 func (docker *Docker) Name(claim protocol.Claim) (string, error) {
 	if !ulidPattern.MatchString(claim.RunID) || !ulidPattern.MatchString(claim.AttemptID) || claim.Fence < 1 || claim.Fence > protocol.MaxSafeInteger {
 		return "", errors.New("claim identity is invalid for sandbox naming")
@@ -217,8 +218,8 @@ func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInp
 }
 
 // Reconcile stops and removes a Shipmunk-owned container, then verifies that
-// Docker confirms its absence. Both deterministic names and legacy hex IDs are
-// accepted for the persisted identifier.
+// Docker confirms its absence. Reconcile accepts both deterministic names and
+// legacy hex IDs for the persisted identifier.
 func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	if !containerNamePattern.MatchString(identifier) && !containerIDPattern.MatchString(identifier) {
 		return errors.New("unsafe sandbox identifier")
@@ -334,8 +335,8 @@ func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimi
 }
 
 // ClientEnvironment returns the minimal environment shared by Docker client
-// subprocesses and command-boundary preflight checks. Provider and
-// control-plane credentials are intentionally excluded.
+// subprocesses and command-boundary preflight checks. ClientEnvironment
+// intentionally excludes provider and control-plane credentials.
 func ClientEnvironment() []string {
 	environment := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C"}
 	for _, name := range []string{

@@ -13,7 +13,7 @@ import (
 const codexCleanupTimeout = 90 * time.Second
 
 // profileExecutor serializes one native profile across the complete provider
-// lifecycle. The delegated executor owns transport resources; this wrapper owns
+// lifecycle. The delegated executor owns transport resources. This wrapper owns
 // the durable profile reservation and releases it only after transport cleanup.
 type profileExecutor struct {
 	store    *profile.Store

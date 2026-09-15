@@ -42,7 +42,8 @@ type Session struct {
 }
 
 // BindingFromClaim hashes all context that may affect a resumed conversation.
-// It deliberately defines a new Go-native format rather than preserving PHP bytes.
+// BindingFromClaim deliberately defines a new Go-native format rather than
+// preserving PHP bytes.
 func BindingFromClaim(claim protocol.Claim) (string, error) {
 	if !runPattern.MatchString(claim.RunID) || claim.Manifest == nil {
 		return "", errors.New("cannot bind an invalid claim")
@@ -105,7 +106,7 @@ func Open(root string) (*Store, error) {
 
 // Select returns nil for Fresh without consulting an existing record. Resume
 // selects an existing valid record only when it has exactly the requested
-// binding; an absent or incompatible record falls back to a fresh session.
+// binding. Resume falls back to a fresh session for an absent or incompatible record.
 func (store *Store) Select(mode Mode, claim protocol.Claim) (*Session, error) {
 	binding, err := BindingFromClaim(claim)
 	if err != nil {
@@ -180,8 +181,8 @@ func (store *Store) Read(runID string) (*Session, error) {
 }
 
 // Write atomically and durably replaces the named run's valid record. A valid
-// record with a stale binding may be replaced after Resume selected a fresh
-// session; malformed or unsafe state is never overwritten.
+// record with a stale binding may be replaced after Resume selects a fresh
+// session. Malformed or unsafe state is never overwritten.
 func (store *Store) write(runID, binding string, session Session) error {
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()

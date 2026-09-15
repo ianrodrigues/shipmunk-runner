@@ -333,9 +333,8 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printRenewalRefusal names both versions for a release-order refusal, or the
-// version for a same-version archive mismatch, else prints the generic
-// identity/recovery refusal.
+// printRenewalRefusal reports both versions for a release-order refusal, one
+// version for a same-version mismatch, and a generic refusal otherwise.
 func printRenewalRefusal(stderr io.Writer, err error) {
 	var releaseOrderErr *install.ReleaseOrderError
 	var archiveMismatchErr *install.ReleaseArchiveMismatchError

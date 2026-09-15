@@ -29,8 +29,6 @@ func claimForProfile(profileID any) protocol.Claim {
 	}
 }
 
-// The router rejects a malformed identity before it touches the profile directory.
-// This order keeps unrecoverable state off the disk.
 func TestCodexProfileRouterRejectsMalformedProfileIdentity(t *testing.T) {
 	root := t.TempDir()
 	for _, profileID := range []any{nil, "", "../invalid", 42, []any{}} {

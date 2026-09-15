@@ -1,6 +1,6 @@
 // Package command owns terminal-facing behavior. Runtime execution is wired by
-// the supervision slice; keeping this boundary small prevents a compatibility
-// scaffold from reserving work before it can provide the cleanup guarantees.
+// the supervision slice. Keeping this boundary small stops a compatibility
+// scaffold from reserving work before it can guarantee cleanup.
 package command
 
 import (
@@ -17,7 +17,7 @@ type Poller interface {
 
 // RunOnce preserves the observable idle/claimed terminal contract without
 // rendering untrusted server or provider output. A claimed attempt is handed
-// to the caller for supervised execution; this package never completes it.
+// to the caller for supervised execution. This package never completes the attempt.
 func RunOnce(ctx context.Context, output io.Writer, poller Poller) (*protocol.Claim, int) {
 	claim, err := poller.Claim(ctx)
 	if err != nil {

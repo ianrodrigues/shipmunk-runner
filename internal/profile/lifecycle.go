@@ -74,8 +74,8 @@ func NewLifecycle(controlPlane ControlPlane, runtime Runtime, watchdog Watchdog)
 }
 
 // Operate performs login, probe, or disconnect under the profile's OS lock.
-// Native and transport detail is reduced to a health reason before it can be
-// persisted or sent to the application.
+// Operate reduces native and transport detail to a health reason before
+// persisting or sending the reason to the application.
 func (lifecycle *Lifecycle) Operate(ctx context.Context, store *Store, profileID, operation, operationID string) (Health, error) {
 	if store == nil {
 		return Health{}, errors.New("profile lifecycle dependencies are incomplete")
@@ -623,8 +623,8 @@ func (lifecycle *Lifecycle) stopAndDisarm(sandboxName string, createMayBeInFligh
 			return fmt.Errorf("profile create reconciliation is unconfirmed: %w", err)
 		}
 		// Reconciliation leaves a stopped, mount-free name tombstone. The
-		// operation-scoped name is never reused, so retaining it permanently
-		// prevents any delayed create request from materializing credentials.
+		// runner never reuses the operation-scoped name. Retaining the
+		// tombstone blocks a delayed create request from materializing credentials.
 		return nil
 	}
 	if err := lifecycle.Runtime.Stop(ctx, sandboxName, false); err != nil {

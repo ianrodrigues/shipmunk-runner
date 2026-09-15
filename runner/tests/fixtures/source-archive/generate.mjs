@@ -1,4 +1,5 @@
-// Run only in a disposable network-none container. No existing repository or home is used.
+// Run only in a disposable network-none container. The script uses no
+// existing repository or home.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';

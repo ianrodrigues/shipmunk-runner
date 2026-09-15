@@ -61,7 +61,7 @@ func uniqueDockerClaim(t *testing.T) protocol.Claim {
 }
 
 // The Docker process is real. Only the temporary CLI outage and fenced HTTP
-// responses are synthetic; neither failure may erase recovery evidence.
+// responses are synthetic. Neither failure may erase recovery evidence.
 func TestDockerRecoveryRetainsStateAcrossFailureAndFreshSupervisor(t *testing.T) {
 	config := dockerFailureConfig(t)
 	for _, failure := range []string{"docker_unavailable", "stopped_ack_stale_fence"} {
