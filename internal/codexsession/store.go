@@ -41,8 +41,7 @@ type Session struct {
 	Binding string `json:"binding"`
 }
 
-// BindingFromClaim hashes context that may affect a resumed conversation, using a
-// new Go-native format rather than PHP bytes.
+// BindingFromClaim hashes context that may affect a resumed conversation, using a new Go-native format.
 func BindingFromClaim(claim protocol.Claim) (string, error) {
 	if !runPattern.MatchString(claim.RunID) || claim.Manifest == nil {
 		return "", errors.New("cannot bind an invalid claim")
@@ -135,8 +134,7 @@ func (store *Store) Persist(claim protocol.Claim, session Session) error {
 	return store.write(claim.RunID, binding, session)
 }
 
-// Read loads only the named run's record; malformed or unsafe state fails
-// closed.
+// Read loads only the named run's record; malformed or unsafe state fails closed.
 func (store *Store) Read(runID string) (*Session, error) {
 	path, err := store.path(runID)
 	if err != nil {

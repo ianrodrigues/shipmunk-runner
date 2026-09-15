@@ -48,8 +48,7 @@ func (workspace *Workspace) Path(claim protocol.Claim) string {
 	return filepath.Join(workspace.root, claim.AttemptID+"-"+strconv.FormatInt(claim.Fence, 10))
 }
 
-// EnsureWritable creates the root if needed, then verifies a private probe
-// file can be created and removed.
+// EnsureWritable creates the root if needed, then verifies a private probe file can be created and removed.
 func (workspace *Workspace) EnsureWritable() error {
 	workspace.mu.Lock()
 	defer workspace.mu.Unlock()
@@ -78,8 +77,7 @@ func (workspace *Workspace) EnsureWritable() error {
 	return nil
 }
 
-// Prepare downloads and safely extracts source and trusted instruction inputs,
-// removing the new attempt workspace on failure.
+// Prepare downloads and extracts source and instruction inputs, removing the new workspace on failure.
 func (workspace *Workspace) Prepare(ctx context.Context, claim protocol.Claim, client Downloader) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("artifact downloader is required")
@@ -212,8 +210,7 @@ func validAttemptDirectoryName(name string) bool {
 	return err == nil && fence > 0 && fence <= protocol.MaxSafeInteger
 }
 
-// Remove removes only a direct child named for a valid attempt and fence,
-// and refuses symlinks anywhere in the tree.
+// Remove removes only a direct child named for a valid attempt and fence, and refuses symlinks.
 func (workspace *Workspace) Remove(path string) error {
 	workspace.mu.Lock()
 	defer workspace.mu.Unlock()

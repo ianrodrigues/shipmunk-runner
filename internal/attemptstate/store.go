@@ -59,8 +59,7 @@ type fileOps struct {
 	syncDir  func(string) error
 }
 
-// Open resolves and locks the state directory until Close; a second
-// supervisor errors instead of sharing state.
+// Open locks the state directory until Close; a second supervisor errors instead of sharing state.
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("attempt state path is empty")
@@ -114,8 +113,7 @@ func Open(path string) (*Store, error) {
 	return store, nil
 }
 
-// Load returns nil when no journal exists, and rejects malformed, oversized,
-// duplicate-key, or unsupported state without changing the file.
+// Load returns nil when no journal exists, and rejects invalid state without changing the file.
 func (store *Store) Load() (*State, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -128,8 +126,7 @@ func (store *Store) Load() (*State, error) {
 	return store.loadLocked()
 }
 
-// Save durably replaces the state file only after understanding existing
-// state, so an unsupported journal is never destroyed.
+// Save replaces the state file only after reading existing state, so an unsupported journal is never destroyed.
 func (store *Store) Save(state State) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -179,8 +176,7 @@ func (store *Store) Save(state State) error {
 	return nil
 }
 
-// Clear removes a valid journal and syncs its directory, but retains invalid
-// or unsupported state for operator recovery.
+// Clear removes a valid journal, but retains invalid or unsupported state for operator recovery.
 func (store *Store) Clear() error {
 	store.mu.Lock()
 	defer store.mu.Unlock()

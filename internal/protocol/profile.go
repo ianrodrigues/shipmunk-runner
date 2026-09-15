@@ -10,9 +10,7 @@ import (
 
 const ProfileControlPlaneMaxBytes = 32 * 1024
 
-// ProfileRequest sends one profile-scoped lifecycle request using the same
-// endpoint, headers, timeout, and checks as the PHP control plane; suffix is
-// "operations", "operations/{id}/heartbeat", or "operations/{id}/completion".
+// ProfileRequest sends one profile-scoped lifecycle request using the same checks as the control plane.
 func (client *HTTPClient) ProfileRequest(
 	ctx context.Context,
 	profileID string,
@@ -94,8 +92,7 @@ func ValidateProfileID(profileID string) error {
 	return nil
 }
 
-// ValidateOperationID accepts only canonical lowercase ULIDs for profile
-// operation IDs.
+// ValidateOperationID accepts only canonical lowercase ULIDs for profile operation IDs.
 func ValidateOperationID(operationID string) error {
 	if !ulidPattern.MatchString(operationID) {
 		return fmt.Errorf("profile operation identifier must be a lowercase ULID")

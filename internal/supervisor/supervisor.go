@@ -53,8 +53,7 @@ type Process interface {
 	Wait(context.Context) (int, []byte, error)
 }
 
-// Sandbox reserves a stable name before Create, whose immutable container ID
-// CreateFinished must acknowledge before journal promotion.
+// Sandbox reserves a stable name before Create, whose immutable container ID CreateFinished must acknowledge.
 type Sandbox interface {
 	Name(protocol.Claim) (string, error)
 	Create(context.Context, protocol.Claim, map[string]any, string) (Process, error)
@@ -68,8 +67,7 @@ type WatchdogLease interface {
 	Disarm() error
 }
 
-// Watchdog must be independent of the supervisor process and monitor parent
-// death before Create can cause a Docker side effect.
+// Watchdog must be independent of the supervisor process and monitor parent death.
 type Watchdog interface {
 	Arm(string, time.Time, time.Time) (WatchdogLease, error)
 }
@@ -80,8 +78,7 @@ type Executor interface {
 	Cleanup(context.Context, protocol.Claim) error
 }
 
-// ExecutorLease is implemented by composite executors whose independent
-// cleanup watchdog must track control-plane lease renewal.
+// ExecutorLease is implemented by composite executors whose cleanup watchdog tracks lease renewal.
 type ExecutorLease interface {
 	Renew(protocol.Claim, time.Time) error
 }

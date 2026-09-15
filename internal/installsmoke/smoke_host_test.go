@@ -16,8 +16,7 @@ import (
 // envHostMode, alongside envEnable, selects TestHostNativeInstallsReleaseWithoutPHPOrGo.
 const envHostMode = "SHIPMUNK_INSTALL_SMOKE_HOST"
 
-// This test cannot start from a clean machine image, so every subprocess
-// runs with PATH scrubbed to the fixture's bin plus /usr/bin and /bin.
+// This test cannot start from a clean machine image; PATH is scrubbed to the fixture's bin plus /usr/bin and /bin.
 func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	if os.Getenv(envEnable) != "1" || os.Getenv(envHostMode) != "1" {
 		t.Skip("set " + envEnable + "=1 and " + envHostMode + "=1 for the host-native (non-container) install smoke test")
