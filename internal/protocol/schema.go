@@ -48,9 +48,7 @@ func resolveRef(root map[string]any, ref string) (any, error) {
 	return target, nil
 }
 
-// Validate checks a raw protocol document against the runner's embedded
-// contract schema. Contract bytes are pinned with the runner binary and are
-// never fetched at runtime.
+// Validate checks a raw protocol document against the runner's embedded contract schema, which is pinned with the binary and never fetched at runtime.
 func Validate(contract string, raw []byte) error {
 	schema, err := schemaBytes(contract)
 	if err != nil {

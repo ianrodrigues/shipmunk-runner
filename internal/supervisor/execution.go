@@ -123,11 +123,10 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 }
 
 // validatePreUploadResult validates the normalized result before publication.
-// A changes_proposed envelope may legitimately carry a null patch reference
-// because the control plane assigns the artifact ID only after upload. Validate
-// a detached copy using a contract-valid provisional reference. runClaim
-// validates the final result again after replacing the reference with the
-// real upload ID.
+// A changes_proposed envelope may legitimately carry a null patch reference,
+// since the control plane assigns the artifact ID only after upload. runClaim
+// validates the final result again after replacing the provisional reference
+// with the real upload ID.
 func validatePreUploadResult(result map[string]any, artifacts []Artifact) error {
 	validationResult := result
 	if result["outcome"] == "changes_proposed" && result["patch_artifact"] == nil {

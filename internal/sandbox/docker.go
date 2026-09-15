@@ -103,9 +103,7 @@ func New(config Config) (*Docker, error) {
 	return &Docker{config: config}, nil
 }
 
-// Name returns the stable Docker name that the coordinator must journal before
-// it calls Create. Name deliberately matches the historical attempt/fence
-// naming scheme, for on-disk compatibility.
+// Name returns the stable Docker name the coordinator must journal before calling Create, matching the historical attempt/fence naming scheme for on-disk compatibility.
 func (docker *Docker) Name(claim protocol.Claim) (string, error) {
 	if !ulidPattern.MatchString(claim.RunID) || !ulidPattern.MatchString(claim.AttemptID) || claim.Fence < 1 || claim.Fence > protocol.MaxSafeInteger {
 		return "", errors.New("claim identity is invalid for sandbox naming")
@@ -217,9 +215,7 @@ func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInp
 	return &Process{docker: docker, name: name, id: created.ID, claim: claim, workspace: workspace, agentInput: input}, nil
 }
 
-// Reconcile stops and removes a Shipmunk-owned container, then verifies that
-// Docker confirms its absence. Reconcile accepts both deterministic names and
-// legacy hex IDs for the persisted identifier.
+// Reconcile stops and removes a Shipmunk-owned container, verifies Docker confirms its absence, and accepts both deterministic names and legacy hex IDs as the identifier.
 func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	if !containerNamePattern.MatchString(identifier) && !containerIDPattern.MatchString(identifier) {
 		return errors.New("unsafe sandbox identifier")
@@ -334,9 +330,7 @@ func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimi
 	return result, nil
 }
 
-// ClientEnvironment returns the minimal environment shared by Docker client
-// subprocesses and command-boundary preflight checks. ClientEnvironment
-// intentionally excludes provider and control-plane credentials.
+// ClientEnvironment returns the minimal environment shared by Docker client subprocesses and preflight checks, intentionally excluding provider and control-plane credentials.
 func ClientEnvironment() []string {
 	environment := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C"}
 	for _, name := range []string{

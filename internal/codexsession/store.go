@@ -41,9 +41,7 @@ type Session struct {
 	Binding string `json:"binding"`
 }
 
-// BindingFromClaim hashes all context that may affect a resumed conversation.
-// BindingFromClaim deliberately defines a new Go-native format rather than
-// preserving PHP bytes.
+// BindingFromClaim hashes all context that may affect a resumed conversation, using a new Go-native format rather than preserving PHP bytes.
 func BindingFromClaim(claim protocol.Claim) (string, error) {
 	if !runPattern.MatchString(claim.RunID) || claim.Manifest == nil {
 		return "", errors.New("cannot bind an invalid claim")
@@ -104,9 +102,7 @@ func Open(root string) (*Store, error) {
 	return &Store{root: root, rootInfo: info}, nil
 }
 
-// Select returns nil for Fresh without consulting an existing record. Resume
-// selects an existing valid record only when it has exactly the requested
-// binding. Resume falls back to a fresh session for an absent or incompatible record.
+// Select returns nil for Fresh, or for Resume, an existing session only when its binding matches exactly.
 func (store *Store) Select(mode Mode, claim protocol.Claim) (*Session, error) {
 	binding, err := BindingFromClaim(claim)
 	if err != nil {
