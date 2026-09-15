@@ -178,6 +178,10 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 		if errors.As(parseErr, &failure) {
 			return failureExecution(claim, failure.Reason, result.ExitCode), nil
 		}
+		// A structured result the contract rejects is this attempt's failure, not a runner fault: report it and keep the runner working.
+		if errors.Is(parseErr, ErrInvalidResult) {
+			return failureExecution(claim, FailureInvalidResult, result.ExitCode), nil
+		}
 		return supervisor.Execution{}, errors.New("Codex result parsing failed")
 	}
 	if result.ExitCode != 0 {
@@ -208,6 +212,7 @@ func failureExecution(claim protocol.Claim, reason FailureReason, exitCode int) 
 		FailureApprovalRequired:    "Native runtime requires approval unavailable in unattended execution.",
 		FailureModelUnavailable:    "Native backend rejected the configured model. Select a supported model for this profile.",
 		FailureInvalidOutputSchema: "Native backend rejected the structured output schema. Update the runner before retrying.",
+		FailureInvalidResult:       "Native backend returned a structured result the result contract rejects.",
 	}
 	summary := summaries[reason] + " Stage: execution. Reason: " + string(reason) + ". Native exit code: "
 	if exitCode < 0 || exitCode > 255 {
