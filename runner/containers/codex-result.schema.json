@@ -21,7 +21,8 @@
         "null"
       ],
       "enum": [
-        "1"
+        "1",
+        null
       ],
       "description": "\"1\" when outcome is findings or no_findings. Null for every other outcome."
     },
@@ -250,7 +251,8 @@
         "null"
       ],
       "enum": [
-        "none"
+        "none",
+        null
       ],
       "description": "\"none\" when outcome is findings or no_findings. Null for every other outcome."
     },

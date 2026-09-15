@@ -289,9 +289,9 @@ func nativeFailure(value map[string]any) error {
 }
 
 // backendErrorEnvelope locates the one strict {"error":{...}} object the pinned
-// CLI copies out of a backend rejection. The CLI can render that body behind a
-// prefix or ahead of appended details, so the envelope is searched for instead
-// of assumed to span the message, and is still decoded strictly.
+// CLI copies out of a backend rejection. The CLI may add a prefix or trailing
+// text around the body, so this searches for it instead of parsing the whole
+// message. The located object is still decoded strictly.
 func backendErrorEnvelope(message string) (map[string]any, bool) {
 	start := strings.IndexByte(message, '{')
 	if start < 0 {

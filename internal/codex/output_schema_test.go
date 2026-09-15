@@ -63,18 +63,34 @@ func resolveSchemaRef(t *testing.T, root, node map[string]any) map[string]any {
 	return target
 }
 
-// nullableSchema reports whether a node admits null, in either of the two forms
-// the documentation sanctions: a union type or an anyOf branch typed null.
+// nullableSchema reports whether a node can actually hold null, in either of the
+// two forms the documentation sanctions: a union type or an anyOf branch typed
+// null. type and enum are ANDed, so a union type whose enum omits null cannot
+// hold null at all and does not count.
 func nullableSchema(node map[string]any) bool {
-	if types, ok := node["type"].([]any); ok {
-		for _, name := range types {
-			if name == "null" {
-				return true
-			}
-		}
-	}
 	for _, branch := range branchesOf(node) {
 		if branch["type"] == "null" {
+			return true
+		}
+	}
+	types, ok := node["type"].([]any)
+	if !ok {
+		return false
+	}
+	nullTyped := false
+	for _, name := range types {
+		nullTyped = nullTyped || name == "null"
+	}
+	return nullTyped && enumAdmitsNull(node)
+}
+
+func enumAdmitsNull(node map[string]any) bool {
+	values, bounded := node["enum"].([]any)
+	if !bounded {
+		return true
+	}
+	for _, value := range values {
+		if value == nil {
 			return true
 		}
 	}
@@ -187,6 +203,13 @@ func walkStrictSchema(t *testing.T, node any, pointer string, depth int, budget 
 			}
 		}
 	}
+	if types, ok := object["type"].([]any); ok && !enumAdmitsNull(object) {
+		for _, name := range types {
+			if name == "null" {
+				t.Fatalf("%s: type admits null but enum does not, so null is unsatisfiable", pointer)
+			}
+		}
+	}
 	for _, branch := range branchesOf(object) {
 		walkStrictSchema(t, branch, pointer+"/anyOf", depth, budget)
 	}
@@ -218,8 +241,8 @@ func walkStrictSchema(t *testing.T, node any, pointer string, depth int, budget 
 }
 
 // The contract stays the authority on which fields are optional. Strict mode
-// cannot omit a property, so every field the contract does not require must be
-// nullable in the model-facing schema and normalized back to absent on parse.
+// cannot omit a property. Every contract-optional field must therefore be
+// nullable in the model-facing schema, then normalized back to absent on parse.
 func TestOutputSchemaMirrorsResultContractRequiredness(t *testing.T) {
 	model := loadSchema(t, outputSchemaPath)
 	contract := loadSchema(t, resultContractPath)
