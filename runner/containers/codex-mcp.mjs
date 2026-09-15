@@ -150,12 +150,7 @@ async function exchangeBridge(fields) {
         ) {
             throw new Error('Invalid response.');
         }
-        // request.json goes first: the host's only signal that a response is
-        // still pending pickup is response.json's existence, so until this
-        // process removes that file the host will not look at request.json
-        // again. Deleting them in the other order let the host's poll land
-        // between the two unlinks and re-serve the already-answered request,
-        // which the host then rejects as an out-of-sequence id.
+        // Delete request.json before response.json: response.json's presence is the host's only signal a response is still pending.
         await unlink('/bridge/request.json');
         await unlink('/bridge/response.json');
         return value;

@@ -95,11 +95,7 @@ func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile, c
 	if err != nil {
 		return nil, fmt.Errorf("create watchdog readiness channel: %w", err)
 	}
-	// A manually created pipe, rather than command.StdinPipe, keeps this
-	// package the sole owner of the write end's lifecycle. StdinPipe hands
-	// Wait an automatic close for the same *os.File once the child exits,
-	// which races Lease.Disarm's own close and intermittently surfaces as
-	// "file already closed".
+	// os.Pipe, not StdinPipe: keeps control's close solely owned by Disarm, avoiding Wait's competing auto-close.
 	controlRead, control, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("create watchdog control channel: %w", err)

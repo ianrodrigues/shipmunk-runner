@@ -871,9 +871,6 @@ done
 	}
 }
 
-// TestLeaseDisarmAfterWatchdogAlreadyExited pins the ordering that made
-// Disarm's explicit control-pipe close race command.Wait's own close of the
-// same pipe: the watchdog exits and is reaped before Disarm ever runs.
 func TestLeaseDisarmAfterWatchdogAlreadyExited(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	watchdogBinary := filepath.Join(t.TempDir(), "watchdog-early-exit-fixture")
