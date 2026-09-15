@@ -471,6 +471,12 @@ func (t *DockerTransport) RunNative(ctx context.Context, argv []string, stdin []
 			_ = t.Stop(context.Background())
 			return CommandResult{}, ctx.Err()
 		case <-done:
+			// select can pick this case even when the caller already canceled ctx.
+			// Checking ctx.Err here makes cleanup run on every cancellation.
+			if ctx.Err() != nil {
+				_ = t.Stop(context.Background())
+				return CommandResult{}, ctx.Err()
+			}
 			if runErr != nil {
 				return CommandResult{}, errors.New("native execution failed")
 			}
