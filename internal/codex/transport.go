@@ -270,6 +270,9 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 		return err
 	}
 	common := []string{"--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner=" + t.cfg.Name, "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2"}
+	if err = t.prepareNativeScratch(false); err != nil {
+		return err
+	}
 	native := append([]string{"create", "--name", t.cfg.Name}, common...)
 	// The pinned CLI writes arg0 helper symlinks under its own tmp; this tmpfs keeps them off the retained profile home.
 	native = append(native, "--pids-limit", "128", "--network", "bridge", "--workdir", "/empty", "--mount", "type=bind,src="+t.cfg.ProfileHome+",dst=/profile", "--mount", "type=bind,src="+t.bridge+",dst=/bridge", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--tmpfs", fmt.Sprintf("/profile/.codex/tmp:rw,nosuid,nodev,size=16m,mode=0700,uid=%d,gid=%d", uid, gid), "--entrypoint", "/usr/bin/env", nativeID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
@@ -385,9 +388,13 @@ func (t *DockerTransport) verifyProfileHome() error {
 	return nil
 }
 
-func (t *DockerTransport) attestProfileMount(ctx context.Context) error {
+// nativeScratchRelative mirrors the profile store's own name for the native runtime's scratch tree.
+const nativeScratchRelative = ".codex/tmp"
+
+// openProfileRoot resolves the retained profile home through its pinned descriptor, so a replaced path cannot redirect the caller.
+func (t *DockerTransport) openProfileRoot() (*os.Root, error) {
 	if t.profileHandle == nil {
-		return errors.New("Codex profile directory is unavailable")
+		return nil, errors.New("Codex profile directory is unavailable")
 	}
 	path := t.profileHandle.Name()
 	if runtime.GOOS == "linux" {
@@ -395,7 +402,50 @@ func (t *DockerTransport) attestProfileMount(ctx context.Context) error {
 	} else if runtime.GOOS == "darwin" {
 		path = fmt.Sprintf("/dev/fd/%d", t.profileHandle.Fd())
 	}
-	root, err := os.OpenRoot(path)
+	return os.OpenRoot(path)
+}
+
+// prepareNativeScratch owns the tmpfs mount point before the daemon can create it.
+// A rootful daemon creates a missing mount point as root, which an unprivileged runner can then neither replace nor remove.
+// replace also discards an existing mount point, so root-owned residue cannot survive a run.
+func (t *DockerTransport) prepareNativeScratch(replace bool) error {
+	root, err := t.openProfileRoot()
+	if err != nil {
+		return errors.New("Codex profile directory is unavailable")
+	}
+	defer root.Close()
+	if err := ensureScratchDirectory(root, filepath.Dir(nativeScratchRelative), false); err != nil {
+		return err
+	}
+	return ensureScratchDirectory(root, nativeScratchRelative, replace)
+}
+
+func ensureScratchDirectory(root *os.Root, relative string, replace bool) error {
+	info, err := root.Lstat(relative)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return errors.New("native scratch mount point is unavailable")
+	case !info.IsDir() || info.Mode()&os.ModeSymlink != 0:
+		return errors.New("native scratch mount point is unsafe")
+	case replace:
+		if err := root.Remove(relative); err != nil {
+			return errors.New("cannot replace the native scratch mount point")
+		}
+	default:
+		return nil
+	}
+	if err := root.Mkdir(relative, 0700); err != nil {
+		return errors.New("cannot create the native scratch mount point")
+	}
+	if err := root.Chmod(relative, 0700); err != nil {
+		return errors.New("cannot protect the native scratch mount point")
+	}
+	return nil
+}
+
+func (t *DockerTransport) attestProfileMount(ctx context.Context) error {
+	root, err := t.openProfileRoot()
 	if err != nil {
 		return errors.New("Codex profile directory is unavailable")
 	}
@@ -791,6 +841,8 @@ bridgeCleanup:
 	}
 finished:
 	t.started = false
+	// Best effort: the next run prepares this mount point again, and the profile store prunes it before it validates the home.
+	_ = t.prepareNativeScratch(true)
 	if t.profileHandle != nil {
 		_ = t.profileHandle.Close()
 		t.profileHandle = nil
