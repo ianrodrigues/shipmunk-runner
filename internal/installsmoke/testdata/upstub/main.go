@@ -23,8 +23,16 @@ import (
 
 const requestLogPath = "/tmp/upstub-requests.log"
 
+// addrEnv overrides the default loopback address; the host-native install
+// smoke sets it to a freshly reserved port instead of a fixed one, so an
+// unrelated process already on 127.0.0.1:8080 can't be mistaken for it.
+const addrEnv = "SHIPMUNK_UPSTUB_ADDR"
+
 func main() {
-	const addr = "127.0.0.1:8080"
+	addr := os.Getenv(addrEnv)
+	if addr == "" {
+		addr = "127.0.0.1:8080"
+	}
 	if len(os.Args) > 1 && os.Args[1] == "-wait" {
 		waitReady(addr)
 		return
@@ -48,7 +56,10 @@ func main() {
 		logRequest(r)
 		http.NotFound(w, r)
 	})
-	_ = http.ListenAndServe(addr, nil)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "upstub: cannot bind "+addr+": "+err.Error())
+		os.Exit(1)
+	}
 }
 
 func waitReady(addr string) {
