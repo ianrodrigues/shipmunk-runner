@@ -19,7 +19,7 @@ async function clean() {
 function session() {
     const child = spawn(
         '/usr/local/bin/node',
-        ['/usr/local/lib/shipmunk/codex-mcp.mjs'],
+        ['/usr/local/lib/shipmunk/codex-mcp.mjs', 'repository'],
         {
             env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
             stdio: ['pipe', 'pipe', 'pipe'],

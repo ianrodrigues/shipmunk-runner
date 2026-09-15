@@ -451,7 +451,12 @@ async function dispatch(message) {
                 content: [
                     {
                         type: 'text',
-                        text: 'Tool call finished, but its response exceeds the MCP output limit. Request a narrower result.',
+                        // Repository mode keeps its exact original wording, a
+                        // fixture string the PHP boundary test still checks.
+                        text:
+                            mode === 'repository'
+                                ? 'Repository command finished, but its response exceeds the MCP output limit. Inspect results with a command that produces less output.'
+                                : 'Tool call finished, but its response exceeds the MCP output limit. Request a narrower result.',
                     },
                 ],
                 isError: true,
