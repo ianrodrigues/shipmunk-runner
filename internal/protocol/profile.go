@@ -10,7 +10,7 @@ import (
 
 const ProfileControlPlaneMaxBytes = 32 * 1024
 
-// ProfileRequest sends one profile-scoped lifecycle request using the same checks as the control plane.
+// ProfileRequest sends one profile-scoped lifecycle request using the same checks as the control plane; suffix is operations, operations/{id}/heartbeat, or operations/{id}/completion.
 func (client *HTTPClient) ProfileRequest(
 	ctx context.Context,
 	profileID string,

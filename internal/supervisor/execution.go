@@ -24,7 +24,7 @@ type Execution struct {
 	Result    map[string]any
 }
 
-// DecodeExecution decodes fixture output; a nonzero exit code discards patch artifacts.
+// DecodeExecution decodes native output; a nonzero exit code discards patch artifacts.
 func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Execution, error) {
 	value, err := protocol.Decode(output, protocol.ResultMaxBytes)
 	if err != nil {
