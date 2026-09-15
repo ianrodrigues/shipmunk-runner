@@ -33,8 +33,7 @@ var ErrTransportCleanupUnconfirmed = errors.New("Codex transport cleanup is unco
 
 var transportNamePattern = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
 
-// TransportConfig describes the three-container Codex boundary. Image names are
-// resolved to immutable IDs before any container is created.
+// TransportConfig describes the three-container Codex boundary; image names resolve to immutable IDs before container creation.
 type TransportConfig struct {
 	Name, ProfileHome, Source, Baseline, NativeImage, RepositoryImage string
 	BaselineSHA, HeadSHA                                              string
@@ -232,8 +231,7 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 	return t, nil
 }
 
-// Start creates and starts all execution boundaries and copies source bytes into
-// the repository's memory-backed workspace. Failure always attempts full cleanup.
+// Start creates and starts all execution boundaries; failure always attempts full cleanup.
 func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
