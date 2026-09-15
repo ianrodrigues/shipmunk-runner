@@ -55,9 +55,7 @@ type Process interface {
 }
 
 // Sandbox reserves a stable name before Create, whose immutable container ID
-// CreateFinished must acknowledge before journal promotion. ErrCreateUncertain
-// leaves the reservation pending, and a fresh supervisor blocks for manual
-// recovery since it cannot prove a name-only reservation is absent.
+// CreateFinished must acknowledge before journal promotion.
 type Sandbox interface {
 	Name(protocol.Claim) (string, error)
 	Create(context.Context, protocol.Claim, map[string]any, string) (Process, error)

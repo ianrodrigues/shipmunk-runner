@@ -13,9 +13,7 @@ var (
 	utcTimestampPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`)
 )
 
-// Claim holds a validated, fenced response to a successful claim request.
-// Claim's exported fields and Manifest map remain mutable. Callers must treat
-// the validated identity and manifest as immutable throughout the attempt.
+// Claim holds a validated, fenced response that callers must treat as immutable throughout the attempt, even though its fields remain technically mutable.
 type Claim struct {
 	RunID          string
 	AttemptID      string
@@ -43,8 +41,7 @@ func ParseClaim(raw []byte, now time.Time) (Claim, error) {
 	return claimFromValidatedManifest(manifest, now)
 }
 
-// ClaimFromManifest validates a detached JSON copy of the supplied manifest.
-// ClaimFromManifest cannot bypass the complete schema checks used by ParseClaim.
+// ClaimFromManifest validates a detached JSON copy of the supplied manifest using the same complete schema checks as ParseClaim.
 func ClaimFromManifest(manifest map[string]any, now time.Time) (Claim, error) {
 	raw, err := json.Marshal(manifest)
 	if err != nil {

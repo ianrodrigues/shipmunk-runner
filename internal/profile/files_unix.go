@@ -535,7 +535,7 @@ func removeProfileTree(path string, hooks nativeTreeHooks) error {
 		}
 		return parent.Remove(name)
 	}
-	// The path now names an entry we did not open. Leave the entry untouched.
+	// The path now names an entry we did not open.
 	// Even a symlink replacement may be meaningful to another owner of the parent.
 	return errors.New("native home changed during invalidation")
 }

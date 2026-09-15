@@ -32,9 +32,7 @@ func (process *Process) ID() string {
 	return process.name
 }
 
-// ContainerID returns Docker's immutable full container ID. The coordinator
-// should persist ContainerID after Create succeeds. Reconcile can then safely
-// confirm an absent immutable ID, even if the deterministic name is later reused.
+// ContainerID returns Docker's immutable full container ID, which the coordinator should persist after Create succeeds so Reconcile can later confirm an absent ID even if the deterministic name is reused.
 func (process *Process) ContainerID() string {
 	return process.id
 }
@@ -66,9 +64,7 @@ func (process *Process) Start(ctx context.Context) error {
 	return nil
 }
 
-// Wait waits for the container command to finish and returns its exit code and
-// bounded combined output. Context cancellation does not remove the sandbox.
-// The caller must stop and remove the sandbox before disarming the watchdog.
+// Wait waits for the container command to finish and returns its exit code and bounded combined output, but the caller must still stop and remove the sandbox before disarming the watchdog.
 func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	if _, err := process.inspectOwned(ctx); err != nil {
 		return 0, nil, fmt.Errorf("verify sandbox before wait: %w", err)

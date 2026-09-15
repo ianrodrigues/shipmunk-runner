@@ -147,8 +147,8 @@ func (g *leaseGuard) createStarted() error {
 	if g.watchdog == nil || g.state.SandboxID == nil {
 		return errors.New("sandbox reservation and watchdog are required before creation")
 	}
-	// Mark before sending. A failed or lost ACK cannot show whether the
-	// watchdog accepted the phase transition. The caller must then finish-empty.
+	// A failed or lost ACK cannot show whether the watchdog accepted the
+	// phase transition. The caller must then finish-empty.
 	g.creationPending = true
 	if err := g.watchdog.CreateStarted(); err != nil {
 		return err

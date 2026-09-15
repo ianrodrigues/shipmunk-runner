@@ -207,7 +207,7 @@ func (store *Store) Clear() error {
 	return nil
 }
 
-// Close releases the supervisor lock. Callers may call Close more than once safely.
+// Close releases the supervisor lock and may be called more than once safely.
 func (store *Store) Close() error {
 	store.mu.Lock()
 	defer store.mu.Unlock()

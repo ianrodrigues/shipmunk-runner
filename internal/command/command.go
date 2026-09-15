@@ -15,9 +15,7 @@ type Poller interface {
 	Claim(context.Context) (*protocol.Claim, error)
 }
 
-// RunOnce preserves the observable idle/claimed terminal contract without
-// rendering untrusted server or provider output. A claimed attempt is handed
-// to the caller for supervised execution. This package never completes the attempt.
+// RunOnce preserves the observable idle/claimed terminal contract without rendering untrusted server or provider output.
 func RunOnce(ctx context.Context, output io.Writer, poller Poller) (*protocol.Claim, int) {
 	claim, err := poller.Claim(ctx)
 	if err != nil {
