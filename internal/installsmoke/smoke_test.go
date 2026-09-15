@@ -155,8 +155,8 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertLauncher(t, ctx, container, home, root, "connect")
 	assertAbsent(t, ctx, container, root+"/state/active-attempt.json")
 
-	// Setup only ever installs binaries under its own private release store.
-	// Setup must not make php or go reachable on PATH.
+	// Setup only installs binaries under its own private release store and
+	// must not make php or go reachable on PATH.
 	assertCommandAbsent(t, ctx, container, "php")
 	assertCommandAbsent(t, ctx, container, "go")
 
