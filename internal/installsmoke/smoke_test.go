@@ -24,8 +24,8 @@
 // docker client is faked, matching the existing unit test's approach), a
 // live native login or control-plane compatibility (see docs/runtime/RT-02.md
 // and RT-03.md), or darwin host behavior — this container only exercises the
-// linux-amd64 and linux-arm64 release tuples. A macOS host still needs its
-// own smoke run; this package does not claim that coverage.
+// linux-amd64 and linux-arm64 release tuples. See smoke_host_test.go for the
+// darwin equivalent, run natively instead of in a container.
 package installsmoke
 
 import (
