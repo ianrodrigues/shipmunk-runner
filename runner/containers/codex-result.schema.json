@@ -19,7 +19,8 @@
     "charter_version": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 8
+      "maxLength": 8,
+      "enum": ["1"]
     },
     "findings": {
       "type": "array",

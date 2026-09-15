@@ -8,6 +8,16 @@
     "summary": "Review assessment.",
     "outcome": "no_findings",
     "findings": [],
+    "coverage": {
+      "files": [
+        {
+          "path": "app/Support/ReviewPathRules.php",
+          "status": "reviewed"
+        }
+      ],
+      "context_gaps": []
+    },
+    "verification_state": "none",
     "patch_artifact": null,
     "tests": [],
     "usage": null

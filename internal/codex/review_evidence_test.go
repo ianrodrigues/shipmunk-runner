@@ -1,7 +1,9 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,11 +14,16 @@ import (
 
 func testReviewEvidence() *reviewEvidence {
 	return &reviewEvidence{
-		baselineSHA:  sampleBaselineSHA,
-		headSHA:      sampleHeadSHA,
-		changedFiles: []string{"a.go", "b.go"},
-		baseline:     map[string]fileState{"a.go": {data: []byte("one\ntwo\nthree\n")}},
-		head:         map[string]fileState{"a.go": {data: []byte("one\ntwo\nthree\nfour\n")}, "b.go": {data: []byte("new file\n")}},
+		baselineSHA:   sampleBaselineSHA,
+		headSHA:       sampleHeadSHA,
+		changedFiles:  []string{"a.go", "b.go"},
+		baselineIndex: buildLineIndex(map[string]fileState{"a.go": {data: []byte("one\ntwo\nthree\n")}}),
+		headIndex: buildLineIndex(map[string]fileState{
+			"a.go":         {data: []byte("one\ntwo\nthree\nfour\n")},
+			"b.go":         {data: []byte("new file\n")},
+			"binary.bin":   {data: []byte{0x00, 0xff, 0x00, 0xff}},
+			"unrelated.go": {data: []byte("untouched by this change\n")},
+		}),
 	}
 }
 
@@ -119,15 +126,30 @@ func TestValidateReviewResultRejectsNoFindingsWithIncompleteCoverage(t *testing.
 	}
 }
 
-func TestValidateReviewResultRequiresWorkspaceEvidenceForIntroducedOrModified(t *testing.T) {
+// TestValidateReviewResultRequiresEvidenceOnAChangedFileForIntroducedOrModified
+// covers the deleted-file case citesChangedFile exists for: a finding about
+// the consequences of removing a.go (a changed path) can only cite it on the
+// baseline snapshot, since it has no workspace-snapshot content, and that
+// must still satisfy introduced/modified. Evidence confined to a genuinely
+// unrelated, unchanged file must still fail regardless of which snapshot.
+func TestValidateReviewResultRequiresEvidenceOnAChangedFileForIntroducedOrModified(t *testing.T) {
 	for _, relation := range []string{"introduced", "modified"} {
-		t.Run(relation, func(t *testing.T) {
+		t.Run(relation+"/baseline citation of a changed file is enough", func(t *testing.T) {
 			finding := cleanFinding()
 			finding.Relation = relation
 			finding.Evidence = []EvidenceRef{{Snapshot: sampleBaselineSHA, Path: "a.go", LineStart: 1, LineEnd: 1}}
 			result := Result{Outcome: "findings", CharterVersion: ReviewCharterVersion, VerificationState: "none", Coverage: &Coverage{Files: cleanCoverage().Files}, Findings: []Finding{finding}}
+			if err := validateReviewResult(result, testReviewEvidence()); err != nil {
+				t.Fatalf("%s finding with baseline evidence on a changed file was rejected: %v", relation, err)
+			}
+		})
+		t.Run(relation+"/unrelated unchanged file is not enough", func(t *testing.T) {
+			finding := cleanFinding()
+			finding.Relation = relation
+			finding.Evidence = []EvidenceRef{{Snapshot: sampleHeadSHA, Path: "unrelated.go", LineStart: 1, LineEnd: 1}}
+			result := Result{Outcome: "findings", CharterVersion: ReviewCharterVersion, VerificationState: "none", Coverage: &Coverage{Files: cleanCoverage().Files}, Findings: []Finding{finding}}
 			if err := validateReviewResult(result, testReviewEvidence()); err == nil {
-				t.Fatalf("%s finding without workspace evidence on a changed file was accepted", relation)
+				t.Fatalf("%s finding without any evidence on a changed file was accepted", relation)
 			}
 		})
 	}
@@ -176,7 +198,7 @@ func TestBuildReviewEvidenceComputesRealSHAsAndChangedFiles(t *testing.T) {
 	if got := strings.Join(evidence.changedFiles, ","); got != "added.txt,removed.txt" {
 		t.Fatalf("unexpected changed-file set: %v", evidence.changedFiles)
 	}
-	if lines, ok := evidence.lineCount(sampleHeadSHA, "added.txt"); !ok || lines != 1 {
+	if lines, ok := evidence.lineCount(sampleHeadSHA, "added.txt"); !ok || lines != 2 {
 		t.Fatalf("unexpected line count: lines=%d ok=%t", lines, ok)
 	}
 	if _, ok := evidence.lineCount(sampleHeadSHA, "removed.txt"); ok {
@@ -258,6 +280,132 @@ func TestExecutionCommandRejectsMismatchedReviewEvidence(t *testing.T) {
 	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA}
 	if _, _, err := executionCommand(claim, nil, "", false, evidence); err == nil {
 		t.Fatal("non-review execution with review evidence was accepted")
+	}
+}
+
+func TestCountLinesMatchesNextLineConvention(t *testing.T) {
+	for name, test := range map[string]struct {
+		data string
+		want int64
+	}{
+		"empty":                   {"", 1},
+		"no trailing newline":     {"a\nb", 2},
+		"trailing newline":        {"a\n", 2},
+		"two lines, trailing":     {"a\nb\n", 3},
+		"CRLF trailing":           {"a\r\nb\r\n", 3},
+		"CRLF no trailing":        {"a\r\nb", 2},
+		"single char, no newline": {"a", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := countLines([]byte(test.data)); got != test.want {
+				t.Fatalf("countLines(%q) = %d, want %d", test.data, got, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateReviewResultRejectsEvidenceIntoBinaryFiles(t *testing.T) {
+	finding := cleanFinding()
+	finding.Evidence = []EvidenceRef{{Snapshot: sampleHeadSHA, Path: "binary.bin", LineStart: 1, LineEnd: 1}}
+	result := Result{Outcome: "findings", CharterVersion: ReviewCharterVersion, VerificationState: "none", Coverage: &Coverage{Files: cleanCoverage().Files}, Findings: []Finding{finding}}
+	if err := validateReviewResult(result, testReviewEvidence()); err == nil {
+		t.Fatal("evidence into a binary file was accepted")
+	}
+}
+
+func TestCitesChangedFileAcceptsADeletedFileOnBaseline(t *testing.T) {
+	// A finding about the consequences of deleting a changed file can only
+	// cite the baseline snapshot, since the path no longer exists in head.
+	changed := map[string]bool{"removed.go": true}
+	refs := []EvidenceRef{{Snapshot: sampleBaselineSHA, Path: "removed.go", LineStart: 1, LineEnd: 1}}
+	if !citesChangedFile(refs, changed) {
+		t.Fatal("baseline-only evidence on a changed (deleted) path was rejected")
+	}
+}
+
+func TestValidateReviewResultValidatesCoverageForIncompleteViaNormalizeExecution(t *testing.T) {
+	claim := protocol.Claim{
+		RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 1,
+		Manifest: map[string]any{"kind": "review"},
+	}
+	review := testReviewEvidence()
+	result := Result{
+		Summary: "Interrupted.", Outcome: "incomplete", Findings: []Finding{}, Tests: []Test{},
+		Coverage: &Coverage{Files: []CoverageFile{{Path: "outside-the-changed-set.go", Status: "reviewed"}}},
+	}
+	stream := Stream{Result: result}
+	if _, err := normalizeExecution(context.Background(), claim, stream, nil, review); err == nil {
+		t.Fatal("incomplete coverage outside the planned changed-file set was accepted")
+	}
+}
+
+func TestReviewEvidencePreambleBoundsTheChangedFileListAndNamesReviewDiff(t *testing.T) {
+	longPath := strings.Repeat("a", 1024)
+	var many []string
+	for i := 0; i < MaxChangedFiles; i++ {
+		many = append(many, fmt.Sprintf("%s/%d", longPath, i))
+	}
+	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: many}
+	preamble := reviewEvidencePreamble(evidence)
+	if len(preamble) > maxReviewChangedFileListBytes+4096 {
+		t.Fatalf("changed-file list was not bounded: %d bytes", len(preamble))
+	}
+	if !strings.Contains(preamble, "review_diff") {
+		t.Fatalf("truncation marker did not name review_diff: %s", preamble)
+	}
+}
+
+func manyLongChangedFiles(prefix string) []string {
+	longPath := strings.Repeat(prefix, 1024)
+	many := make([]string, 0, MaxChangedFiles)
+	for i := 0; i < MaxChangedFiles; i++ {
+		many = append(many, fmt.Sprintf("%s/%d", longPath, i))
+	}
+	return many
+}
+
+// TestExecutionCommandBoundsArgvWith200LongChangedPaths reproduces the
+// scenario that used to overflow Linux's MAX_ARG_STRLEN silently: 200
+// maximum-length changed-file paths (200 KiB raw) alongside ordinary-sized
+// instructions. The changed-file-list bound alone must keep the assembled
+// argv element well under the guard.
+func TestExecutionCommandBoundsArgvWith200LongChangedPaths(t *testing.T) {
+	claim := protocol.Claim{Manifest: map[string]any{
+		"task_context":     "Review carefully.",
+		"effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."},
+	}}
+	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: manyLongChangedFiles("p")}
+	argv, _, err := executionCommand(claim, nil, "", true, evidence)
+	if err != nil {
+		t.Fatalf("200 long changed paths were not bounded: %v", err)
+	}
+	found := false
+	for _, arg := range argv {
+		if strings.HasPrefix(arg, "developer_instructions=") {
+			found = true
+			if len(arg) > maxDeveloperInstructionsArgBytes+64 {
+				t.Fatalf("developer_instructions argv element exceeds the documented guard: %d bytes", len(arg))
+			}
+		}
+	}
+	if !found {
+		t.Fatal("developer_instructions argument not found")
+	}
+}
+
+// TestExecutionCommandFailsClosedInsteadOfExceedingTheArgvLimit combines
+// maximum-length instructions, trusted AGENTS.md and a 200-long-path changed
+// list: even with the list bounded, the total still cannot fit under
+// maxDeveloperInstructionsArgBytes, so executionCommand must fail with a
+// sanitized error instead of building an argv execve would reject with E2BIG.
+func TestExecutionCommandFailsClosedInsteadOfExceedingTheArgvLimit(t *testing.T) {
+	claim := protocol.Claim{Manifest: map[string]any{
+		"task_context":     "Review carefully.",
+		"effective_config": map[string]any{"model": "gpt-5", "instructions": strings.Repeat("i", 50_000)},
+	}}
+	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: manyLongChangedFiles("p")}
+	if _, _, err := executionCommand(claim, nil, strings.Repeat("t", 50_000), true, evidence); err == nil {
+		t.Fatal("oversized developer instructions were not rejected")
 	}
 }
 

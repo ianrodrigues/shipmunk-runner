@@ -575,11 +575,12 @@ func (t *DockerTransport) serviceReviewBridge(ctx context.Context, root *os.Root
 		return errors.New("review response is invalid")
 	}
 	wire, err := json.Marshal(struct {
-		ID        int64  `json:"id"`
-		OK        bool   `json:"ok"`
-		Output    string `json:"output"`
-		Truncated bool   `json:"truncated"`
-	}{host.ID, host.OK, host.Output, host.Truncated})
+		ID          int64  `json:"id"`
+		OK          bool   `json:"ok"`
+		Output      string `json:"output"`
+		Truncated   bool   `json:"truncated"`
+		SnapshotSHA string `json:"snapshot_sha,omitempty"`
+	}{host.ID, host.OK, host.Output, host.Truncated, host.SnapshotSHA})
 	if err != nil {
 		return errors.New("review response is invalid")
 	}
