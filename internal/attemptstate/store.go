@@ -27,7 +27,12 @@ const phpDateAtom = "2006-01-02T15:04:05-07:00"
 var stateFields = map[string]struct{}{
 	"run_id": {}, "attempt_id": {}, "fence": {}, "profile_id": {},
 	"sandbox_id": {}, "lease_expires_at": {}, "deadline": {}, "workspace": {},
+	"refused_stopped_count": {},
 }
+
+// maxRefusedStoppedCount bounds the consecutive-refusal counter; supervisor.reconcile
+// treats it as settled well before this ceiling, so any larger value is corrupt.
+const maxRefusedStoppedCount = 1000
 
 var stateULIDPattern = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
 var safeSandboxIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
@@ -42,6 +47,10 @@ type State struct {
 	LeaseExpiresAt time.Time
 	Deadline       time.Time
 	Workspace      string
+	// RefusedStoppedCount counts consecutive stopped acknowledgements the control
+	// plane refused with a fence mismatch or non-current attempt; a journal
+	// written before this field was added implies zero.
+	RefusedStoppedCount int64
 }
 
 // Store holds the exclusive process-lifetime supervisor lock for one state directory.
@@ -341,6 +350,17 @@ func stateFromObject(object map[string]any) (State, error) {
 	if state.Workspace, ok = object["workspace"].(string); !ok {
 		return State{}, errors.New("attempt state workspace is invalid")
 	}
+	if value, exists := object["refused_stopped_count"]; exists && value != nil {
+		countNumber, ok := value.(json.Number)
+		if !ok {
+			return State{}, errors.New("attempt state refused_stopped_count is invalid")
+		}
+		count, err := countNumber.Int64()
+		if err != nil {
+			return State{}, errors.New("attempt state refused_stopped_count is invalid")
+		}
+		state.RefusedStoppedCount = count
+	}
 	return state, nil
 }
 
@@ -361,6 +381,9 @@ func validateState(state State) error {
 	validWorkspace := filepath.IsAbs(state.Workspace) && filepath.Clean(state.Workspace) == state.Workspace && filepath.Base(state.Workspace) == workspaceName
 	if state.LeaseExpiresAt.IsZero() || state.Deadline.IsZero() || !validWorkspace {
 		return errors.New("attempt state recovery context is invalid")
+	}
+	if state.RefusedStoppedCount < 0 || state.RefusedStoppedCount > maxRefusedStoppedCount {
+		return errors.New("attempt state refused_stopped_count is invalid")
 	}
 	return nil
 }
@@ -413,23 +436,25 @@ func parseDateAtom(value string) (time.Time, error) {
 
 func marshalState(state State) ([]byte, error) {
 	object := struct {
-		RunID          string  `json:"run_id"`
-		AttemptID      string  `json:"attempt_id"`
-		Fence          int64   `json:"fence"`
-		ProfileID      *string `json:"profile_id"`
-		SandboxID      *string `json:"sandbox_id"`
-		LeaseExpiresAt string  `json:"lease_expires_at"`
-		Deadline       string  `json:"deadline"`
-		Workspace      string  `json:"workspace"`
+		RunID               string  `json:"run_id"`
+		AttemptID           string  `json:"attempt_id"`
+		Fence               int64   `json:"fence"`
+		ProfileID           *string `json:"profile_id"`
+		SandboxID           *string `json:"sandbox_id"`
+		LeaseExpiresAt      string  `json:"lease_expires_at"`
+		Deadline            string  `json:"deadline"`
+		Workspace           string  `json:"workspace"`
+		RefusedStoppedCount int64   `json:"refused_stopped_count"`
 	}{
-		RunID:          state.RunID,
-		AttemptID:      state.AttemptID,
-		Fence:          state.Fence,
-		ProfileID:      state.ProfileID,
-		SandboxID:      state.SandboxID,
-		LeaseExpiresAt: state.LeaseExpiresAt.UTC().Format(phpDateAtom),
-		Deadline:       state.Deadline.UTC().Format(phpDateAtom),
-		Workspace:      state.Workspace,
+		RunID:               state.RunID,
+		AttemptID:           state.AttemptID,
+		Fence:               state.Fence,
+		ProfileID:           state.ProfileID,
+		SandboxID:           state.SandboxID,
+		LeaseExpiresAt:      state.LeaseExpiresAt.UTC().Format(phpDateAtom),
+		Deadline:            state.Deadline.UTC().Format(phpDateAtom),
+		Workspace:           state.Workspace,
+		RefusedStoppedCount: state.RefusedStoppedCount,
 	}
 	contents, err := json.Marshal(object)
 	if err != nil {
