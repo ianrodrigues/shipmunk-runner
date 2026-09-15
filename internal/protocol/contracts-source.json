@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ianrodrigues/shipmunk-server",
-  "commit": "24629c6bfe8aca1eba1b5be2a1da91be4640c795",
+  "commit": "5f258aaa1873aa06e9252881334d8ab90011b415",
   "files": {
     "contracts/v1/event-batch.schema.json": {
       "source": "contracts/v1/event-batch.schema.json",
