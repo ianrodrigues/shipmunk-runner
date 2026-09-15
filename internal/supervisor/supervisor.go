@@ -24,12 +24,27 @@ const cleanupTimeout = 90 * time.Second
 // refuses the stopped path with 409 only for a fence mismatch or a
 // non-current attempt, both permanent, so a consecutive run of refusals on
 // the same journal converges without waiting on the server to change its
-// mind.
+// mind. That guarantee depends on two things staying true server-side:
+// RunAttemptHeartbeatController maps every DomainException from the whole
+// action to 409, not just the fence check, and Run::transitionTo still
+// allows Preparing/Running into NeedsAttention or Cancelled on the stopped
+// path rather than raising its own conflict there.
 const refusedStoppedSettleThreshold = 3
 
 var ErrStopped = errors.New("control plane requested stop")
 var ErrLeaseExpired = errors.New("attempt lease expired")
 var ErrCleanupUnconfirmed = errors.New("cleanup unconfirmed; durable attempt retained")
+
+// RefusedStoppedError reports how many consecutive stopped-acknowledgement
+// refusals the journal has recorded below refusedStoppedSettleThreshold, so
+// callers can name the condition instead of a generic cleanup failure.
+type RefusedStoppedError struct {
+	Count, Threshold int64
+}
+
+func (err *RefusedStoppedError) Error() string {
+	return fmt.Sprintf("control plane refused the stopped acknowledgement (%d of %d)", err.Count, err.Threshold)
+}
 
 // Client operations must honor cancellation.
 type Client interface {
@@ -237,7 +252,8 @@ func (s *Supervisor) reconcile(parent context.Context) error {
 			if saveErr := s.State.Save(*state); saveErr != nil {
 				return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, errors.Join(err, saveErr))
 			}
-			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
+			refused := &RefusedStoppedError{Count: state.RefusedStoppedCount, Threshold: refusedStoppedSettleThreshold}
+			return fmt.Errorf("%w: %w: %w", ErrCleanupUnconfirmed, refused, err)
 		}
 		// A third consecutive refusal on the same fenced attempt is not a
 		// transient condition: the server has permanently superseded it, so

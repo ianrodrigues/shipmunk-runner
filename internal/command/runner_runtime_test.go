@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,7 @@ func TestSupervisedFailuresNameTheirCondition(t *testing.T) {
 		expect  string
 	}{
 		"unconfirmed cleanup": {supervisor.ErrCleanupUnconfirmed, "could not confirm sandbox cleanup"},
+		"refused stopped ack": {fmt.Errorf("%w: %w: %w", supervisor.ErrCleanupUnconfirmed, &supervisor.RefusedStoppedError{Count: 1, Threshold: 3}, errors.New("conflict")), "refused the stopped acknowledgement (1 of 3)"},
 		"expired lease":       {supervisor.ErrLeaseExpired, "lease expired"},
 		"revoked attempt":     {supervisor.ErrStopped, "revoked this attempt"},
 		"rejected request":    {&protocol.ControlPlaneError{StatusCode: 409}, "HTTP 409"},
