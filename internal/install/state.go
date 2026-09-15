@@ -554,6 +554,8 @@ func (guard Guard) pending(name string) string {
 	return filepath.Join(guard.Root, ".activation-new-"+name)
 }
 
+// validateExistingIdentity permits a missing configuration for initial setup.
+// Otherwise, it requires the current format, guard identity, and release constraints.
 func (guard Guard) validateExistingIdentity() error {
 	path := filepath.Join(guard.Root, "config.json")
 	raw, err := readPrivateFile(path, maxConfigBytes)
@@ -661,8 +663,8 @@ func (guard Guard) Configuration() (Configuration, error) {
 	return configuration, err
 }
 
-// decodeConfiguration accepts only the eight-field shape.
-// It rejects every other shape and never migrates old data.
+// decodeConfiguration validates and decodes the current eight-field format.
+// It rejects legacy and otherwise invalid configurations without migration.
 func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	if len(raw) == 0 || len(raw) > maxConfigBytes {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
