@@ -63,6 +63,7 @@ type fixtureClient struct {
 	heartbeatErrorAfter              int
 	ackError, completeError          error
 	completed                        map[string]any
+	completedRaw                     []byte
 	uploadID                         string
 	eventBatches, uploads            int
 	ackCancelled, ackHasDeadline     bool
@@ -116,6 +117,7 @@ func (c *fixtureClient) Complete(ctx context.Context, _ protocol.Claim, raw []by
 		return err
 	}
 	c.completions++
+	c.completedRaw = raw
 	_ = json.Unmarshal(raw, &c.completed)
 	return c.completeError
 }
@@ -461,6 +463,62 @@ func TestCompositeRecoveryCarriesDurableProfileBinding(t *testing.T) {
 	out, err := s.RunOnce(context.Background())
 	if err != nil || out.Worked || executor.cleanups != 1 || executor.cleanupClaim.Manifest["profile_id"] != profileID || c.acks != 1 {
 		t.Fatalf("composite recovery lost profile binding: %+v executor=%+v acks=%d err=%v", out, executor, c.acks, err)
+	}
+}
+
+// An attempt whose runner died between the claim and the result leaves a journal
+// but no result, so recovery must report the attempt and release the journal.
+func TestRecoveryReportsInterruptedAttemptThenClearsJournal(t *testing.T) {
+	fenced := &protocol.ControlPlaneError{StatusCode: 409}
+	for name, test := range map[string]struct {
+		stopAfter               int
+		ackError, completeError error
+		wantCompletions         int
+		wantJournalKept         bool
+		wantAcknowledged        int
+	}{
+		"live lease":     {wantCompletions: 1, wantAcknowledged: 1},
+		"revoked lease":  {stopAfter: 1, wantCompletions: 0, wantAcknowledged: 1},
+		"fenced out":     {ackError: fenced, wantCompletions: 1, wantAcknowledged: 1},
+		"result refused": {completeError: fenced, wantCompletions: 1, wantAcknowledged: 1},
+		"unreachable":    {ackError: &protocol.ControlPlaneError{StatusCode: 503}, wantCompletions: 1, wantAcknowledged: 1, wantJournalKept: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, c, state, _, w, _ := fixtureSupervisor(t)
+			claim := *c.claim
+			profileID := claim.Manifest["profile_id"].(string)
+			state.state = &attemptstate.State{
+				RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+				ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+				Deadline: claim.Deadline, Workspace: w.Path(claim),
+			}
+			executor := &fixtureExecutor{}
+			s.Executor, s.Sandbox, s.Watchdog = executor, nil, nil
+			c.claim, c.stopAfter, c.ackError, c.completeError = nil, test.stopAfter, test.ackError, test.completeError
+
+			out, err := s.RunOnce(context.Background())
+			if test.wantJournalKept {
+				if !errors.Is(err, ErrCleanupUnconfirmed) {
+					t.Fatalf("unconfirmed report = %v", err)
+				}
+			} else if err != nil || out.Worked || c.claims != 1 {
+				t.Fatalf("recovery blocked the next claim: %+v claims=%d err=%v", out, c.claims, err)
+			}
+			if executor.cleanups != 1 || w.removes != 1 || c.acks != test.wantAcknowledged || c.completions != test.wantCompletions {
+				t.Fatalf("cleanups=%d removes=%d acks=%d completions=%d", executor.cleanups, w.removes, c.acks, c.completions)
+			}
+			saved, _ := state.Load()
+			if (saved != nil) != test.wantJournalKept {
+				t.Fatalf("journal retention = %t", saved != nil)
+			}
+			if test.wantCompletions == 0 {
+				return
+			}
+			if protocol.Validate("result", c.completedRaw) != nil || c.completed["outcome"] != "incomplete" ||
+				c.completed["attempt_id"] != claim.AttemptID || c.completed["run_id"] != claim.RunID {
+				t.Fatalf("interrupted result is not a fenced failure the control plane accepts: %s", c.completedRaw)
+			}
+		})
 	}
 }
 

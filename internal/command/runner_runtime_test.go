@@ -77,6 +77,28 @@ func TestSupervisedErrorsNeverExposeRawMessages(t *testing.T) {
 	}
 }
 
+func TestSupervisedFailuresNameTheirCondition(t *testing.T) {
+	for name, test := range map[string]struct {
+		failure error
+		expect  string
+	}{
+		"unconfirmed cleanup": {supervisor.ErrCleanupUnconfirmed, "could not confirm sandbox cleanup"},
+		"expired lease":       {supervisor.ErrLeaseExpired, "lease expired"},
+		"revoked attempt":     {supervisor.ErrStopped, "revoked this attempt"},
+		"rejected request":    {&protocol.ControlPlaneError{StatusCode: 409}, "HTTP 409"},
+		"operator stop":       {context.Canceled, "stopped on request"},
+		"unclassified":        {errors.New("SYNTHETIC_SECRET"), "before a completed result"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := runSupervised(context.Background(), &scriptedRunner{err: test.failure}, true, &stdout, &stderr)
+			if code != 1 || !strings.Contains(stderr.String(), test.expect) || strings.Contains(stderr.String(), "SYNTHETIC_SECRET") {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
 func TestNativeRunnerRefusesBeforeReadingCredentials(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := RunRunner([]string{"--base-url=https://runner.example", "--token-file=/nonexistent/private.token", "--state-dir=/nonexistent/state", "--image=fixture", "--driver=codex", "--profiles-dir=/nonexistent/profiles"}, &stdout, &stderr)

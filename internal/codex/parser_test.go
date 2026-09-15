@@ -176,6 +176,8 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 		"approval code":      {`{"type":"error","code":"approval_required","message":"private"}` + "\n", FailureApprovalRequired},
 		"rate limit message": {`{"type":"error","message":"usage limit reached"}` + "\n", FailureRateLimited},
 		"nested model code":  {`{"type":"error","message":"{\"error\":{\"code\":\"model_not_found\",\"message\":\"private\"}}"}` + "\n", FailureModelUnavailable},
+		// The provider relays its own rejection body, whose error object sits beside type and status.
+		"relayed schema rejection": {`{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\",\"message\":\"private schema diagnostic\",\"param\":\"text.format.schema\"},\"status\":400}"}}` + "\n", FailureInvalidOutputSchema},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(test.event), nil)
@@ -465,11 +467,17 @@ func TestParseEnforcesLimitsTheOutputSchemaCannotDeclare(t *testing.T) {
 }
 
 func TestParseClassifiesBackendSchemaRejectionHoweverTheCLIWrapsIt(t *testing.T) {
-	body := `{"error":{"message":"Invalid schema for response_format 'codex_output_schema'.","type":"invalid_request_error","param":"text.format.schema","code":"invalid_json_schema"}}`
+	nested := `"error":{"message":"Invalid schema for response_format 'codex_output_schema'.","type":"invalid_request_error","param":"text.format.schema","code":"invalid_json_schema"}`
+	body := `{` + nested + `}`
+	// The relayed body carries the error object beside the envelope's type and status.
+	relayed := `{"type":"error",` + nested + `,"status":400}`
 	for name, message := range map[string]string{
-		"bare body":       body,
-		"prefixed body":   "invalid request: " + body,
-		"body with notes": body + " (retrying)",
+		"bare body":              body,
+		"prefixed body":          "invalid request: " + body,
+		"body with notes":        body + " (retrying)",
+		"relayed body":           relayed,
+		"prefixed relayed body":  "invalid request: " + relayed,
+		"relayed body with note": relayed + " (retrying)",
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, event := range []string{

@@ -106,12 +106,7 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 	for {
 		outcome, err := worker.RunOnce(ctx)
 		if err != nil {
-			var requestError *protocol.ControlPlaneError
-			if errors.As(err, &requestError) {
-				fmt.Fprintf(stderr, "Runner request failed with HTTP %d. Check the runner connection and authorization.\n", requestError.StatusCode)
-			} else {
-				fmt.Fprintln(stderr, "Runner stopped before a completed result could be reported. Check the application run and runner configuration.")
-			}
+			fmt.Fprintln(stderr, supervisionFailure(err))
 			return 1
 		}
 		code := 0
@@ -140,6 +135,27 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 			case <-timer.C:
 			}
 		}
+	}
+}
+
+// supervisionFailure names the condition that ended supervision, without repeating an internal error.
+func supervisionFailure(err error) string {
+	var requestError *protocol.ControlPlaneError
+	switch {
+	case errors.Is(err, supervisor.ErrCleanupUnconfirmed):
+		return "Runner could not confirm sandbox cleanup, so the attempt journal is kept for recovery. Check the Docker engine and the application."
+	case errors.Is(err, supervisor.ErrLeaseExpired):
+		return "Runner attempt lease expired before a result could be reported."
+	case errors.Is(err, supervisor.ErrStopped):
+		return "The application revoked this attempt before it completed."
+	case errors.As(err, &requestError):
+		return fmt.Sprintf("Runner request failed with HTTP %d. Check the runner connection and authorization.", requestError.StatusCode)
+	case errors.Is(err, context.Canceled):
+		return "Runner stopped on request before an attempt completed."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "Runner attempt passed its deadline before a result could be reported."
+	default:
+		return "Runner stopped before a completed result could be reported. Check the application run and runner configuration."
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/install"
@@ -34,28 +35,58 @@ func runInstalledSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	guard := install.Guard{Root: root, Identity: configuration.Identity}
-	configuration, err = guard.Configuration()
-	if err != nil || Version != configuration.ReleaseVersion {
-		fmt.Fprintln(stderr, "Installed runner release or recovery state is inconsistent.")
+	// The supervised run recovers an interrupted attempt; every other command must refuse one.
+	if args[0] == "run" {
+		configuration, err = guard.RuntimeConfiguration()
+	} else {
+		configuration, err = guard.Configuration()
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, launchRefusal(err))
+		return 1
+	}
+	if Version != configuration.ReleaseVersion {
+		fmt.Fprintln(stderr, "Installed runner release does not match this launcher. Run setup again for the installed release.")
 		return 1
 	}
 	returnCode := 1
 	err = install.WithLaunchLock(root, func() error {
 		if install.ActivationPending(root) {
-			return errors.New("activation recovery is pending")
+			return errActivationPending
 		}
 		current, err := install.LoadConfiguration(root)
 		if err != nil || current.ReleaseVersion != Version {
-			return errors.New("installed configuration changed")
+			return errConfigurationChanged
 		}
 		returnCode = dispatchInstalled(args, root, current, stdout, stderr)
 		return nil
 	})
 	if err != nil {
-		fmt.Fprintln(stderr, "Installed runner release or recovery state is inconsistent.")
+		fmt.Fprintln(stderr, launchRefusal(err))
 		return 1
 	}
 	return returnCode
+}
+
+var (
+	errActivationPending    = errors.New("activation recovery is pending")
+	errConfigurationChanged = errors.New("installed configuration changed during launch")
+)
+
+// launchRefusal names the condition the operator must resolve, without repeating an internal error.
+func launchRefusal(err error) string {
+	switch {
+	case errors.Is(err, install.ErrRecoveryPending):
+		return "An interrupted runner attempt awaits recovery. Run the runner command to recover it."
+	case errors.Is(err, errActivationPending):
+		return "Runner activation is unfinished. Run setup again to complete it."
+	case errors.Is(err, errConfigurationChanged):
+		return "Installed runner configuration changed during launch. Try again."
+	case errors.Is(err, syscall.EWOULDBLOCK):
+		return "Another runner command is already using this installation."
+	default:
+		return "Installed runner state is unsafe or incomplete."
+	}
 }
 
 func dispatchInstalled(args []string, root string, configuration install.Configuration, stdout, stderr io.Writer) int {

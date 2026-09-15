@@ -72,6 +72,77 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 	}
 }
 
+// An interrupted attempt is the supervisor's to recover, so only the run path may start with one.
+func TestInstalledRunRecoversInterruptedAttemptWhileOtherCommandsRefuse(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("installed commands refuse root")
+	}
+	for name, journal := range map[string]func(*testing.T, string){
+		"attempt":   writeInterruptedAttempt,
+		"execution": writeProfileExecutionJournal,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, _ := installedLauncherFixture(t)
+			journal(t, root)
+			originalRuntime, originalRunner, originalVersion := setupRuntime, setupRunRunner, Version
+			t.Cleanup(func() { setupRuntime, setupRunRunner, Version = originalRuntime, originalRunner, originalVersion })
+			Version = "v1.2.3"
+			setupRuntime.effectiveUID, setupRuntime.stdin = os.Geteuid, strings.NewReader("")
+			setupRuntime.isTerminal = func(any) bool { return true }
+			setupRuntime.now = func() time.Time { return time.UnixMilli(1_700_000_000_000) }
+			runs := 0
+			setupRunRunner = func([]string, io.Writer, io.Writer) int { runs++; return 0 }
+
+			var stdout, stderr bytes.Buffer
+			if code := runInstalledSetup([]string{"run", root, "--once"}, &stdout, &stderr); code != 0 || runs != 1 || stderr.Len() != 0 {
+				t.Fatalf("run refused recovery: code=%d runs=%d stderr=%q", code, runs, stderr.String())
+			}
+			stderr.Reset()
+			if code := runInstalledSetup([]string{"connect", root}, &stdout, &stderr); code != 1 ||
+				!strings.Contains(stderr.String(), "interrupted runner attempt") {
+				t.Fatalf("connect refusal did not name the condition: code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
+func writeInterruptedAttempt(t *testing.T, root string) {
+	t.Helper()
+	state := filepath.Join(root, "state")
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"run_id": testRunnerID, "attempt_id": testOperation, "fence": 1, "profile_id": testProfileID,
+		"sandbox_id": nil, "lease_expires_at": "2026-09-15T16:29:17+00:00", "deadline": "2026-09-15T16:43:14+00:00",
+		"workspace": filepath.Join(state, "workspaces", testOperation+"-1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "active-attempt.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeProfileExecutionJournal(t *testing.T, root string) {
+	t.Helper()
+	profileRoot := filepath.Join(root, "profiles", testProfileID)
+	if err := os.MkdirAll(profileRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"run_id": testRunnerID, "attempt_id": testOperation, "fence": 1, "profile_id": testProfileID,
+		"sandbox_id": "shipmunk-codex-" + testOperation + "-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileRoot, "execution.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInstalledConnectionRequiresThreeTerminalDescriptors(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("installed commands refuse root")

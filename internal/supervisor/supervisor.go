@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -176,11 +177,14 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	return Outcome{Worked: true, RunID: claim.RunID, AttemptID: claim.AttemptID, Result: result}, nil
 }
 
-func (s *Supervisor) reconcile(ctx context.Context) error {
+func (s *Supervisor) reconcile(parent context.Context) error {
 	state, err := s.State.Load()
 	if err != nil || state == nil {
 		return err
 	}
+	// Recovery must end in bounded time; an unresponsive Docker engine or control plane must not hold the next claim.
+	ctx, cancel := context.WithTimeout(parent, cleanupTimeout)
+	defer cancel()
 	claim := protocol.Claim{RunID: state.RunID, AttemptID: state.AttemptID, Fence: state.Fence, LeaseExpiresAt: state.LeaseExpiresAt, Deadline: state.Deadline}
 	if state.ProfileID != nil {
 		claim.Manifest = map[string]any{"profile_id": *state.ProfileID}
@@ -216,10 +220,47 @@ func (s *Supervisor) reconcile(ctx context.Context) error {
 	if err := s.Workspaces.Remove(state.Workspace); err != nil {
 		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 	}
-	if err := s.Client.AcknowledgeStopped(ctx, claim); err != nil {
+	if err := s.reportInterrupted(ctx, claim); err != nil {
 		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 	}
 	return s.State.Clear()
+}
+
+// reportInterrupted completes the recovered attempt as failed while its lease is
+// live, then acknowledges the stopped sandbox, which the control plane accepts
+// for an expired lease as well.
+func (s *Supervisor) reportInterrupted(ctx context.Context, claim protocol.Claim) error {
+	lease, stop, err := s.Client.Heartbeat(ctx, claim)
+	if err == nil && !stop && time.Now().Before(lease) {
+		raw, err := json.Marshal(interruptedResult(claim))
+		if err != nil {
+			return err
+		}
+		if err := fenced(s.Client.Complete(ctx, claim, raw)); err != nil {
+			return err
+		}
+	}
+	return fenced(s.Client.AcknowledgeStopped(ctx, claim))
+}
+
+// fenced discards a conflict, which proves the control plane already replaced this attempt, so no local report can reach it.
+func fenced(err error) error {
+	var controlPlane *protocol.ControlPlaneError
+	if errors.As(err, &controlPlane) && controlPlane.StatusCode == http.StatusConflict {
+		return nil
+	}
+	return err
+}
+
+// interruptedResult carries the incomplete shape contracts/v1/result.schema.json
+// requires: no findings, no patch artifact and none of the charter fields.
+func interruptedResult(claim protocol.Claim) map[string]any {
+	return map[string]any{
+		"protocol_version": protocol.Version, "run_id": claim.RunID, "attempt_id": claim.AttemptID,
+		"fence": claim.Fence, "outcome": "incomplete", "findings": []any{}, "tests": []any{},
+		"patch_artifact": nil, "usage": nil,
+		"summary": "The runner stopped before this attempt reported a result. Stage: recovery. The sandbox was removed and the attempt was released.",
+	}
 }
 
 func legacyContainerID(id string) bool {
