@@ -48,8 +48,6 @@ func TestCodexProfileRouterRejectsMalformedProfileIdentity(t *testing.T) {
 	}
 }
 
-// A profile already locked by another execution or lifecycle operation must
-// refuse a new claim rather than silently queue or corrupt the reservation.
 func TestCodexProfileRouterExecuteFailsWhenProfileIsBusy(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

@@ -101,6 +101,21 @@ func TestInstallActivatesPrivateContentAddressedRelease(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsReleaseDirectoryWithUnsafeMode(t *testing.T) {
+	platform, archive := archiveFixture(t)
+	releases := canonicalTemp(t)
+	destination, err := Install(bytes.NewReader(archive), releases, platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(destination, "share"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(bytes.NewReader(archive), releases, platform); err == nil || !strings.Contains(err.Error(), "altered") {
+		t.Fatalf("world-readable release directory was accepted: %v", err)
+	}
+}
+
 func TestInstallSyncsNestedDirectoriesBottomUpBeforeRename(t *testing.T) {
 	platform, archive := customArchive(t, []archiveEntry{{"share/a/b/data", []byte("data\n"), 0644, tar.TypeReg}})
 	releases := canonicalTemp(t)
