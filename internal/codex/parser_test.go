@@ -99,13 +99,31 @@ func TestParseAcceptsCacheWriteUsageFromCodex0154(t *testing.T) {
 	}
 }
 
-func TestParseRejectsUnknownOrInvalidUsageKeys(t *testing.T) {
+func TestParseRejectsInvalidKnownUsageFields(t *testing.T) {
 	for name, usage := range map[string]string{
-		"unknown key":          `{"input_tokens":10,"output_tokens":4,"future_tokens":1}`,
 		"negative cache write": `{"input_tokens":10,"output_tokens":4,"cache_write_input_tokens":-1}`,
+		"negative reasoning":   `{"input_tokens":10,"output_tokens":4,"reasoning_output_tokens":-1}`,
+		"non-numeric input":    `{"input_tokens":"10","output_tokens":4}`,
+		"cached not a number":  `{"input_tokens":10,"output_tokens":4,"cached_input_tokens":true}`,
 	} {
 		stream := strings.Replace(validStream(validResult), `{"input_tokens":10,"cached_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":2}`, usage, 1)
 		if _, err := Parse([]byte(stream), nil); !errors.Is(err, ErrMalformedOutput) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// A future Codex release can add a usage key this parser does not read yet;
+// the CLI source shows the shape can grow, so an unrecognized key is ignored
+// rather than rejected, and a legal cached > input value (codex's own clamp is
+// provider-side, not a stream guarantee) no longer rejects the stream either.
+func TestParseIgnoresUnknownUsageKeysAndClampedCache(t *testing.T) {
+	for name, usage := range map[string]string{
+		"unknown key":       `{"input_tokens":10,"output_tokens":4,"future_tokens":1}`,
+		"cached over input": `{"input_tokens":10,"output_tokens":4,"cached_input_tokens":20}`,
+	} {
+		stream := strings.Replace(validStream(validResult), `{"input_tokens":10,"cached_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":2}`, usage, 1)
+		if _, err := Parse([]byte(stream), nil); err != nil {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
@@ -151,7 +169,6 @@ func TestParseRejectsMalformedAndIncompleteStreams(t *testing.T) {
 		"duplicate completed":   {stdout: strings.Replace(valid, lines[3]+"\n", lines[3]+"\n"+lines[3]+"\n", 1), want: ErrMalformedOutput},
 		"changed item type":     {stdout: strings.Replace(valid, lines[3], strings.Replace(lines[3], "command_execution", "file_change", 1), 1), want: ErrMalformedOutput},
 		"unknown event":         {stdout: strings.Replace(valid, "turn.started", "turn.future", 1), want: ErrMalformedOutput},
-		"unknown item":          {stdout: strings.Replace(valid, "command_execution", "untrusted_tool", 1), want: ErrMalformedOutput},
 		"invalid usage":         {stdout: strings.Replace(valid, `"input_tokens":10`, `"input_tokens":-1`, 1), want: ErrMalformedOutput},
 		"native failure":        {stdout: `{"type":"error","message":"private"}` + "\n", want: ErrNativeFailure},
 		"output bound":          {stdout: valid, stderr: strings.Repeat("x", MaxOutputBytes-len(valid)+1), want: ErrMalformedOutput},
@@ -188,6 +205,42 @@ func TestParseAcceptsReportedErrorsBeforeACompletedTurn(t *testing.T) {
 				t.Fatal("provider diagnostics escaped parsing")
 			}
 		})
+	}
+}
+
+// An item type this parser does not know yet (collab_tool_call today) is
+// recorded as an event, with its payload otherwise ignored, instead of
+// rejecting the whole stream: the CLI source shows this set can grow ahead of
+// a parser update.
+func TestParseRecordsAnUnknownItemTypeInsteadOfRejectingTheStream(t *testing.T) {
+	reported := `{"type":"item.started","item":{"id":"collab-1","type":"collab_tool_call","tool":"delegate","sender_thread_id":"thread-1","receiver_thread_ids":["thread-2"],"status":"in_progress"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"collab-1","type":"collab_tool_call","tool":"delegate","sender_thread_id":"thread-1","receiver_thread_ids":["thread-2"],"status":"completed"}}` + "\n"
+	stream := strings.Replace(validStream(validResult), `{"type":"item.started"`, reported+`{"type":"item.started"`, 1)
+	parsed, err := Parse([]byte(stream), nil)
+	if err != nil || parsed.Result.Outcome != "no_findings" {
+		t.Fatalf("result = %#v, err = %v", parsed.Result, err)
+	}
+	found := false
+	for _, event := range parsed.Events {
+		if event.ItemID == "collab-1" && event.ItemType == "collab_tool_call" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unknown item type was not recorded: %#v", parsed.Events)
+	}
+}
+
+// ThreadItemDetails' #[serde(flatten)] can legally emit a web_search item with
+// id repeated at the same level (the item's own id plus the inner action's
+// id); serde resolves that last value wins, and this parser now decodes exec
+// stream lines the same way instead of rejecting the whole line.
+func TestParseAcceptsAStreamEventWithADuplicateKeyLikeWebSearch(t *testing.T) {
+	reported := `{"type":"item.completed","item":{"id":"item-1","type":"web_search","query":"redis eviction policy","id":"call-1","action":"search"}}` + "\n"
+	stream := strings.Replace(validStream(validResult), `{"type":"item.started"`, reported+`{"type":"item.started"`, 1)
+	parsed, err := Parse([]byte(stream), nil)
+	if err != nil || parsed.Result.Outcome != "no_findings" {
+		t.Fatalf("result = %#v, err = %v", parsed.Result, err)
 	}
 }
 
@@ -249,6 +302,8 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 		"approval code":      {`{"type":"error","code":"approval_required","message":"private"}` + "\n", FailureApprovalRequired},
 		"rate limit message": {`{"type":"error","message":"usage limit reached"}` + "\n", FailureRateLimited},
 		"nested model code":  {`{"type":"error","message":"{\"error\":{\"code\":\"model_not_found\",\"message\":\"private\"}}"}` + "\n", FailureModelUnavailable},
+		// The bare provider message the pinned CLI actually writes (protocol/src/error.rs unwraps the envelope first), wrapped in the CLI's own status prefix and matched case-insensitively as a substring, not equality.
+		"bare wrapped message": {`{"type":"error","message":"unexpected status 401 Unauthorized: Authentication Expired for this account"}` + "\n", FailureAuthExpired},
 		// The provider relays its own rejection body, whose error object sits beside type and status.
 		"relayed schema rejection": {`{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\",\"message\":\"private schema diagnostic\",\"param\":\"text.format.schema\"},\"status\":400}"}}` + "\n", FailureInvalidOutputSchema},
 	} {

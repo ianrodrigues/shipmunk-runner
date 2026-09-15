@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000002"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"model gpt-5.6-preview was rerouted to gpt-5.6 by server configuration"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"summary\":\"No issues were found in the reviewed files.\",\"outcome\":\"no_findings\",\"charter_version\":\"1\",\"findings\":[],\"questions\":[],\"coverage\":{\"files\":[{\"path\":\"app/Http/Controllers/Api/UserController.php\",\"status\":\"reviewed\"}],\"context_gaps\":[]},\"verification_state\":\"none\",\"tests\":[{\"command\":\"Not run (review mode)\",\"status\":\"not_run\",\"summary\":\"No shell or test execution is available in review mode.\"}]}"}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":400,"cache_write_input_tokens":0,"output_tokens":300,"reasoning_output_tokens":120}}

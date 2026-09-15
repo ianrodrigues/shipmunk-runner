@@ -17,7 +17,7 @@ const (
 // names as supported. The backend rejects the whole schema on anything else, so
 // the shipped file may not reintroduce minLength, maxLength or a conditional.
 var strictKeywords = map[string]bool{
-	"type": true, "enum": true, "description": true,
+	"type": true, "enum": true, "description": true, "const": true,
 	"properties": true, "required": true, "additionalProperties": true,
 	"items": true, "anyOf": true, "$ref": true,
 	"pattern": true, "format": true,
@@ -25,12 +25,23 @@ var strictKeywords = map[string]bool{
 	"minItems": true, "maxItems": true,
 }
 
+// allowedStringFormats is the exact format list the Supported schemas section names; any other value is rejected by the backend.
+var allowedStringFormats = map[string]bool{
+	"date-time": true, "time": true, "date": true, "duration": true,
+	"email": true, "hostname": true, "ipv4": true, "ipv6": true, "uuid": true,
+}
+
 // Documented strict-mode ceilings; the walk below accumulates against them.
 const (
-	maxSchemaNestingDepth   = 10
-	maxSchemaProperties     = 5000
-	maxSchemaEnumValues     = 1000
+	maxSchemaNestingDepth = 10
+	maxSchemaProperties   = 5000
+	maxSchemaEnumValues   = 1000
+	// maxSchemaNameCharacters bounds property/definition/enum names overall;
+	// maxLargeEnumCharacters is the tighter sub-limit that applies to a single
+	// enum once it carries more than maxLargeEnumThreshold values.
 	maxSchemaNameCharacters = 120_000
+	maxLargeEnumThreshold   = 250
+	maxLargeEnumCharacters  = 15_000
 )
 
 func loadSchema(t *testing.T, path string) map[string]any {
@@ -195,12 +206,20 @@ func walkStrictSchema(t *testing.T, node any, pointer string, depth int, budget 
 			t.Fatalf("%s: keyword %q is outside the strict subset", pointer, keyword)
 		}
 	}
+	if format, ok := object["format"].(string); ok && !allowedStringFormats[format] {
+		t.Fatalf("%s: format %q is outside the documented supported list", pointer, format)
+	}
 	if values, ok := object["enum"].([]any); ok {
 		budget.enumValues += len(values)
+		enumCharacters := 0
 		for _, value := range values {
 			if text, ok := value.(string); ok {
-				budget.nameCharacters += len(text)
+				enumCharacters += len(text)
 			}
+		}
+		budget.nameCharacters += enumCharacters
+		if len(values) > maxLargeEnumThreshold && enumCharacters > maxLargeEnumCharacters {
+			t.Fatalf("%s: enum has %d values (over %d) and %d characters, over the %d sub-limit", pointer, len(values), maxLargeEnumThreshold, enumCharacters, maxLargeEnumCharacters)
 		}
 	}
 	if types, ok := object["type"].([]any); ok && !enumAdmitsNull(object) {
@@ -210,11 +229,14 @@ func walkStrictSchema(t *testing.T, node any, pointer string, depth int, budget 
 			}
 		}
 	}
+	// anyOf and items nest one schema level deeper, the same as the OpenAI
+	// depth count: only properties was tracked before, undercounting a
+	// wrapped or array-of-object shape.
 	for _, branch := range branchesOf(object) {
-		walkStrictSchema(t, branch, pointer+"/anyOf", depth, budget)
+		walkStrictSchema(t, branch, pointer+"/anyOf", depth+1, budget)
 	}
 	if items, exists := object["items"]; exists {
-		walkStrictSchema(t, items, pointer+"/items", depth, budget)
+		walkStrictSchema(t, items, pointer+"/items", depth+1, budget)
 	}
 	properties, exists := object["properties"].(map[string]any)
 	if !exists {
