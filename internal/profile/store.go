@@ -379,8 +379,9 @@ func equalJournalIdentity(left, right map[string]any) bool {
 
 // ValidateHome replaces the native scratch tree, so the runner owns that mount point before any container starts.
 // It then verifies every remaining home entry uses the required protected mode.
+// Replacing the tree changes the home, so it requires the exclusive profile lock.
 func (store *Store) ValidateHome() error {
-	if err := store.ensureOpen(); err != nil {
+	if err := store.assertLocked(); err != nil {
 		return err
 	}
 	if err := store.verifyDirectories(); err != nil {
