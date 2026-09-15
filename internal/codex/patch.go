@@ -75,9 +75,8 @@ func collectSnapshots(beforeRoot, afterRoot string, beforeHandle *os.File) (*Pat
 	return collectSnapshotPatch(before, after, generated, true)
 }
 
-// CollectPatch verifies independently collected patch bytes against protected
-// original and frozen snapshot trees. Generating the diff remains a collector-
-// container responsibility; repository Git state is never trusted.
+// CollectPatch verifies independently collected patch bytes against protected snapshot trees,
+// since repository Git state itself is never trusted here.
 func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 	if len(patch) > MaxPatchBytes {
 		return nil, errors.New("repository patch exceeds its byte limit")

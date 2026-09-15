@@ -24,14 +24,11 @@ const (
 	MaxReviewSearchMatches = 200
 	MaxReviewSnippetBytes  = 300
 	MaxReviewLineCount     = 400
-	// MaxReviewScanBytes bounds the total bytes review_search reads per
-	// request; any single file larger than this is skipped instead of scanned.
+	// MaxReviewScanBytes caps review_search's total bytes per request, skipping any single file over the limit.
 	MaxReviewScanBytes = 16 * 1024 * 1024
 )
 
-// ReviewMediator serves bounded, read-only list/search/read/diff operations
-// over two review snapshots loaded once into memory; a request path can
-// never reach the filesystem again.
+// ReviewMediator serves bounded, read-only operations over two snapshots loaded once into memory; a request path never reaches the filesystem again.
 type ReviewMediator struct {
 	mu        sync.Mutex
 	fence     int64
@@ -51,15 +48,11 @@ type ReviewMediator struct {
 	diffOnce sync.Once
 	diffErr  error
 	diff     *Patch
-	// sections holds one raw diff section per changed path, keyed by the
-	// verified path from diff.ChangedFiles, not parsed from the diff text.
+	// sections is keyed by the verified path from diff.ChangedFiles, not parsed from the diff text.
 	sections map[string]string
 }
 
-// NewReviewMediator binds one attempt's fence and request budget to the two
-// pinned snapshot directories the transport already opened; headSHA and
-// baselineSHA are the real commit identities so responses can carry a
-// citable snapshot_sha.
+// NewReviewMediator binds one attempt's budget to two already-open snapshot handles; headSHA and baselineSHA back each response's citable snapshot_sha.
 func NewReviewMediator(fence int64, maxRequests int, headRoot string, headHandle *os.File, baselineRoot string, baselineHandle *os.File, headSHA, baselineSHA string) (*ReviewMediator, error) {
 	if fence < 1 || fence > protocol.MaxSafeInteger || maxRequests < 1 || headRoot == "" || headHandle == nil || baselineRoot == "" || baselineHandle == nil || !fullSHAPattern.MatchString(headSHA) || !fullSHAPattern.MatchString(baselineSHA) {
 		return nil, errors.New("review mediator configuration is invalid")
@@ -91,9 +84,7 @@ func (m *ReviewMediator) load() error {
 	return m.loadErr
 }
 
-// Handle validates and executes exactly one closed-schema review request;
-// only protocol-level violations fail the call outright, while an ordinary
-// business rejection returns a normal ok:false result.
+// Handle validates and executes one closed-schema review request; a protocol violation fails the call, a business rejection returns ok:false.
 func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,7 +108,6 @@ func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Spend the sequence before execution, matching the shell mediator.
 	m.last = request.ID
 	m.remaining--
 
@@ -208,8 +198,7 @@ func (m *ReviewMediator) list(snapshotName, dir string, offset int64) (string, b
 			kind = "dir"
 		}
 		entry := fmt.Sprintf("%s\t%s\n", kind, name)
-		// Cap both the entry count and the response bytes: a directory of many
-		// long names must truncate with a marker, not silently exceed the frame.
+		// Cap the entry count and the response bytes together, so long names truncate instead of exceeding the frame.
 		if shown >= MaxReviewListEntries || b.Len()+len(entry) > MaxReviewOutputBytes {
 			truncated = true
 			break
@@ -250,9 +239,7 @@ outer:
 		if !utf8.Valid(content) {
 			continue
 		}
-		// Bound work per file and in aggregate without ever materializing a
-		// per-line slice of the whole file, which scales with line count, not
-		// file size.
+		// Bound work per file and in aggregate; never materialize a per-line slice, which scales with line count, not file size.
 		if int64(len(content)) > MaxReviewScanBytes {
 			truncated = true
 			continue
@@ -296,10 +283,9 @@ outer:
 	return text, truncated, true
 }
 
-// nextLine returns the next line of data starting at pos, without its
-// trailing newline, and the offset to resume from. It never allocates: the
-// returned slice aliases data. The caller's loop condition must be
-// `pos <= len(data)`.
+// nextLine returns the next line at pos, without its trailing newline, and the resume offset.
+// It never allocates; the returned slice aliases data.
+// The caller's loop condition must be `pos <= len(data)`.
 func nextLine(data []byte, pos int) (line []byte, next int) {
 	if newline := bytes.IndexByte(data[pos:], '\n'); newline >= 0 {
 		return data[pos : pos+newline], pos + newline + 1
@@ -370,8 +356,7 @@ func (m *ReviewMediator) read(snapshotName, path string, startLine, lineCount in
 	return text, budgetHit, true
 }
 
-// boundedRunePrefixLen returns the largest n <= limit (and <= len(data)) such
-// that data[:n] does not split a multi-byte UTF-8 rune.
+// boundedRunePrefixLen returns the largest n <= limit and <= len(data) where data[:n] keeps every UTF-8 rune whole.
 func boundedRunePrefixLen(data []byte, limit int) int {
 	if limit < 0 {
 		limit = 0
@@ -469,7 +454,6 @@ func (m *ReviewMediator) loadDiff() error {
 	return m.diffErr
 }
 
-// verifyDiffSectionCoverage confirms every changed path parsed a section.
 func verifyDiffSectionCoverage(sections map[string]string, changedFiles []FileChange) error {
 	for _, change := range changedFiles {
 		if _, ok := sections[change.Path]; !ok {
@@ -518,10 +502,8 @@ func hasDiffHeaderContinuation(lines []string, headerIndex int) bool {
 		return false
 	}
 	next := lines[headerIndex+1]
-	// "similarity index" and "rename from" never appear in review's own diff,
-	// which always requests --no-renames (see generatePatch); they stay here
-	// so this parser is still correct if ever pointed at a diff with rename
-	// detection enabled.
+	// "similarity index" and "rename from" never appear in review's own diff; it always requests --no-renames.
+	// These prefixes stay so this parser still works if ever given a diff with rename detection enabled.
 	for _, prefix := range []string{"index ", "--- ", "new file mode", "deleted file mode", "similarity index", "rename from", "old mode"} {
 		if strings.HasPrefix(next, prefix) {
 			return true
@@ -542,10 +524,9 @@ type reviewRequest struct {
 	Offset    int64
 }
 
-// decodeReviewRequest independently re-validates a closed schema per
-// operation. requireFence distinguishes the host-trusted, fence-bound frame
-// handled here from the untrusted bridge frame the transport decodes first,
-// which must never itself carry a fence.
+// decodeReviewRequest independently re-validates a closed schema per operation.
+// requireFence distinguishes the trusted, fence-bound frame handled here from the untrusted bridge frame decoded first.
+// That bridge frame must never carry a fence.
 func decodeReviewRequest(raw []byte, requireFence bool) (reviewRequest, error) {
 	value, err := protocol.Decode(raw, MaxReviewRequestBytes)
 	if err != nil {
@@ -672,17 +653,13 @@ type reviewResponse struct {
 	SnapshotSHA string `json:"snapshot_sha,omitempty"`
 }
 
-// reviewResponseOverhead generously bounds the encoded size of every
-// reviewResponse field except Output, covering braces, field names,
-// punctuation, and one optional 40-character snapshot_sha.
+// reviewResponseOverhead generously bounds every reviewResponse field except Output: braces, field names, punctuation, and one optional 40-character snapshot_sha.
 const reviewResponseOverhead = 192
 
 const jsonTruncationMarker = "\n... [truncated: response exceeds the frame limit]"
 
-// encodeReviewResponse enforces the response budget on the JSON-encoded wire
-// size, not the raw string length, since escaping can expand quote-dense
-// content well past its raw byte count. Budgeting on raw bytes alone would
-// let that content silently fail closed with no output.
+// encodeReviewResponse budgets on the JSON-encoded size, not the raw length, since escaping can expand quote-dense content past its raw bytes.
+// A raw-byte budget could silently fail closed with no output.
 func encodeReviewResponse(fence, id int64, ok bool, output string, truncated bool, snapshotSHA string) ([]byte, error) {
 	budget := MaxReviewResponseBytes - reviewResponseOverhead
 	if budget < 0 {
@@ -736,10 +713,9 @@ func truncateForJSONBudget(s string, budget int) (string, bool) {
 		used += add
 		cut += utf8.RuneLen(r)
 	}
-	// range decodes an invalid UTF-8 byte as one U+FFFD rune while advancing
-	// by exactly one byte, but utf8.RuneLen(U+FFFD) is 3, so cut could
-	// otherwise overshoot len(s). Every caller today UTF-8-gates s, so this is
-	// unreachable, but slicing must stay safe regardless.
+	// range decodes an invalid UTF-8 byte as one U+FFFD rune but advances by only one byte.
+	// utf8.RuneLen(U+FFFD) is 3, so cut could overshoot len(s).
+	// Every caller today UTF-8-gates s, making this unreachable, but slicing must stay safe regardless.
 	if cut > len(s) {
 		cut = len(s)
 	}

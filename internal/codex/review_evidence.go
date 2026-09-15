@@ -35,10 +35,8 @@ func stableFDPath(handle *os.File) string {
 	}
 }
 
-// reviewLineIndex is the only per-file information evidence validation
-// needs: a line count and whether review_read would refuse the file as
-// binary. Keeping just this, not the file content, avoids a second full
-// snapshot copy alongside ReviewMediator's own.
+// reviewLineIndex is the only per-file data evidence validation needs: a line count and a binary flag.
+// Keeping this instead of file content avoids a second full snapshot copy alongside ReviewMediator's own.
 type reviewLineIndex struct {
 	lines  int64
 	binary bool
@@ -60,12 +58,9 @@ func reviewSHAs(claim protocol.Claim) (base, head string, ok bool) {
 	return base, head, baseOK && headOK && fullSHAPattern.MatchString(base) && fullSHAPattern.MatchString(head)
 }
 
-// buildReviewEvidence loads both review snapshots and computes the planned
-// changed-file set. sources must be the same executionSources already
-// validated and handed to the transport. The content is reduced here to a
-// per-path line-count and binary index, so only one of the two loads retains
-// full bytes at a time; see the "diff generated twice" tradeoff in
-// docs/compatibility/codex.md.
+// buildReviewEvidence requires sources to be the same executionSources already validated and handed to the transport.
+// Content is reduced here to a per-path line-count and binary index, so only one load retains full bytes at a time;
+// see the "diff generated twice" tradeoff in docs/compatibility/codex.md.
 func buildReviewEvidence(claim protocol.Claim, sources *executionSources) (*reviewEvidence, error) {
 	base, head, ok := reviewSHAs(claim)
 	if !ok {
@@ -133,8 +128,6 @@ func (r *reviewEvidence) lookup(sha, path string) (reviewLineIndex, bool) {
 	return entry, exists
 }
 
-// lineCount reports whether path exists in the snapshot named by sha and, if
-// so, how many lines it has.
 func (r *reviewEvidence) lineCount(sha, path string) (int64, bool) {
 	entry, ok := r.lookup(sha, path)
 	return entry.lines, ok
@@ -237,12 +230,9 @@ func validateEvidenceRefs(refs []EvidenceRef, review *reviewEvidence) error {
 	return nil
 }
 
-// citesChangedFile requires only that some evidence path is in the planned
-// changed-file set, not that it sits on the workspace snapshot specifically.
-// A changed path can be cited on whichever snapshot it actually exists on:
-// workspace for an added or modified path, baseline for a deleted one.
-// Requiring the workspace snapshot specifically would make an honest
-// "modified by deletion" finding unsatisfiable.
+// citesChangedFile only requires an evidence path to be in the planned changed-file set, not on the workspace snapshot specifically.
+// A changed path can be cited on whichever snapshot it exists on: workspace for added/modified, baseline for deleted.
+// Requiring the workspace snapshot specifically would make an honest "modified by deletion" finding unsatisfiable.
 func citesChangedFile(refs []EvidenceRef, changed map[string]bool) bool {
 	for _, ref := range refs {
 		if changed[ref.Path] {
@@ -305,11 +295,9 @@ func questionsToWire(questions []Question) []any {
 	return wire
 }
 
-// reviewEvidencePreamble injects this attempt's real snapshot identity and
-// changed-file list after the charter text, so the model cites real SHAs and
-// accounts for coverage against the exact checked set. The list is bounded by
-// maxReviewChangedFileListBytes: a large set is truncated with a marker
-// naming review_diff, which returns the complete list within its own budget.
+// reviewEvidencePreamble injects this attempt's real snapshot identity and changed-file list after the charter text,
+// so the model cites real SHAs and covers the exact checked set.
+// A large list is truncated by maxReviewChangedFileListBytes; review_diff returns the complete list on request.
 func reviewEvidencePreamble(evidence *reviewEvidence) string {
 	var b strings.Builder
 	b.WriteString("This attempt's charter_version is \"")

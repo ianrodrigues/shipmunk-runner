@@ -50,15 +50,13 @@ const (
 	FailureInvalidOutputSchema FailureReason = "invalid_output_schema"
 )
 
-// ClassifiedFailure carries only a closed failure reason. Raw provider text is
-// deliberately excluded so callers can safely turn it into protocol output.
+// ClassifiedFailure carries only a closed failure reason; raw provider text is deliberately excluded so callers can safely turn it into protocol output.
 type ClassifiedFailure struct{ Reason FailureReason }
 
 func (f *ClassifiedFailure) Error() string { return "Codex reported a classified native failure" }
 func (f *ClassifiedFailure) Unwrap() error { return ErrNativeFailure }
 
-// Event is sanitized transport metadata. Provider text and tool arguments are
-// deliberately excluded so they cannot be published as runner diagnostics.
+// Event is sanitized transport metadata; provider text and tool arguments are deliberately excluded so they cannot be published as runner diagnostics.
 type Event struct {
 	Type     string
 	ItemID   string
@@ -74,8 +72,7 @@ type EvidenceRef struct {
 	LineEnd   int64
 }
 
-// Anchor is an optional, presentation-only pointer to one line. It is never
-// used in place of Evidence for the checks that matter.
+// Anchor is an optional, presentation-only pointer to one line; it is never used in place of Evidence for the checks that matter.
 type Anchor struct {
 	Path string
 	Line int64
@@ -118,9 +115,8 @@ type Test struct {
 	Summary string
 }
 
-// Result mirrors contracts/v1/result.schema.json minus the envelope fields
-// normalizeExecution adds. CharterVersion, Coverage, VerificationState and
-// Questions are populated only as Outcome's allOf conditionals permit.
+// Result mirrors contracts/v1/result.schema.json minus the envelope fields normalizeExecution adds;
+// CharterVersion, Coverage, VerificationState and Questions populate only as Outcome's allOf conditionals permit.
 type Result struct {
 	Summary           string
 	Outcome           string
@@ -150,8 +146,7 @@ type itemState struct {
 	complete bool
 }
 
-// Parse validates a complete newline-delimited Codex exec stream. stderr is
-// counted against the output budget but never included in returned errors.
+// Parse validates a complete newline-delimited Codex exec stream; stderr counts against the output budget but never appears in returned errors.
 func Parse(stdout, stderr []byte) (Stream, error) {
 	if len(stdout)+len(stderr) > MaxOutputBytes {
 		return Stream{}, ErrMalformedOutput
