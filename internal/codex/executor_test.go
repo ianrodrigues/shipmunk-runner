@@ -42,7 +42,7 @@ func (t *executorTransport) RunNative(_ context.Context, argv []string, _ []byte
 		// The fixture's two source snapshots are both empty directories (see
 		// setupFailureWorkspace/TestExecutorRunsPinnedChecksAndNormalizesResult),
 		// so the planned changed-file set is empty and coverage.files must be too.
-		result := `{"summary":"Review complete.","outcome":"no_findings","charter_version":"` + ReviewCharterVersion + `","findings":[],"coverage":{"files":[],"context_gaps":[]},"verification_state":"none","tests":[]}`
+		result := `{"summary":"Review complete.","outcome":"no_findings","charter_version":"` + ReviewCharterVersion + `","findings":[],"questions":null,"coverage":{"files":[],"context_gaps":[]},"verification_state":"none","tests":[]}`
 		return CommandResult{Stdout: `{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}` + "\n" +
 			`{"type":"turn.started"}` + "\n" +
 			`{"type":"item.completed","item":{"id":"result","type":"agent_message","text":` + quote(result) + `}}` + "\n" +
@@ -86,6 +86,31 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 				t.Fatalf("unsafe or incomplete summary: %q", summary)
 			}
 		})
+	}
+}
+
+// A non-charter outcome still arrives with all four charter keys set to null,
+// because strict mode cannot omit a property.
+func TestExecutorPublishesANonCharterOutcomeCarryingStrictNulls(t *testing.T) {
+	executor, transport, _, claim := setupFailureExecutor(t, nil)
+	claim.Manifest = executionManifest()
+	result := `{"summary":"The command budget ran out.","outcome":"incomplete","charter_version":null,"findings":[],"questions":null,"coverage":null,"verification_state":null,"tests":[]}`
+	transport.executionResult = &CommandResult{Stdout: `{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}` + "\n" +
+		`{"type":"turn.started"}` + "\n" +
+		`{"type":"item.completed","item":{"id":"result","type":"agent_message","text":` + quote(result) + `}}` + "\n" +
+		`{"type":"turn.completed"}` + "\n"}
+	execution, err := executor.Execute(context.Background(), claim, nil, setupFailureWorkspace(t))
+	if err != nil || execution.Result["outcome"] != "incomplete" {
+		t.Fatalf("strict null result was not published: %#v err=%v", execution, err)
+	}
+	for _, key := range []string{"charter_version", "questions", "coverage", "verification_state"} {
+		if _, present := execution.Result[key]; present {
+			t.Fatalf("normalized result still carries %q", key)
+		}
+	}
+	resultJSON, marshalErr := json.Marshal(execution.Result)
+	if marshalErr != nil || protocol.Validate("result", resultJSON) != nil {
+		t.Fatalf("strict null result violated the v1 contract: %s (%v)", resultJSON, marshalErr)
 	}
 }
 

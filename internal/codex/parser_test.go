@@ -387,11 +387,21 @@ func TestParseNormalizesStrictSchemaNullsToAbsentFields(t *testing.T) {
 		t.Fatalf("real anchor dropped with the nulls: %#v err=%v", stream.Result, err)
 	}
 
-	proposed := `{"summary":"Done.","outcome":"changes_proposed","charter_version":null,"findings":[` + strictFindingJSON("null") +
-		`],"questions":null,"coverage":null,"verification_state":null,"tests":[]}`
-	stream, err = Parse([]byte(validStream(proposed)), nil)
-	if err != nil || stream.Result.CharterVersion != "" || stream.Result.VerificationState != "" || stream.Result.Coverage != nil {
-		t.Fatalf("outcome-forbidden fields not normalized away: %#v err=%v", stream.Result, err)
+	// Strict mode makes the model emit all four charter keys on every outcome, so
+	// each outcome that forbids them depends on the nulls normalizing away.
+	for _, outcome := range []string{"changes_proposed", "incomplete", "needs_input"} {
+		findings := "[]"
+		if outcome == "changes_proposed" {
+			findings = `[` + strictFindingJSON("null") + `]`
+		}
+		result := `{"summary":"Done.","outcome":"` + outcome + `","charter_version":null,"findings":` + findings +
+			`,"questions":null,"coverage":null,"verification_state":null,"tests":[]}`
+		t.Run(outcome, func(t *testing.T) {
+			parsed, err := Parse([]byte(validStream(result)), nil)
+			if err != nil || parsed.Result.CharterVersion != "" || parsed.Result.VerificationState != "" || parsed.Result.Coverage != nil || parsed.Result.Questions != nil {
+				t.Fatalf("outcome-forbidden fields not normalized away: %#v err=%v", parsed.Result, err)
+			}
+		})
 	}
 
 	for name, result := range map[string]string{
