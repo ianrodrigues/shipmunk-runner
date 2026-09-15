@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -17,6 +18,14 @@ import (
 const HeartbeatInterval = 10 * time.Second
 const LeaseDuration = 45 * time.Second
 const cleanupTimeout = 90 * time.Second
+
+// refusedStoppedSettleThreshold bounds the recovery retry that a permanently
+// superseded attempt would otherwise repeat forever. HeartbeatRunAttempt
+// refuses the stopped path with 409 only for a fence mismatch or a
+// non-current attempt, both permanent, so a consecutive run of refusals on
+// the same journal converges without waiting on the server to change its
+// mind.
+const refusedStoppedSettleThreshold = 3
 
 var ErrStopped = errors.New("control plane requested stop")
 var ErrLeaseExpired = errors.New("attempt lease expired")
@@ -220,9 +229,29 @@ func (s *Supervisor) reconcile(parent context.Context) error {
 		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 	}
 	if err := s.reportInterrupted(ctx, claim); err != nil {
-		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
+		if !refusedStoppedAcknowledgement(err) {
+			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
+		}
+		state.RefusedStoppedCount++
+		if state.RefusedStoppedCount < refusedStoppedSettleThreshold {
+			if saveErr := s.State.Save(*state); saveErr != nil {
+				return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, errors.Join(err, saveErr))
+			}
+			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
+		}
+		// A third consecutive refusal on the same fenced attempt is not a
+		// transient condition: the server has permanently superseded it, so
+		// recovery converges here instead of retrying forever.
 	}
 	return s.State.Clear()
+}
+
+// refusedStoppedAcknowledgement reports whether the control plane refused a
+// stopped acknowledgement because the attempt is permanently superseded, the
+// only condition under which the stopped path returns 409.
+func refusedStoppedAcknowledgement(err error) bool {
+	var controlPlaneErr *protocol.ControlPlaneError
+	return errors.As(err, &controlPlaneErr) && controlPlaneErr.StatusCode == http.StatusConflict
 }
 
 // reportInterrupted completes the recovered attempt as failed while the
