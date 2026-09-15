@@ -112,7 +112,7 @@ func TestDockerRecoveryRetainsStateAcrossFailureAndFreshSupervisor(t *testing.T)
 			if err := store.Save(attemptstate.State{RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, SandboxID: &id, LeaseExpiresAt: claim.LeaseExpiresAt, Deadline: claim.Deadline, Workspace: path}); err != nil {
 				t.Fatal(err)
 			}
-			var acknowledge, claims atomic.Int64
+			var acknowledge, claims, reports atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
@@ -121,6 +121,10 @@ func TestDockerRecoveryRetainsStateAcrossFailureAndFreshSupervisor(t *testing.T)
 						w.WriteHeader(http.StatusConflict)
 						return
 					}
+					w.WriteHeader(http.StatusNoContent)
+				// Recovery reports the interrupted attempt before it acknowledges the stopped sandbox.
+				case strings.HasSuffix(r.URL.Path, "/completion"):
+					reports.Add(1)
 					w.WriteHeader(http.StatusNoContent)
 				case r.URL.Path == "/runner/v1/claims":
 					claims.Add(1)
@@ -183,6 +187,9 @@ func TestDockerRecoveryRetainsStateAcrossFailureAndFreshSupervisor(t *testing.T)
 			}
 			if saved, err := store.Load(); err != nil || saved != nil || claims.Load() != 1 {
 				t.Fatalf("confirmed recovery did not clear state: %+v %v claims=%d", saved, err, claims.Load())
+			}
+			if reports.Load() == 0 {
+				t.Fatal("recovery cleared the attempt without reporting it")
 			}
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("workspace remains after recovery: %v", err)

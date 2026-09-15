@@ -266,7 +266,7 @@ func (guard Guard) validateProfilesReadOnly(recoverable bool) error {
 		if err := privateDirectory(profileRoot); err != nil {
 			return errors.New("runner profile layout is unsafe")
 		}
-		// The supervised run releases its own execution journal during recovery; a profile operation journal is never its to resolve.
+		// The supervised run releases its own execution journal during recovery. It never resolves a profile operation journal.
 		retained := map[string]bool{"active.json": true, "completed.json": true, "execution.json": recoverable}
 		for _, journal := range []string{"pending.json", "execution.json"} {
 			if retained[journal] {

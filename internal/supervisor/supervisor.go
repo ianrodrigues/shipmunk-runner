@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
@@ -226,30 +225,22 @@ func (s *Supervisor) reconcile(parent context.Context) error {
 	return s.State.Clear()
 }
 
-// reportInterrupted completes the recovered attempt as failed while its lease is
-// live, then acknowledges the stopped sandbox, which the control plane accepts
-// for an expired lease as well.
+// reportInterrupted completes the recovered attempt as failed while the
+// journal's lease is live, then acknowledges the stopped sandbox. The control
+// plane accepts that acknowledgement even for an expired lease.
 func (s *Supervisor) reportInterrupted(ctx context.Context, claim protocol.Claim) error {
-	lease, stop, err := s.Client.Heartbeat(ctx, claim)
-	if err == nil && !stop && time.Now().Before(lease) {
+	if time.Now().Before(claim.LeaseExpiresAt) {
 		raw, err := json.Marshal(interruptedResult(claim))
 		if err != nil {
 			return err
 		}
-		if err := fenced(s.Client.Complete(ctx, claim, raw)); err != nil {
-			return err
-		}
+		// The result is best effort: the control plane refuses it once the attempt
+		// is reconciled or its lease has lapsed, and a retry that could never be
+		// accepted must not hold the journal.
+		_ = s.Client.Complete(ctx, claim, raw)
 	}
-	return fenced(s.Client.AcknowledgeStopped(ctx, claim))
-}
-
-// fenced discards a conflict, which proves the control plane already replaced this attempt, so no local report can reach it.
-func fenced(err error) error {
-	var controlPlane *protocol.ControlPlaneError
-	if errors.As(err, &controlPlane) && controlPlane.StatusCode == http.StatusConflict {
-		return nil
-	}
-	return err
+	// Only the acknowledgement releases the attempt, so its refusal keeps the journal for the next run.
+	return s.Client.AcknowledgeStopped(ctx, claim)
 }
 
 // interruptedResult carries the incomplete shape contracts/v1/result.schema.json
