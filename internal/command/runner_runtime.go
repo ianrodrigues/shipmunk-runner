@@ -144,7 +144,7 @@ func supervisionFailure(err error) string {
 	var refused *supervisor.RefusedStoppedError
 	switch {
 	case errors.As(err, &refused):
-		return fmt.Sprintf("The application refused the stopped acknowledgement (%d of %d); the attempt journal is kept for recovery and will release on its own once that bound is reached. Run 'run --discard-attempt' to release it immediately instead.", refused.Count, refused.Threshold)
+		return fmt.Sprintf("The application refused the stopped acknowledgement (%d of %d); the attempt journal is kept for recovery and clears on its own once that bound is reached. Run 'run --discard-attempt' to discard the local journal immediately instead; the application's own capacity reservation is released separately.", refused.Count, refused.Threshold)
 	case errors.Is(err, supervisor.ErrCleanupUnconfirmed):
 		return "Runner could not confirm sandbox cleanup, so the attempt journal is kept for recovery. Check the Docker engine and the application."
 	case errors.Is(err, supervisor.ErrLeaseExpired):
