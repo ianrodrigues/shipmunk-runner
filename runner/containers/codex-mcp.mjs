@@ -150,7 +150,8 @@ async function exchangeBridge(fields) {
         ) {
             throw new Error('Invalid response.');
         }
-        // Delete request.json before response.json: response.json's presence is the host's only signal a response is still pending.
+        // Delete request.json before response.json.
+        // The presence of response.json is the host's only signal that a response is still pending.
         await unlink('/bridge/request.json');
         await unlink('/bridge/response.json');
         return value;

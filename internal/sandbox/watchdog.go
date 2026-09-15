@@ -95,7 +95,8 @@ func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile, c
 	if err != nil {
 		return nil, fmt.Errorf("create watchdog readiness channel: %w", err)
 	}
-	// os.Pipe, not StdinPipe: keeps control's close solely owned by Disarm, avoiding Wait's competing auto-close.
+	// os.Pipe keeps Disarm as the only owner of the control pipe.
+	// StdinPipe lets Wait close the same pipe, and the two closes race.
 	controlRead, control, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("create watchdog control channel: %w", err)
