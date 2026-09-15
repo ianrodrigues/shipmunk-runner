@@ -74,10 +74,10 @@ async function emit(value) {
 }
 
 // exchangeBridge writes one fenceless request to the protected local bridge
-// and waits for the trusted host supervisor's matching response. The request
-// and response shapes are op-specific and validated by the caller: this
-// function only enforces the generic file protocol (fresh files, size caps,
-// matching sequence id).
+// and waits for the host supervisor's matching response. The caller
+// validates the op-specific request and response shapes. exchangeBridge only
+// enforces the generic file protocol: fresh files, size caps, matching
+// sequence id.
 async function exchangeBridge(fields) {
     const id = ++sequence;
     for (const path of ['/bridge/request.json', '/bridge/response.json']) {
@@ -150,8 +150,8 @@ async function exchangeBridge(fields) {
         ) {
             throw new Error('Invalid response.');
         }
-        // Delete request.json before response.json.
-        // The presence of response.json is the host's only signal that a response is still pending.
+        // request.json must go first. response.json's presence is the host's
+        // only signal that a response is still pending.
         await unlink('/bridge/request.json');
         await unlink('/bridge/response.json');
         return value;
@@ -189,9 +189,9 @@ async function reviewBridge(op, args) {
         throw new Error('Invalid response.');
     }
     // snapshot_sha (review_list/review_read only) is the real 40-character SHA
-    // of the snapshot the response came from. It must reach the model in the
-    // text content, not just the outer mediator struct, or the model cannot
-    // cite an evidence snapshot that exists.
+    // of the snapshot the response came from. snapshot_sha must reach the
+    // model in the text content, not just the outer mediator struct, or the
+    // model cannot cite an evidence snapshot that exists.
     const text = value.snapshot_sha
         ? `snapshot_sha: ${value.snapshot_sha}\n${value.output}`
         : value.output;
@@ -221,10 +221,10 @@ const reviewPathSchema = {
 };
 
 // The active tool set is chosen once from the fixed launch argument the
-// runner supplies, and never changes for the process's life. A review
-// process never advertises or accepts repository_command. An unrecognized
-// argument fails closed instead of defaulting to the more permissive
-// repository mode.
+// runner supplies. The tool set never changes for the process's life. A
+// review process never advertises or accepts repository_command. An
+// unrecognized argument fails closed instead of defaulting to the more
+// permissive repository mode.
 const modeArgument = process.argv[2];
 if (modeArgument !== 'review' && modeArgument !== 'repository') {
     process.stderr.write('Unsupported repository bridge mode.\n');

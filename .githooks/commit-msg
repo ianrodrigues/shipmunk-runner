@@ -5,7 +5,7 @@ message=$1
 subject=$(sed -n '1p' "$message")
 case "$subject" in
     'fixup! '?*|'squash! '?*|'amend! '?*)
-        # Git generates autosquash messages; squash them before merging.
+        # Git generates autosquash messages. They get squashed before merging.
         ;;
     *)
         if [[ ${#subject} -gt 72 ]] || ! [[ "$subject" =~ ^(feat|fix|docs|test|chore|ci|refactor|perf|build|style|revert)(\([a-z0-9._/-]+\))?!?:\ [^[:space:]].*$ ]]; then
