@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func TestStoreSaveReloadAndClearUsesPHPCompatibleState(t *testing.T) {
 
 func TestStoreSupportsNullableIDsAndPHPUTCVariants(t *testing.T) {
 	path := filepath.Join(privateTempDir(t), "active.json")
-	contents := `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"profile_id":null,"sandbox_id":null,"lease_expires_at":"2026-09-13T10:11:12Z","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1"}`
+	contents := `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"profile_id":null,"sandbox_id":null,"lease_expires_at":"2026-09-13T10:11:12Z","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1","refused_stopped_count":0}`
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +167,78 @@ func TestStoreRejectsUnsupportedStateWithoutMutation(t *testing.T) {
 			}
 			if string(actual) != contents {
 				t.Fatalf("unsupported state changed: got %d bytes, want %d", len(actual), len(contents))
+			}
+		})
+	}
+}
+
+func TestStoreRoundTripsRefusedStoppedCount(t *testing.T) {
+	path := filepath.Join(privateTempDir(t), "active.json")
+	state := testState()
+	state.RefusedStoppedCount = 2
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"refused_stopped_count":2`) {
+		t.Fatalf("state file does not journal refused_stopped_count: %s", contents)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	loaded, err := store.Load()
+	if err != nil || loaded == nil || loaded.RefusedStoppedCount != 2 {
+		t.Fatalf("reloaded refused_stopped_count = %+v, %v", loaded, err)
+	}
+}
+
+func TestStoreRejectsInvalidRefusedStoppedCount(t *testing.T) {
+	for name, value := range map[string]string{
+		"negative":  `-1`,
+		"over max":  strconv.Itoa(maxRefusedStoppedCount + 1),
+		"non-int":   `1.5`,
+		"non-numer": `"2"`,
+		"missing":   ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := marshalState(testState())
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents := string(raw)
+			if value == "" {
+				contents = strings.Replace(contents, `,"refused_stopped_count":0`, "", 1)
+			} else {
+				contents = strings.Replace(contents, `"refused_stopped_count":0`, `"refused_stopped_count":`+value, 1)
+			}
+			if contents == string(raw) {
+				t.Fatal("fixture refused_stopped_count field was not found")
+			}
+			path := filepath.Join(privateTempDir(t), "active.json")
+			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if _, err := store.Load(); err == nil {
+				t.Fatal("Load accepted an invalid refused_stopped_count")
 			}
 		})
 	}

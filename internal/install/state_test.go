@@ -402,7 +402,7 @@ func TestGuardRejectsChangedIdentityAndRecoveryJournals(t *testing.T) {
 func TestRuntimeConfigurationAcceptsOnlyRecoverableJournals(t *testing.T) {
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
 	attempt := `{"run_id":"01kkkkkkkkkkkkkkkkkkkkkkkk","attempt_id":"01mmmmmmmmmmmmmmmmmmmmmmmm","fence":1,"profile_id":"` + profileID +
-		`","sandbox_id":null,"lease_expires_at":"2026-09-15T16:29:17+00:00","deadline":"2026-09-15T16:43:14+00:00","workspace":"%s"}`
+		`","sandbox_id":null,"lease_expires_at":"2026-09-15T16:29:17+00:00","deadline":"2026-09-15T16:43:14+00:00","workspace":"%s","refused_stopped_count":0}`
 	for name, test := range map[string]struct {
 		prepare     func(*testing.T, string)
 		recoverable bool

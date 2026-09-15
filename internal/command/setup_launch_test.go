@@ -120,7 +120,7 @@ func writeInterruptedAttempt(t *testing.T, root string) {
 	raw, err := json.Marshal(map[string]any{
 		"run_id": testRunnerID, "attempt_id": testOperation, "fence": 1, "profile_id": testProfileID,
 		"sandbox_id": nil, "lease_expires_at": "2026-09-15T16:29:17+00:00", "deadline": "2026-09-15T16:43:14+00:00",
-		"workspace": filepath.Join(state, "workspaces", testOperation+"-1"),
+		"workspace": filepath.Join(state, "workspaces", testOperation+"-1"), "refused_stopped_count": 0,
 	})
 	if err != nil {
 		t.Fatal(err)
