@@ -9,11 +9,16 @@
 // run/connect launchers exist, are executable, and invoke the exact
 // installed release by absolute path, and setup never starts queued work.
 // It additionally invokes the installed run --once and connect probe
-// launchers to prove the compiled binary executes natively in a
-// PHP/Go-free environment (no missing interpreter, no missing shared
-// library) and leaves no queued-work state behind, even though those
-// commands cannot fully succeed without a live control plane and a real
-// native profile login.
+// launchers against the same faked docker client — run --once clears its
+// own Docker image preflight (internal/command/codex_runner.go) first;
+// probe only needs docker resolvable for a local lookup before it reaches
+// the equivalent call — and confirms via the up-stub's request log that
+// each one genuinely reached it over the network (POST /runner/v1/claims
+// and POST /runner/v1/profiles/<id>/operations respectively) rather than
+// failing at an earlier local step. Both fail cleanly (no missing
+// interpreter, no missing shared library) and leave no queued-work state
+// behind, proving native execution, even though neither can fully succeed
+// without a live control plane and a real native profile login.
 //
 // It does not prove: real Docker container isolation or lifecycle (the
 // docker client is faked, matching the existing unit test's approach), a
@@ -50,11 +55,14 @@ const (
 	defaultVersion = "v0.0.0-installsmoke"
 	// A multi-arch manifest-list digest: docker resolves the matching
 	// per-arch image for whichever --platform is requested.
-	defaultImage = "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
+	defaultImage = "debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
 
 	smokeUser      = "smoke"
 	smokeRunnerID  = "01k4w000000000000000000001"
 	smokeProfileID = "01k4w000000000000000000002"
+
+	// Must match testdata/upstub/main.go's requestLogPath.
+	upstubRequestLog = "/tmp/upstub-requests.log"
 )
 
 func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
@@ -172,22 +180,34 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertCommandAbsent(t, ctx, container, "php")
 	assertCommandAbsent(t, ctx, container, "go")
 
-	runOnce := dockerExecAs(t, ctx, 60*time.Second, container, smokeUser, root+"/run", "--once")
+	// The installed launchers exec with only the container's default PATH;
+	// give run --once the fixture's docker script so it clears the Docker
+	// image preflight in internal/command/codex_runner.go and genuinely
+	// reaches the poll against the up-stub, instead of failing locally
+	// before ever making a network call.
+	runOnce := dockerExecEnv(t, ctx, 60*time.Second, container, smokeUser, []string{pathEnv}, root+"/run", "--once")
 	if runOnce.exitCode != 1 {
 		t.Fatalf("run --once against a stub control plane should fail cleanly with exit 1, got %d: %s", runOnce.exitCode, runOnce.output)
 	}
 	if strings.Contains(runOnce.output, "no such file or directory") || strings.Contains(strings.ToLower(runOnce.output), "exec format error") {
 		t.Fatalf("run --once failed for an environment reason rather than a control-plane reason: %s", runOnce.output)
 	}
+	assertUpstubReceived(t, ctx, container, "POST /runner/v1/claims")
 	assertAbsent(t, ctx, container, root+"/state/active-attempt.json")
 
-	probeOutput, probeExit := runExpect(t, 30*time.Second, "docker", "exec", "-it", "-u", smokeUser, container, root+"/connect", "probe")
+	// connect probe reaches its network call (profile.Lifecycle.begin)
+	// before any Docker preflight, but exec.LookPath("docker") still runs
+	// first inside executeNativeProfileLocked: give it the fixture's
+	// docker script too so that lookup succeeds and probe actually reaches
+	// the up-stub, exactly like run --once above.
+	probeOutput, probeExit := runExpect(t, 30*time.Second, "docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container, root+"/connect", "probe")
 	if probeExit != 1 {
 		t.Fatalf("connect probe against a stub control plane should fail cleanly with exit 1, got %d: %s", probeExit, probeOutput)
 	}
 	if strings.Contains(probeOutput, "no such file or directory") || strings.Contains(strings.ToLower(probeOutput), "exec format error") {
 		t.Fatalf("connect probe failed for an environment reason rather than a control-plane reason: %s", probeOutput)
 	}
+	assertUpstubReceived(t, ctx, container, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
 	assertAbsent(t, ctx, container, root+"/state/active-attempt.json")
 
 	t.Logf("clean-container install smoke passed for %s using image %s", platformKey, image)
@@ -278,9 +298,16 @@ func resolveUpstub(t *testing.T, arch string) string {
 // build without a real Docker-in-Docker daemon.
 func writeFakeDockerScript(t *testing.T) string {
 	t.Helper()
+	fakeImageID := "sha256:" + strings.Repeat("d", 64)
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = version ]; then printf '26.0.0\\n26.0.0\\nlinux\\n'; exit 0; fi\n" +
-		"while [ $# -gt 0 ]; do if [ \"$1\" = --iidfile ]; then shift; printf 'sha256:" + strings.Repeat("d", 64) + "\\n' > \"$1\"; exit 0; fi; shift; done\n" +
+		// The compiled setup image build reads the id from --iidfile; the
+		// installed runner's own preflight instead asks "image inspect" for
+		// both --image and --repository-image before it ever polls the
+		// control plane, so both must resolve to the same synthetic id for
+		// run --once to reach the up-stub rather than fail here first.
+		"if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then printf '" + fakeImageID + "\\n'; exit 0; fi\n" +
+		"while [ $# -gt 0 ]; do if [ \"$1\" = --iidfile ]; then shift; printf '" + fakeImageID + "\\n' > \"$1\"; exit 0; fi; shift; done\n" +
 		"exit 1\n"
 	path := filepath.Join(t.TempDir(), "docker")
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
@@ -372,6 +399,20 @@ func assertAbsent(t *testing.T, ctx context.Context, container, path string) {
 	}
 }
 
+// assertUpstubReceived confirms the up-stub logged the given "METHOD /path"
+// line, proving the installed binary made a genuine network call to it
+// rather than failing at an earlier local preflight step.
+func assertUpstubReceived(t *testing.T, ctx context.Context, container, want string) {
+	t.Helper()
+	result := dockerExecAs(t, ctx, 10*time.Second, container, smokeUser, "cat", upstubRequestLog)
+	if result.exitCode != 0 {
+		t.Fatalf("read up-stub request log: %s", result.output)
+	}
+	if !strings.Contains(result.output, want) {
+		t.Fatalf("up-stub never received %q; log:\n%s", want, result.output)
+	}
+}
+
 type execResult struct {
 	output   string
 	exitCode int
@@ -394,9 +435,22 @@ func dockerCP(t *testing.T, ctx context.Context, source, destination string) {
 
 func dockerExecAs(t *testing.T, ctx context.Context, timeout time.Duration, container, user string, args ...string) execResult {
 	t.Helper()
+	return dockerExecEnv(t, ctx, timeout, container, user, nil, args...)
+}
+
+// dockerExecEnv runs docker exec with explicit environment variables. Setup
+// launchers exec the installed release with only the container's default
+// PATH, so run --once and connect probe must add the fixture's docker
+// script to PATH themselves to reach the code that shells out to it,
+// exactly as an installed release would find a real Docker on PATH.
+func dockerExecEnv(t *testing.T, ctx context.Context, timeout time.Duration, container, user string, env []string, args ...string) execResult {
+	t.Helper()
 	full := []string{"exec"}
 	if user != "" {
 		full = append(full, "-u", user)
+	}
+	for _, entry := range env {
+		full = append(full, "-e", entry)
 	}
 	full = append(full, container)
 	full = append(full, args...)

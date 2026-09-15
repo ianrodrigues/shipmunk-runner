@@ -6,14 +6,22 @@
 // the module's own build, vet, and test targets never compile it as a
 // module command; internal/installsmoke and CI build it explicitly for the
 // target container platform.
+//
+// Every request it receives, on any path, is appended to requestLogPath so a
+// test can confirm the installed binaries genuinely reached this server over
+// the network, rather than failing earlier at a local preflight step.
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
+
+const requestLogPath = "/tmp/upstub-requests.log"
 
 func main() {
 	const addr = "127.0.0.1:8080"
@@ -21,7 +29,25 @@ func main() {
 		waitReady(addr)
 		return
 	}
-	http.HandleFunc("/up", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	var mu sync.Mutex
+	logRequest := func(r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		file, err := os.OpenFile(requestLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return
+		}
+		defer file.Close()
+		fmt.Fprintf(file, "%s %s\n", r.Method, r.URL.Path)
+	}
+	http.HandleFunc("/up", func(w http.ResponseWriter, r *http.Request) {
+		logRequest(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		logRequest(r)
+		http.NotFound(w, r)
+	})
 	_ = http.ListenAndServe(addr, nil)
 }
 
