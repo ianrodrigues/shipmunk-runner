@@ -336,7 +336,7 @@ func trustedPatch(t *testing.T, beforeRoot, afterRoot string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	patch, err := generatePatch(before, after)
+	patch, err := generatePatch(before, after, true)
 	if err != nil {
 		t.Fatal(err)
 	}

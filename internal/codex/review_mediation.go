@@ -411,12 +411,17 @@ func (m *ReviewMediator) reviewDiff(path string) (string, bool, bool) {
 
 func (m *ReviewMediator) loadDiff() error {
 	m.diffOnce.Do(func() {
-		generated, err := generatePatch(m.baseline, m.head)
+		// detectRenames is false: parseDiffSections keys sections by an exact
+		// "diff --git a/<path> b/<path>" match against each independently
+		// verified changed path. A combined rename header ("diff --git
+		// a/old b/new") would match neither the old nor the new path,
+		// silently hiding the hunk from a per-path lookup on either name.
+		generated, err := generatePatch(m.baseline, m.head, false)
 		if err != nil {
 			m.diffErr = err
 			return
 		}
-		patch, err := collectSnapshotPatch(m.baseline, m.head, generated)
+		patch, err := collectSnapshotPatch(m.baseline, m.head, generated, false)
 		if err != nil {
 			m.diffErr = err
 			return
@@ -475,6 +480,11 @@ func hasDiffHeaderContinuation(lines []string, headerIndex int) bool {
 		return false
 	}
 	next := lines[headerIndex+1]
+	// "similarity index" and "rename from" never actually appear in review's
+	// own diff, which always requests --no-renames (see generatePatch), so
+	// every rename surfaces as a plain delete plus add keyed by its real path.
+	// They stay here so this parser remains correct on its own terms if it is
+	// ever pointed at a diff generated with rename detection enabled.
 	for _, prefix := range []string{"index ", "--- ", "new file mode", "deleted file mode", "similarity index", "rename from", "old mode"} {
 		if strings.HasPrefix(next, prefix) {
 			return true
@@ -691,6 +701,13 @@ func truncateForJSONBudget(s string, budget int) (string, bool) {
 		}
 		used += add
 		cut += utf8.RuneLen(r)
+	}
+	// range decodes an invalid UTF-8 byte as one U+FFFD rune while advancing
+	// by exactly one byte, but utf8.RuneLen(U+FFFD) is 3: on such input cut
+	// could otherwise overshoot len(s). s is UTF-8-gated by every caller
+	// today, so this is unreachable, but slicing must stay safe regardless.
+	if cut > len(s) {
+		cut = len(s)
 	}
 	return s[:cut] + jsonTruncationMarker, true
 }
