@@ -16,15 +16,18 @@ import (
 
 // nativeImageTestImage returns the pinned native/credential image to exercise.
 // It is the same image `shipmunk-profile` runs for login, probe and native
-// execution, built from runner/containers/Dockerfile.
+// execution, built from runner/containers/Dockerfile, and the same image
+// internal/codex's Docker-gated tests default to; this reuses their env vars
+// rather than SHIPMUNK_PROFILE_DOCKER_TEST, which gates the unrelated
+// lightweight fixture image in runtime_docker_integration_test.go.
 func nativeImageTestImage(t *testing.T) string {
 	t.Helper()
-	if os.Getenv("SHIPMUNK_PROFILE_DOCKER_TEST") != "1" {
-		t.Skip("set SHIPMUNK_PROFILE_DOCKER_TEST=1 to run the native image content regression")
+	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
+		t.Skip("set SHIPMUNK_CODEX_DOCKER_TEST=1 to run the native image content regression")
 	}
-	image := os.Getenv("SHIPMUNK_PROFILE_IMAGE")
+	image := os.Getenv("SHIPMUNK_CODEX_TEST_IMAGE")
 	if image == "" {
-		t.Fatal("SHIPMUNK_PROFILE_IMAGE is required")
+		t.Fatal("SHIPMUNK_CODEX_TEST_IMAGE is required")
 	}
 	return image
 }
@@ -115,8 +118,8 @@ JSON.parse(fs.readFileSync('/usr/local/lib/shipmunk/codex-result.schema.json', '
 // what the real ignore file admits without building the full multi-hundred
 // megabyte runtime image just to inspect its context.
 func TestNativeImageDockerfileContextExcludesCheckoutSecrets(t *testing.T) {
-	if os.Getenv("SHIPMUNK_PROFILE_DOCKER_TEST") != "1" {
-		t.Skip("set SHIPMUNK_PROFILE_DOCKER_TEST=1 to run the native image content regression")
+	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
+		t.Skip("set SHIPMUNK_CODEX_DOCKER_TEST=1 to run the native image content regression")
 	}
 	repository, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
