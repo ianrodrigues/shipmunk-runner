@@ -166,6 +166,51 @@ func TestParseRejectsMalformedAndIncompleteStreams(t *testing.T) {
 	}
 }
 
+// Codex 0.154 reports configuration warnings, deprecation notices and model reroutes as completed error
+// items, and a retried transient backend error as a top-level error event; both precede a normal turn.
+func TestParseAcceptsReportedErrorsBeforeACompletedTurn(t *testing.T) {
+	for name, test := range map[string]struct{ reported, before string }{
+		"startup item":  {`{"type":"item.completed","item":{"id":"startup","type":"error","message":"private configuration warning"}}`, `{"type":"turn.started"}`},
+		"warning item":  {`{"type":"item.completed","item":{"id":"warning-1","type":"error","message":"private deprecation notice"}}`, `{"type":"item.started"`},
+		"retried event": {`{"type":"error","message":"private transient diagnostic"}`, `{"type":"item.started"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stream := strings.Replace(validStream(validResult), test.before, test.reported+"\n"+test.before, 1)
+			parsed, err := Parse([]byte(stream), nil)
+			if err != nil || parsed.Result.Outcome != "no_findings" {
+				t.Fatalf("result = %#v, err = %v", parsed.Result, err)
+			}
+			if len(parsed.Events) != 4 {
+				t.Fatalf("reported error was not recorded as one progress event: %#v", parsed.Events)
+			}
+			if strings.Contains(parsed.String(), "private") {
+				t.Fatal("provider diagnostics escaped parsing")
+			}
+		})
+	}
+}
+
+func TestParseClassifiesTheLastReportedErrorWhenNoResultFollows(t *testing.T) {
+	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n" + `{"type":"turn.started"}` + "\n"
+	warning := `{"type":"error","message":"private deprecation notice"}` + "\n"
+	for name, test := range map[string]struct {
+		stdout string
+		reason FailureReason
+	}{
+		"truncated after a warning": {prefix + warning + `{"type":"error","message":"usage limit reached"}` + "\n", FailureRateLimited},
+		"failed turn after a warning": {prefix + warning +
+			`{"type":"turn.failed","error":{"code":"approval_required","message":"private"}}` + "\n", FailureApprovalRequired},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(test.stdout), nil)
+			var failure *ClassifiedFailure
+			if !errors.As(err, &failure) || failure.Reason != test.reason {
+				t.Fatalf("failure = %#v (%v), want %q", failure, err, test.reason)
+			}
+		})
+	}
+}
+
 func TestParseEnforcesLineAndEventLimits(t *testing.T) {
 	if _, err := Parse([]byte(strings.Repeat(" ", MaxLineBytes+1)+"\n"), nil); !errors.Is(err, ErrMalformedOutput) {
 		t.Fatalf("oversized line error = %v", err)
