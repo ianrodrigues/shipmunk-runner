@@ -288,10 +288,10 @@ func nativeFailure(value map[string]any) error {
 	return &ClassifiedFailure{Reason: reason}
 }
 
-// backendErrorEnvelope locates the one strict {"error":{...}} object the pinned
-// CLI copies out of a backend rejection. The CLI may add a prefix or trailing
-// text around the body, so this searches for it instead of parsing the whole
-// message. The located object is still decoded strictly.
+// backendErrorEnvelope locates the one error object the pinned CLI copies out of
+// a backend rejection. The CLI may add a prefix or trailing text around the body,
+// so this searches for it instead of parsing the whole message. The located
+// object is still decoded strictly.
 func backendErrorEnvelope(message string) (map[string]any, bool) {
 	start := strings.IndexByte(message, '{')
 	if start < 0 {
@@ -303,11 +303,23 @@ func backendErrorEnvelope(message string) (map[string]any, bool) {
 	}
 	decoded, err := protocol.Decode(envelope, MaxLineBytes)
 	body, bodyOK := decoded.(map[string]any)
-	if err != nil || !bodyOK || len(body) != 1 {
+	if err != nil || !bodyOK || !relayedErrorEnvelope(body) {
 		return nil, false
 	}
 	nested, nestedOK := body["error"].(map[string]any)
 	return nested, nestedOK
+}
+
+// relayedErrorEnvelope accepts only the provider's own envelope shape: type, error, and status, nothing else. A looser diagnostic that merely carries a code stays unclassified.
+func relayedErrorEnvelope(body map[string]any) bool {
+	for key := range body {
+		switch key {
+		case "type", "error", "status":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func failureCode(value any) (FailureReason, bool) {

@@ -38,7 +38,7 @@ Once installed, use the printed launchers directly:
 ~/.shipmunk/runners/RUNNER/run            # poll continuously
 ```
 
-Each launcher invokes the installed `shipmunk-setup` binary by absolute path, which strictly rebuilds the `shipmunk-runner`/`shipmunk-profile` arguments described in [runner operation and isolation](runner/README.md) from the protected installation; setup never starts queued work itself. Renewing tokens (downloading setup again for the same runner) preserves profile credentials and pending operation journals; it never repeats login or discards a confirmed home.
+Each launcher invokes the installed `shipmunk-setup` binary by absolute path, which strictly rebuilds the `shipmunk-runner`/`shipmunk-profile` arguments described in [runner operation and isolation](runner/README.md) from the protected installation; setup never starts queued work itself. If a runner process stops during an attempt, `run` recovers it: the next launch removes the sandbox, reports the interrupted attempt to the application as a failed attempt with a stopped acknowledgement, clears the local journals and then polls again. `connect` and token renewal still refuse until that recovery has run. Renewing tokens (downloading setup again for the same runner) preserves profile credentials and pending operation journals; it never repeats login or discards a confirmed home.
 
 ## Check the standalone repository
 

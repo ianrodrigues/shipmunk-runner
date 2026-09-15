@@ -398,6 +398,51 @@ func TestGuardRejectsChangedIdentityAndRecoveryJournals(t *testing.T) {
 	}
 }
 
+// The supervised run recovers these journals itself; renewal and profile work must still refuse them.
+func TestRuntimeConfigurationAcceptsOnlyRecoverableJournals(t *testing.T) {
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	attempt := `{"run_id":"01kkkkkkkkkkkkkkkkkkkkkkkk","attempt_id":"01mmmmmmmmmmmmmmmmmmmmmmmm","fence":1,"profile_id":"` + profileID +
+		`","sandbox_id":null,"lease_expires_at":"2026-09-15T16:29:17+00:00","deadline":"2026-09-15T16:43:14+00:00","workspace":"%s"}`
+	for name, test := range map[string]struct {
+		prepare     func(*testing.T, string)
+		recoverable bool
+	}{
+		"interrupted attempt": {recoverable: true, prepare: func(t *testing.T, root string) {
+			mustMkdir(t, filepath.Join(root, "state"))
+			workspace := filepath.Join(root, "state", "workspaces", "01mmmmmmmmmmmmmmmmmmmmmmmm-1")
+			mustWrite(t, filepath.Join(root, "state", "active-attempt.json"), fmt.Appendf(nil, attempt, workspace))
+		}},
+		"profile execution": {recoverable: true, prepare: func(t *testing.T, root string) {
+			mustMkdir(t, filepath.Join(root, "profiles", profileID))
+			mustWrite(t, filepath.Join(root, "profiles", profileID, "execution.json"), []byte("{}"))
+		}},
+		"unreadable attempt": {prepare: func(t *testing.T, root string) {
+			mustMkdir(t, filepath.Join(root, "state"))
+			mustWrite(t, filepath.Join(root, "state", "active-attempt.json"), []byte("{}"))
+		}},
+		"profile operation": {prepare: func(t *testing.T, root string) {
+			mustMkdir(t, filepath.Join(root, "profiles", profileID))
+			mustWrite(t, filepath.Join(root, "profiles", profileID, "pending.json"), []byte("{}"))
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := installation(t)
+			mustWrite(t, filepath.Join(root, "config.json"), configuration(root, identity, "v1.2.3"))
+			test.prepare(t, root)
+			guard := Guard{Root: root, Identity: identity}
+			if _, err := guard.RuntimeConfiguration(); (err == nil) != test.recoverable {
+				t.Fatalf("supervised run recovery = %v", err)
+			}
+			if _, err := guard.Configuration(); err == nil {
+				t.Fatal("operational guard accepted a pending journal")
+			}
+			if err := guard.Validate(); err == nil || guard.Preflight() == nil {
+				t.Fatal("renewal accepted a pending journal")
+			}
+		})
+	}
+}
+
 func TestGuardRejectsUnknownInstallationShape(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}

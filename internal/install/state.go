@@ -129,6 +129,16 @@ func isNumericIdentifier(value string) bool {
 	return true
 }
 
+// ErrRecoveryPending marks an attempt or execution journal that the supervised
+// run recovers itself, so only renewal and profile work must refuse it.
+var ErrRecoveryPending = errors.New("runner attempt recovery is pending")
+
+// refuseRecovery and allowRecovery select how validation treats a recoverable journal.
+const (
+	refuseRecovery = false
+	allowRecovery  = true
+)
+
 type Identity struct {
 	BaseURL   string
 	RunnerID  string
@@ -168,7 +178,7 @@ func (guard Guard) Validate() error {
 		if err := guard.recover(); err != nil {
 			return err
 		}
-		return guard.validateLocked(state)
+		return guard.validateLocked(state, refuseRecovery)
 	})
 }
 
@@ -195,12 +205,12 @@ func (guard Guard) Preflight() error {
 		return fmt.Errorf("runner state layout is unsafe: %w", err)
 	}
 	if err := absent(filepath.Join(guard.Root, "state", "active-attempt.json")); err != nil {
-		return fmt.Errorf("runner attempt recovery must be resolved before renewal: %w", err)
+		return fmt.Errorf("%w: attempt journal is present: %w", ErrRecoveryPending, err)
 	}
-	return guard.validateProfilesReadOnly()
+	return guard.validateProfilesReadOnly(refuseRecovery)
 }
 
-func (guard Guard) validateLocked(state *attemptstate.Store) error {
+func (guard Guard) validateLocked(state *attemptstate.Store, recoverable bool) error {
 	if protocol.ValidateProfileID(guard.Identity.RunnerID) != nil || protocol.ValidateProfileID(guard.Identity.ProfileID) != nil {
 		return errors.New("runner installation identity is invalid")
 	}
@@ -221,13 +231,16 @@ func (guard Guard) validateLocked(state *attemptstate.Store) error {
 		return fmt.Errorf("runner state layout is unsafe: %w", err)
 	}
 	active, err := state.Load()
-	if err != nil || active != nil {
-		return fmt.Errorf("runner attempt recovery must be resolved before renewal: %w", err)
+	if err != nil {
+		return fmt.Errorf("runner attempt journal is unreadable: %w", err)
 	}
-	return guard.validateProfilesReadOnly()
+	if active != nil && !recoverable {
+		return fmt.Errorf("%w: attempt %s is unresolved", ErrRecoveryPending, active.AttemptID)
+	}
+	return guard.validateProfilesReadOnly(recoverable)
 }
 
-func (guard Guard) validateProfilesReadOnly() error {
+func (guard Guard) validateProfilesReadOnly(recoverable bool) error {
 	profiles := filepath.Join(guard.Root, "profiles")
 	if err := optionalPrivateDirectory(profiles); err != nil {
 		return fmt.Errorf("runner profile layout is unsafe: %w", err)
@@ -253,9 +266,14 @@ func (guard Guard) validateProfilesReadOnly() error {
 		if err := privateDirectory(profileRoot); err != nil {
 			return errors.New("runner profile layout is unsafe")
 		}
+		// The supervised run releases its own execution journal during recovery; a profile operation journal is never its to resolve.
+		retained := map[string]bool{"active.json": true, "completed.json": true, "execution.json": recoverable}
 		for _, journal := range []string{"pending.json", "execution.json"} {
+			if retained[journal] {
+				continue
+			}
 			if err := absent(filepath.Join(profileRoot, journal)); err != nil {
-				return fmt.Errorf("profile recovery must be resolved before renewal: %w", err)
+				return fmt.Errorf("%w: profile %s has an unresolved %s: %w", ErrRecoveryPending, entry.Name(), journal, err)
 			}
 		}
 		profileEntries, err := os.ReadDir(profileRoot)
@@ -263,8 +281,7 @@ func (guard Guard) validateProfilesReadOnly() error {
 			return fmt.Errorf("inspect runner profile: %w", err)
 		}
 		for _, profileEntry := range profileEntries {
-			if strings.HasSuffix(profileEntry.Name(), ".json") &&
-				profileEntry.Name() != "active.json" && profileEntry.Name() != "completed.json" {
+			if strings.HasSuffix(profileEntry.Name(), ".json") && !retained[profileEntry.Name()] {
 				return errors.New("unsupported profile recovery journal must be resolved before renewal")
 			}
 		}
@@ -301,7 +318,7 @@ func (guard Guard) ActivateLaunchers(config, profileToken, executionToken []byte
 		if err := guard.recover(); err != nil {
 			return err
 		}
-		if err := guard.validateLocked(state); err != nil {
+		if err := guard.validateLocked(state, refuseRecovery); err != nil {
 			return err
 		}
 		return guard.activateLocked(values, activationNames(launchers != nil))
@@ -642,12 +659,21 @@ func LoadConfiguration(root string) (Configuration, error) {
 }
 
 func (guard Guard) Configuration() (Configuration, error) {
+	return guard.configuration(refuseRecovery)
+}
+
+// RuntimeConfiguration serves the supervised run, which recovers an interrupted attempt instead of refusing to start.
+func (guard Guard) RuntimeConfiguration() (Configuration, error) {
+	return guard.configuration(allowRecovery)
+}
+
+func (guard Guard) configuration(recoverable bool) (Configuration, error) {
 	var configuration Configuration
 	err := guard.withLocks(func(state *attemptstate.Store) error {
 		if err := guard.recover(); err != nil {
 			return err
 		}
-		if err := guard.validateLocked(state); err != nil {
+		if err := guard.validateLocked(state, recoverable); err != nil {
 			return err
 		}
 		raw, err := readPrivateFile(filepath.Join(guard.Root, "config.json"), maxConfigBytes)
