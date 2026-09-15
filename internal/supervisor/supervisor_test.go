@@ -595,6 +595,62 @@ func TestRecoveryDoesNotConvergeOnNonRefusalAcknowledgementFailures(t *testing.T
 	}
 }
 
+func TestRecoveryPreservesRefusalCountAcrossNonRefusalFailure(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	profileID := claim.Manifest["profile_id"].(string)
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+		Deadline: claim.Deadline, Workspace: w.Path(claim), RefusedStoppedCount: 1,
+	}
+	s.Executor, s.Sandbox, s.Watchdog = &fixtureExecutor{}, nil, nil
+	c.claim, c.ackError = nil, &protocol.ControlPlaneError{StatusCode: 503}
+
+	if _, err := s.RunOnce(context.Background()); !errors.Is(err, ErrCleanupUnconfirmed) {
+		t.Fatalf("non-refusal failure unexpectedly converged: %v", err)
+	}
+	saved, err := state.Load()
+	if err != nil || saved == nil || saved.RefusedStoppedCount != 1 {
+		t.Fatalf("non-refusal failure reset the refusal count: %+v, %v", saved, err)
+	}
+
+	c.ackError = fmt.Errorf("wrapped conflict: %w", &protocol.ControlPlaneError{StatusCode: 409})
+	_, err = s.RunOnce(context.Background())
+	var refused *RefusedStoppedError
+	if !errors.As(err, &refused) || refused.Count != 2 || refused.Threshold != refusedStoppedSettleThreshold {
+		t.Fatalf("next refusal did not resume from the retained count: %v", err)
+	}
+	saved, err = state.Load()
+	if err != nil || saved == nil || saved.RefusedStoppedCount != 2 {
+		t.Fatalf("resumed refusal count was not saved: %+v, %v", saved, err)
+	}
+}
+
+func TestRecoveryRetainsJournalWhenRefusalCountCannotBeSaved(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		LeaseExpiresAt: claim.LeaseExpiresAt, Deadline: claim.Deadline,
+		Workspace: w.Path(claim),
+	}
+	s.Executor, s.Sandbox, s.Watchdog = &fixtureExecutor{}, nil, nil
+	c.claim, c.ackError = nil, &protocol.ControlPlaneError{StatusCode: 409}
+	state.failSave = true
+
+	_, err := s.RunOnce(context.Background())
+	var conflict *protocol.ControlPlaneError
+	var refused *RefusedStoppedError
+	if !errors.Is(err, ErrCleanupUnconfirmed) || !errors.As(err, &conflict) || errors.As(err, &refused) {
+		t.Fatalf("failed refusal persistence returned the wrong error: %v", err)
+	}
+	saved, loadErr := state.Load()
+	if loadErr != nil || saved == nil || saved.RefusedStoppedCount != 0 || c.claims != 0 {
+		t.Fatalf("failed refusal persistence released or changed the journal: saved=%+v loadErr=%v claims=%d", saved, loadErr, c.claims)
+	}
+}
+
 func TestCompositeRecoveryRefusesLegacySandboxWithoutReconciler(t *testing.T) {
 	s, c, state, _, w, _ := fixtureSupervisor(t)
 	claim := *c.claim

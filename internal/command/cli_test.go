@@ -60,6 +60,20 @@ func TestParseRunnerOptionsPreservesDefaultsAndCodexRequirements(t *testing.T) {
 	if options.Driver != "codex" || options.RepositoryImage != "repo:local" || !options.Once {
 		t.Fatalf("unexpected explicit options: %#v", options)
 	}
+	options, err = ParseRunnerOptions([]string{
+		"--base-url=https://runner.example",
+		"--token-file=/private/runner.token",
+		"--state-dir=/private/state",
+		"--image=shipmunk:local",
+		"--discard-attempt",
+		"--yes",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.DiscardAttempt || !options.Confirmed || options.Once {
+		t.Fatalf("unexpected discard options: %#v", options)
+	}
 	for _, args := range [][]string{
 		{"--base-url", "https://runner.example", "--token-file", "token", "--state-dir", "state", "--image", "image", "--driver", "codex"},
 		{"--base-url", "http://remote.example", "--token-file", "token", "--state-dir", "state", "--image", "image"},
