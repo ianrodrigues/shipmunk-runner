@@ -554,6 +554,8 @@ func (guard Guard) pending(name string) string {
 	return filepath.Join(guard.Root, ".activation-new-"+name)
 }
 
+// validateExistingIdentity allows a missing configuration for a new installation.
+// For an existing configuration, it checks the identity, release binding, and release order.
 func (guard Guard) validateExistingIdentity() error {
 	path := filepath.Join(guard.Root, "config.json")
 	raw, err := readPrivateFile(path, maxConfigBytes)
