@@ -29,6 +29,19 @@ func openTestStore(t *testing.T) (*Store, string) {
 	return store, root
 }
 
+// ValidateHome replaces the native scratch tree, so every caller holds the exclusive lock.
+func validateTestHome(t *testing.T, store *Store) error {
+	t.Helper()
+	var validateErr error
+	if err := store.WithExclusive(func(locked *Store) error {
+		validateErr = locked.ValidateHome()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return validateErr
+}
+
 func createTestHome(t *testing.T, store *Store) string {
 	t.Helper()
 	var home string
@@ -327,7 +340,7 @@ func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
 	if err := os.WriteFile(file, []byte("native"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ValidateHome(); err == nil {
+	if err := validateTestHome(t, store); err == nil {
 		t.Fatal("ValidateHome accepted native broad permissions")
 	}
 	if err := store.NormalizeNativeHome(); err == nil {
@@ -336,7 +349,7 @@ func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
 	if err := store.WithExclusive(func(locked *Store) error { return locked.NormalizeNativeHome() }); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ValidateHome(); err != nil {
+	if err := validateTestHome(t, store); err != nil {
 		t.Fatal(err)
 	}
 	if mode := fileMode(t, file); mode != 0600 {
@@ -352,7 +365,7 @@ func TestHomeValidationNormalizationAndSafeInvalidation(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, "link")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	if err := store.ValidateHome(); err == nil {
+	if err := validateTestHome(t, store); err == nil {
 		t.Fatal("ValidateHome accepted a symlink")
 	}
 	if err := store.WithExclusive(func(locked *Store) error { return locked.Invalidate() }); err != nil {
@@ -475,7 +488,7 @@ func TestNativeNormalizationPrunesNativeScratchAndProtectsTheRest(t *testing.T) 
 	if contents, err := os.ReadFile(outside); err != nil || string(contents) != "outside" {
 		t.Fatalf("pruning followed a scratch symlink: %q, %v", contents, err)
 	}
-	if err := store.ValidateHome(); err != nil {
+	if err := validateTestHome(t, store); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -495,8 +508,10 @@ func TestNativeScratchMountPointIsReplacedRatherThanRefused(t *testing.T) {
 	if err := os.Link(outside, filepath.Join(scratch, "linked")); err != nil {
 		t.Skipf("hard link unavailable: %v", err)
 	}
-	if err := store.RepairHome(); err == nil {
-		t.Fatal("RepairHome changed the home without the profile lock")
+	for name, unlocked := range map[string]func() error{"RepairHome": store.RepairHome, "ValidateHome": store.ValidateHome} {
+		if err := unlocked(); err == nil {
+			t.Fatalf("%s changed the home without the profile lock", name)
+		}
 	}
 	if err := store.WithExclusive(func(locked *Store) error { return locked.RepairHome() }); err != nil {
 		t.Fatal(err)
@@ -513,7 +528,7 @@ func TestNativeScratchMountPointIsReplacedRatherThanRefused(t *testing.T) {
 	if err := os.Remove(scratch); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ValidateHome(); err != nil {
+	if err := validateTestHome(t, store); err != nil {
 		t.Fatal(err)
 	}
 	if mode := fileMode(t, scratch); mode != 0700 {

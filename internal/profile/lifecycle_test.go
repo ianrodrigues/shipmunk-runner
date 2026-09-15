@@ -396,7 +396,7 @@ func TestLifecycleLoginActivatesOnlyAfterAuthenticatedPreflightAndCleanup(t *tes
 	if reason, exists := completion.payload["reason"]; !exists || reason != nil {
 		t.Fatalf("ready completion reason = %#v (present %v)", reason, exists)
 	}
-	if err := store.ValidateHome(); err != nil {
+	if err := store.WithExclusive(func(locked *Store) error { return locked.ValidateHome() }); err != nil {
 		t.Fatalf("home was not normalized before activation: %v", err)
 	}
 }
