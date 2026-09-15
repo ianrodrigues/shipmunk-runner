@@ -337,10 +337,21 @@ func (m *ReviewMediator) read(snapshotName, path string, startLine, lineCount in
 	var b strings.Builder
 	collected := int64(0)
 	budgetHit := false
+	partialFirstLine := false
 	for collected < lineCount && pos <= len(data) {
 		line, next := nextLine(data, pos)
 		if int64(b.Len()+len(line)+1) > MaxReviewOutputBytes {
 			budgetHit = true
+			if collected == 0 {
+				// Even the first line alone exceeds the budget (a one-line
+				// minified asset or lockfile, say). Emit a bounded,
+				// rune-boundary-safe prefix of it instead of leaving the
+				// response with nothing but the truncation marker.
+				remaining := int(MaxReviewOutputBytes) - b.Len()
+				cut := boundedRunePrefixLen(line, remaining)
+				b.Write(line[:cut])
+				partialFirstLine = true
+			}
 			break
 		}
 		b.Write(line)
@@ -351,12 +362,30 @@ func (m *ReviewMediator) read(snapshotName, path string, startLine, lineCount in
 	moreLines := !budgetHit && pos <= len(data)
 	text := strings.TrimRight(b.String(), "\n")
 	switch {
+	case partialFirstLine:
+		text += fmt.Sprintf("\n... truncated: output budget reached partway through line %d", startLine)
 	case budgetHit:
 		text += fmt.Sprintf("\n... truncated: output budget reached after %d line(s) from line %d", collected, startLine)
 	case moreLines:
 		text += fmt.Sprintf("\n... more lines follow after line %d", startLine-1+collected)
 	}
 	return text, budgetHit, true
+}
+
+// boundedRunePrefixLen returns the largest n <= limit (and <= len(data)) such
+// that data[:n] does not split a multi-byte UTF-8 rune.
+func boundedRunePrefixLen(data []byte, limit int) int {
+	if limit < 0 {
+		limit = 0
+	}
+	if limit >= len(data) {
+		return len(data)
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(data[cut]) {
+		cut--
+	}
+	return cut
 }
 
 func (m *ReviewMediator) reviewDiff(path string) (string, bool, bool) {
@@ -429,9 +458,31 @@ func (m *ReviewMediator) loadDiff() error {
 		m.diff = patch
 		if patch != nil {
 			m.sections = parseDiffSections(patch.Bytes, patch.ChangedFiles)
+			// Defense in depth: safeRepositoryPath already rejects a quote
+			// character at snapshot load, which is the known way Git can
+			// still C-quote a header despite core.quotePath=false, but if
+			// any changed path's section is ever missing for any other
+			// reason, fail the whole diff explicitly rather than silently
+			// reporting an unaffected file as unchanged.
+			if err := verifyDiffSectionCoverage(m.sections, patch.ChangedFiles); err != nil {
+				m.diffErr = err
+				m.diff = nil
+				m.sections = nil
+				return
+			}
 		}
 	})
 	return m.diffErr
+}
+
+// verifyDiffSectionCoverage confirms every changed path parsed a section.
+func verifyDiffSectionCoverage(sections map[string]string, changedFiles []FileChange) error {
+	for _, change := range changedFiles {
+		if _, ok := sections[change.Path]; !ok {
+			return fmt.Errorf("review diff section missing for changed path %q", change.Path)
+		}
+	}
+	return nil
 }
 
 // parseDiffSections splits a unified diff produced without rename detection
