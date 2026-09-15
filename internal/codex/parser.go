@@ -48,6 +48,8 @@ const (
 	FailureApprovalRequired    FailureReason = "approval_required"
 	FailureModelUnavailable    FailureReason = "model_unavailable"
 	FailureInvalidOutputSchema FailureReason = "invalid_output_schema"
+	// FailureInvalidResult is the executor's own classification of a structured result the contract rejects; no provider code maps to it.
+	FailureInvalidResult FailureReason = "invalid_result"
 )
 
 // ClassifiedFailure carries only a closed failure reason; raw provider text is deliberately excluded so callers can safely turn it into protocol output.
