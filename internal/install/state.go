@@ -23,6 +23,120 @@ const activationJournalName = ".activation.json"
 var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 var imageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
+// compareReleaseVersions orders two "vMAJOR.MINOR.PATCH[-prerelease][+build]"
+// release tags by semver 2.0.0 precedence (build metadata never affects the
+// result). It returns a negative number when a precedes b, zero when they are
+// the same release, and a positive number when a follows b, or an error when
+// either tag does not match releaseVersionPattern.
+func compareReleaseVersions(a, b string) (int, error) {
+	aCore, aPrerelease, err := parseReleaseVersion(a)
+	if err != nil {
+		return 0, err
+	}
+	bCore, bPrerelease, err := parseReleaseVersion(b)
+	if err != nil {
+		return 0, err
+	}
+	for index := range aCore {
+		if cmp := compareNumericIdentifier(aCore[index], bCore[index]); cmp != 0 {
+			return cmp, nil
+		}
+	}
+	return comparePrerelease(aPrerelease, bPrerelease), nil
+}
+
+func parseReleaseVersion(version string) ([3]string, []string, error) {
+	if !releaseVersionPattern.MatchString(version) {
+		return [3]string{}, nil, fmt.Errorf("release version %q is not a valid semantic version", version)
+	}
+	trimmed := strings.TrimPrefix(version, "v")
+	if build := strings.IndexByte(trimmed, '+'); build != -1 {
+		trimmed = trimmed[:build] // build metadata never affects precedence
+	}
+	core, prereleasePart, hasPrerelease := strings.Cut(trimmed, "-")
+	parts := strings.SplitN(core, ".", 3)
+	if len(parts) != 3 {
+		return [3]string{}, nil, fmt.Errorf("release version %q is not a valid semantic version", version)
+	}
+	var prerelease []string
+	if hasPrerelease {
+		prerelease = strings.Split(prereleasePart, ".")
+	}
+	return [3]string{parts[0], parts[1], parts[2]}, prerelease, nil
+}
+
+// compareNumericIdentifier compares two digit-only identifiers by magnitude
+// without integer parsing. releaseVersionPattern forbids leading zeros (other
+// than "0" itself), so equal-length digit strings compare correctly byte by
+// byte, and a shorter digit string is always numerically smaller.
+func compareNumericIdentifier(a, b string) int {
+	if len(a) != len(b) {
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+// comparePrerelease implements semver 2.0.0 rule 11: no prerelease outranks
+// any prerelease of the same core version, shared identifiers are compared
+// left to right, and a longer identifier list outranks a shared-prefix
+// shorter one.
+func comparePrerelease(a, b []string) int {
+	switch {
+	case len(a) == 0 && len(b) == 0:
+		return 0
+	case len(a) == 0:
+		return 1
+	case len(b) == 0:
+		return -1
+	}
+	limit := len(a)
+	if len(b) < limit {
+		limit = len(b)
+	}
+	for index := 0; index < limit; index++ {
+		if cmp := comparePrereleaseIdentifier(a[index], b[index]); cmp != 0 {
+			return cmp
+		}
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func comparePrereleaseIdentifier(a, b string) int {
+	aNumeric, bNumeric := isNumericIdentifier(a), isNumericIdentifier(b)
+	switch {
+	case aNumeric && bNumeric:
+		return compareNumericIdentifier(a, b)
+	case aNumeric:
+		return -1
+	case bNumeric:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
+}
+
+func isNumericIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 type Identity struct {
 	BaseURL   string
 	RunnerID  string
@@ -32,9 +146,13 @@ type Identity struct {
 type Guard struct {
 	Root     string
 	Identity Identity
-	Rename   func(string, string) error
-	Sync     func(string) error
-	Write    func(string, []byte) error
+	// IncomingReleaseVersion is the release tag setup is about to install or
+	// renew into. Left empty, renewal skips release-order enforcement (used
+	// by read-only paths such as loading the active configuration to run it).
+	IncomingReleaseVersion string
+	Rename                 func(string, string) error
+	Sync                   func(string) error
+	Write                  func(string, []byte) error
 }
 
 type ActivationOutcome uint8
@@ -457,12 +575,35 @@ func (guard Guard) validateExistingIdentity() error {
 	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
 		return errors.New("setup identity differs from the existing runner")
 	}
+	if err := guard.validateReleaseOrder(configuration.ReleaseVersion); err != nil {
+		return err
+	}
 	if configuration.ImageID == "" {
 		for _, name := range []string{"run", "connect"} {
 			if err := absent(filepath.Join(guard.Root, name)); err != nil {
 				return errors.New("setup identity differs from the existing runner")
 			}
 		}
+	}
+	return nil
+}
+
+// validateReleaseOrder refuses an incoming release older than the one already
+// installed, so a stale or mismatched manifest can never silently downgrade a
+// runner. The same release renews tokens without changing the release, and a
+// newer release proceeds; downgrades are refused by design rather than
+// offering rollback or PHP-state migration. A malformed installed version
+// fails closed.
+func (guard Guard) validateReleaseOrder(installed string) error {
+	if guard.IncomingReleaseVersion == "" {
+		return nil
+	}
+	cmp, err := compareReleaseVersions(guard.IncomingReleaseVersion, installed)
+	if err != nil {
+		return errors.New("installed runner release version is unsafe")
+	}
+	if cmp < 0 {
+		return fmt.Errorf("runner release %s is older than the installed release %s", guard.IncomingReleaseVersion, installed)
 	}
 	return nil
 }

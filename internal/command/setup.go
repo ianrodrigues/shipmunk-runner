@@ -270,7 +270,7 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	root := filepath.Join(home, ".shipmunk", "runners", bundle.RunnerID)
-	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}}
+	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}, IncomingReleaseVersion: manifest.Version}
 	if err := guard.Preflight(); err != nil {
 		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
 		return 1

@@ -114,6 +114,86 @@ func TestPreflightRefusalDoesNotChangeExistingLayout(t *testing.T) {
 	}
 }
 
+func TestPreflightRefusesOlderReleaseAndAllowsSameOrNewer(t *testing.T) {
+	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	for _, test := range []struct {
+		name                string
+		installed, incoming string
+		refused             bool
+	}{
+		{"older patch refused", "v1.2.3", "v1.2.2", true},
+		{"same version allowed", "v1.2.3", "v1.2.3", false},
+		{"newer patch allowed", "v1.2.3", "v1.2.4", false},
+		{"older prerelease refused", "v0.1.0-alpha.10", "v0.1.0-alpha.9", true},
+		{"newer prerelease allowed", "v0.1.0-alpha.9", "v0.1.0-alpha.10", false},
+		{"release supersedes prerelease", "v0.1.0-alpha.10", "v0.1.0", false},
+		{"prerelease after release refused", "v0.1.0", "v0.1.0-alpha.10", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := installation(t)
+			mustWrite(t, filepath.Join(root, "config.json"), configuration(root, identity, test.installed))
+			guard := Guard{Root: root, Identity: identity, IncomingReleaseVersion: test.incoming}
+			err := guard.Preflight()
+			if test.refused && err == nil {
+				t.Fatalf("release %s over installed %s was accepted", test.incoming, test.installed)
+			}
+			if !test.refused && err != nil {
+				t.Fatalf("release %s over installed %s was refused: %v", test.incoming, test.installed, err)
+			}
+		})
+	}
+}
+
+func TestValidateReleaseOrderFailsClosedOnMalformedInstalledVersion(t *testing.T) {
+	guard := Guard{IncomingReleaseVersion: "v1.0.0"}
+	if err := guard.validateReleaseOrder("not-a-version"); err == nil {
+		t.Fatal("malformed installed release version was accepted")
+	}
+}
+
+func TestCompareReleaseVersionsOrdering(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		a, b string
+		want int
+	}{
+		{"patch older", "v1.2.3", "v1.2.4", -1},
+		{"equal", "v1.2.3", "v1.2.3", 0},
+		{"major newer", "v2.0.0", "v1.9.9", 1},
+		{"prerelease numeric ordering", "v0.1.0-alpha.9", "v0.1.0-alpha.10", -1},
+		{"prerelease below release", "v0.1.0-alpha.10", "v0.1.0", -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmp, err := compareReleaseVersions(test.a, test.b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := 0
+			if cmp < 0 {
+				got = -1
+			} else if cmp > 0 {
+				got = 1
+			}
+			if got != test.want {
+				t.Fatalf("compareReleaseVersions(%q, %q) = %d, want sign %d", test.a, test.b, cmp, test.want)
+			}
+		})
+	}
+}
+
+func TestCompareReleaseVersionsFailsClosedOnMalformedInput(t *testing.T) {
+	for _, test := range []struct{ a, b string }{
+		{"not-a-version", "v1.0.0"},
+		{"v1.0.0", "not-a-version"},
+		{"v1.0", "v1.0.0"},
+		{"", "v1.0.0"},
+	} {
+		if _, err := compareReleaseVersions(test.a, test.b); err == nil {
+			t.Fatalf("compareReleaseVersions(%q, %q) accepted malformed input", test.a, test.b)
+		}
+	}
+}
+
 func TestNewProfileCannotStartDuringActivation(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}

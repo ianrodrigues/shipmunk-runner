@@ -521,6 +521,13 @@ func TestRunSetupBlocksRenewalBeforeInstallingRelease(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		"older release than installed": func(t *testing.T, runnerRoot string) {
+			releasePath := filepath.Join(filepath.Dir(filepath.Dir(runnerRoot)), "releases", strings.Repeat("a", 64))
+			raw := `{"base_url":"https://runner.example","runner_id":"` + testRunnerID + `","profile_id":"` + testProfileID + `","expires_at":"2099-01-01T00:00:00Z","release_path":"` + releasePath + `","release_version":"v1.2.4","platform":"linux-amd64","image_id":"sha256:` + strings.Repeat("b", 64) + `"}`
+			if err := os.WriteFile(filepath.Join(runnerRoot, "config.json"), []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			home, err := filepath.EvalSymlinks(t.TempDir())
