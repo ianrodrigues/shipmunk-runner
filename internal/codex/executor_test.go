@@ -69,7 +69,15 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 		"relayed schema rejection": {`{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\",\"message\":\"private schema diagnostic\"},\"status\":400}"}}` + "\n", "incomplete", "invalid_output_schema", false},
 		// A structured result outside the contract fails the attempt; only unusable output fails the runner.
 		"invalid result": {validStream(`{"summary":"private summary","outcome":"findings","charter_version":"1","findings":[` + findingJSON(findingPath, 5, 2) + `],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`), "incomplete", "invalid_result", false},
-		"unknown":        {`{"type":"error","code":"future_code","message":"private"}` + "\n", "", "", true},
+		// An unclassified progress error is not "the" reported failure (see
+		// progressFailure); ending here with no result falls through to
+		// missing_result, a published outcome, not an unrouted runner fault.
+		"unclassified progress error": {`{"type":"error","code":"future_code","message":"private"}` + "\n", "incomplete", "missing_result", false},
+		// turn.failed without a usable error object is the one remaining path
+		// Parse returns as a bare, unclassified ErrNativeFailure: still a runner
+		// fault, since a terminal failure the parser cannot even read the shape
+		// of carries no reason to publish.
+		"unreadable turn failure": {`{"type":"turn.failed"}` + "\n", "", "", true},
 		// Output the parser cannot read fails the attempt with a fixed summary; nothing from the stream is copied.
 		"malformed":      {`{"type":"error","code":"approval_required"}`, "incomplete", "malformed_output", false},
 		"missing result": {`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}` + "\n" + `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed"}` + "\n", "incomplete", "missing_result", false},
