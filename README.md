@@ -59,6 +59,8 @@ Run `make hooks` once per clone to enable the tracked hooks, including linked wo
 
 Use Conventional Commits such as `fix: preserve base snapshots`: the entire subject must be at most 72 characters, start its description in lower case, omit a final period, and have a blank line before the body. Git-generated `fixup!`, `squash!`, and `amend!` messages are exempt; autosquash them before merging. Optional executable checks in `$(git rev-parse --git-common-dir)/hooks/commit-msg.d/` receive every commit message, including autosquash messages. Pre-push rejects creating, updating, or deleting the remote `main` branch; push a feature branch for review. Release tags are allowed.
 
+The [`pr-title` workflow](.github/workflows/pr-title.yml) enforces the same Conventional Commit grammar, minus the blank-body line, on every pull request title.
+
 ## Publish a release
 
 1. Pass the checks and merge the reviewed runner changes.

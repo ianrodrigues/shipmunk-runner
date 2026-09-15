@@ -4,9 +4,9 @@ VERSION ?= development
 GO_VERSION_PACKAGE := github.com/ianrodrigues/shipmunk-runner/internal/command
 GO_RELEASE_LDFLAGS := -s -w -X $(GO_VERSION_PACKAGE).Version=$(VERSION)
 
-.PHONY: hooks hooks-check check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check install-smoke-check install-smoke-host-check
+.PHONY: hooks hooks-check pr-title-check check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check install-smoke-check install-smoke-host-check
 
-check: hooks-check lint package-check runner-check native-image-check go-check go-parity-check go-runtime-check
+check: hooks-check pr-title-check lint package-check runner-check native-image-check go-check go-parity-check go-runtime-check
 
 hooks:
 	@set -eu; \
@@ -31,6 +31,9 @@ hooks:
 
 hooks-check:
 	bash tests/GitHooksTest.sh
+
+pr-title-check:
+	bash tests/PRTitleTest.sh
 
 go-runtime-check: runner-check
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-runtime.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
