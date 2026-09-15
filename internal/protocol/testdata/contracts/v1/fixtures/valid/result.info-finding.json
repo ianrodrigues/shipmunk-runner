@@ -1,0 +1,41 @@
+{
+  "protocol_version": "1.0",
+  "run_id": "01k4w000000000000000000001",
+  "attempt_id": "01k4w000000000000000000002",
+  "fence": 1,
+  "summary": "The change is sound. One observation is worth recording for whoever touches this file next, but it asks for no action now.",
+  "outcome": "findings",
+  "charter_version": "1",
+  "findings": [
+    {
+      "category": "maintenance",
+      "severity": "info",
+      "relation": "preexisting",
+      "scenario": "The matcher still refuses every path when its rule set is empty, but the comment that used to state this invariant was dropped when the method was extracted.",
+      "consequence": "None today; the next person to touch this method has to re-derive the invariant from the tests instead of reading it in the code.",
+      "action": "No action needed now; worth restating the invariant as a comment the next time this method is touched.",
+      "explanation": "The behaviour is unchanged and still covered by the existing test; only the comment documenting why it behaves this way is gone.",
+      "evidence": [
+        {
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "path": "app/Support/ReviewPathRules.php",
+          "line_start": 10,
+          "line_end": 30
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "files": [
+      {
+        "path": "app/Support/ReviewPathRules.php",
+        "status": "reviewed"
+      }
+    ],
+    "context_gaps": []
+  },
+  "verification_state": "none",
+  "patch_artifact": null,
+  "tests": [],
+  "usage": null
+}

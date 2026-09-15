@@ -246,7 +246,7 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	developer := developerInstructionsArg(t, argv)
-	for _, want := range []string{ReviewCharterVersion, sampleBaselineSHA, sampleHeadSHA, "a.go", "review_list"} {
+	for _, want := range []string{ReviewCharterVersion, sampleBaselineSHA, sampleHeadSHA, "a.go", "review_list", "Severity", "Never report two findings that trace back to the same root cause"} {
 		if !strings.Contains(developer, want) {
 			t.Fatalf("review prompt missing %q:\n%s", want, developer)
 		}

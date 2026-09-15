@@ -56,11 +56,11 @@ func coverageJSON(path string) string {
 const findingPath = "internal/codex/parser.go"
 
 func noFindingsResult() string {
-	return `{"summary":"Done.","outcome":"no_findings","charter_version":"1","findings":[],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
+	return `{"summary":"Done.","outcome":"no_findings","charter_version":"` + ReviewCharterVersion + `","findings":[],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
 }
 
 func findingsResult() string {
-	return `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON(findingPath, 1, 2) + `],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
+	return `{"summary":"Done.","outcome":"findings","charter_version":"` + ReviewCharterVersion + `","findings":[` + findingJSON(findingPath, 1, 2) + `],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
 }
 
 var validResult = noFindingsResult()
@@ -510,7 +510,7 @@ func TestParseEnforcesLimitsTheOutputSchemaCannotDeclare(t *testing.T) {
 		"empty scenario":        strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":""`, 1),
 		"scenario too long":     strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":"`+text(2001)+`"`, 1),
 		"explanation too long":  strings.Replace(findingsResult(), `"explanation":"An explanation."`, `"explanation":"`+text(8193)+`"`, 1),
-		"charter version long":  strings.Replace(noFindingsResult(), `"charter_version":"1"`, `"charter_version":"`+text(9)+`"`, 1),
+		"charter version long":  strings.Replace(noFindingsResult(), `"charter_version":"`+ReviewCharterVersion+`"`, `"charter_version":"`+text(9)+`"`, 1),
 		"snapshot not a SHA":    strings.Replace(findingsResult(), `"snapshot":"`+sampleHeadSHA+`"`, `"snapshot":"`+text(40)+`"`, 1),
 		"evidence line below 1": strings.Replace(findingsResult(), `"line_start":1`, `"line_start":0`, 1),
 		"evidence path long":    strings.Replace(findingsResult(), `"path":"`+findingPath+`"`, `"path":"`+text(1025)+`"`, 1),
