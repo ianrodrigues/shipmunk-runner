@@ -39,5 +39,6 @@
   },
   "actor_github_id": 123,
   "target_ref": "refs/heads/main",
+  "target_branch_ref": "main",
   "dedupe_key": "fixture-review"
 }

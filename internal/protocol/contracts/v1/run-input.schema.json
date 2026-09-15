@@ -218,6 +218,18 @@
       "minLength": 1,
       "maxLength": 255
     },
+    "target_branch_ref": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "dedupe_key": {
       "type": "string",
       "minLength": 1,
