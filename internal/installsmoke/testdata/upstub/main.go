@@ -1,15 +1,8 @@
-// Command upstub is a minimal loopback HTTP responder used only to satisfy
-// the runner setup's /up reachability check inside a container fixture that
-// deliberately has no other HTTP server available. It is test-harness
-// infrastructure standing in for a real Shipmunk server; it is not part of
-// the runner release and is never published. This directory is testdata so
-// the module's own build, vet, and test targets never compile it as a
-// module command; internal/installsmoke and CI build it explicitly for the
-// target container platform.
+// Command upstub is a minimal loopback HTTP responder standing in for a real
+// Shipmunk server in the install smoke test. It is testdata, so the module's
+// own build, vet, and test targets never compile it as a module command.
 //
-// Every request it receives, on any path, is appended to requestLogPath so a
-// test can confirm the installed binaries genuinely reached this server over
-// the network, rather than failing earlier at a local preflight step.
+// Every request, on any path, is appended to requestLogPath.
 package main
 
 import (
@@ -23,9 +16,8 @@ import (
 
 const requestLogPath = "/tmp/upstub-requests.log"
 
-// addrEnv overrides the default loopback address; the host-native install
-// smoke sets it to a freshly reserved port instead of a fixed one, so an
-// unrelated process already on 127.0.0.1:8080 can't be mistaken for it.
+// addrEnv overrides the default loopback address, so an unrelated process
+// already on 127.0.0.1:8080 cannot be mistaken for the up-stub.
 const addrEnv = "SHIPMUNK_UPSTUB_ADDR"
 
 func main() {

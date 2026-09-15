@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/.." && pwd)
-# Tests may themselves run from a hook; never inherit its real index/worktree.
+# Tests may run from inside a hook. Never inherit the hook's real index or worktree.
 git_variables=$(git rev-parse --local-env-vars)
 for variable in $git_variables; do unset "$variable"; done
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
@@ -33,12 +33,10 @@ assert_unchanged() {
     [[ "$(git hash-object -- "$checked_path")" == "$worktree_hash" ]] || fail 'hook mutated the worktree'
 }
 
-# Installation must distinguish an absent setting from an unreadable config.
 printf '[broken config\n' > "$temporary/broken-config"
 expect_failure 'invalid global config' env GIT_CONFIG_GLOBAL="$temporary/broken-config" make hooks
 if git config --local --get core.hooksPath > /dev/null; then fail 'config error changed the local hook path'; fi
 
-# Installation must preserve both an explicit hook path and default local hooks.
 git config core.hooksPath custom-hooks
 expect_failure 'custom hook path' make hooks
 [[ "$(git config core.hooksPath)" == custom-hooks ]] || fail 'custom hooksPath changed'
@@ -56,7 +54,6 @@ pass 'installation preserves custom hook paths and existing local hooks'
 git add .githooks Makefile
 expect_ok 'initial real commit' git commit --quiet -m 'test: install fixture hooks'
 
-# Reject invalid staged Go despite a valid working copy, then invert the two.
 checked_path='source with spaces.go'
 printf 'package fixture\nfunc answer( ){ }\n' > "$checked_path"
 git add -- "$checked_path"
@@ -136,7 +133,7 @@ printf 'refs/heads/feature missing-fields\n' > "$push_record"
 expect_failure 'malformed ref input' .githooks/pre-push < "$push_record"
 pass 'pre-push rejects only remote main updates and deletion'
 
-# Git invokes the same tracked hooks in a linked worktree and local extensions
+# Git invokes the same tracked hooks in a linked worktree. Local extensions
 # remain in the common Git directory, not the per-worktree administrative path.
 linked="$temporary/linked worktree"
 git worktree add --quiet -b linked "$linked"

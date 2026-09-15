@@ -286,7 +286,7 @@ func TestParseAcceptsSchemaAuthorizedFindingsAndEnums(t *testing.T) {
 			t.Fatalf("outcome %q changed result: %#v", outcome, stream.Result)
 		}
 	}
-	// incomplete and needs_input forbid findings entirely; only the tests enum is exercised here.
+	// incomplete and needs_input forbid findings entirely. Only the tests enum is exercised here.
 	for _, outcome := range []string{"incomplete", "needs_input"} {
 		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[],"tests":` + testsClause + `}`
 		stream, err := Parse([]byte(validStream(result)), nil)

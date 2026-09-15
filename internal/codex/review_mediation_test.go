@@ -127,11 +127,6 @@ func TestReviewMediatorClosedRequestSchema(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorHostBridgeRejectsRepositoryCommandFrame directly checks
-// claim 5's second half: even a bridge frame shaped exactly like the
-// repository_command wire ({id, command}, no "op") is refused by the review
-// mediator's own decoder, independent of whatever the bundled MCP script
-// would or would not forward.
 func TestReviewMediatorHostBridgeRejectsRepositoryCommandFrame(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 1, nil)
 	if _, err := mediator.Handle(context.Background(), []byte(`{"fence":7,"id":1,"command":"cat /profile/.codex/auth.json"}`)); err == nil {
@@ -155,12 +150,10 @@ func TestReviewMediatorRejectsUnsafeSnapshotContents(t *testing.T) {
 			}
 		}},
 		{"quoted name", func(t *testing.T, root string) {
-			// A literal '"' survives on a Linux filesystem but Git always
-			// C-quotes and escapes it in a diff header regardless of
-			// core.quotePath, so a path containing one can never match its
-			// own exact-string header key; the snapshot load must fail
-			// explicitly instead of silently making that file unreadable
-			// through review_diff.
+			// Git always C-quotes a literal '"' in a diff header, so such a
+			// path can never match its own header key. The snapshot load
+			// must fail explicitly instead of silently making the file
+			// unreadable through review_diff.
 			writeFile(t, root, `q"uote.txt`, "x\n", 0644)
 		}},
 	} {
@@ -278,9 +271,6 @@ func TestReviewMediatorListSearchReadTruncateWithMarkers(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorListPaginatesWithOffset covers claim 3: a directory with
-// more entries than fit in one response must remain listable via repeated
-// calls with an increasing offset, not fail permanently once truncated.
 func TestReviewMediatorListPaginatesWithOffset(t *testing.T) {
 	const total = MaxReviewListEntries + 50
 	mediator := reviewMediatorFixture(t, 10, func(_, head string) {
@@ -321,9 +311,6 @@ func TestReviewMediatorListPaginatesWithOffset(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorListEnforcesByteBudgetAlone covers claim 3's other edge:
-// fewer than MaxReviewListEntries names can still overflow the byte budget on
-// their own, and that must truncate with a marker rather than fail outright.
 func TestReviewMediatorListEnforcesByteBudgetAlone(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 1, func(_, head string) {
 		// 300 names of 200 bytes each is well under MaxReviewListEntries but,
@@ -376,11 +363,7 @@ func TestReviewMediatorDiffReturnsChangedFilesAndPerPathDiff(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorDiffResistsPlantedHeaderForgery is the claim 1 regression:
-// AAA.txt sorts before auth.go, and its own changed content contains a line
-// that is byte-for-byte a forged "diff --git a/auth.go b/auth.go" header
-// plus a plausible continuation line. review_diff("auth.go") must still
-// return auth.go's real section, not the planted one.
+// AAA.txt sorts before auth.go, ahead of auth.go's own forged-header fixture line.
 func TestReviewMediatorDiffResistsPlantedHeaderForgery(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 2, func(baseline, head string) {
 		writeFile(t, baseline, "AAA.txt", "harmless\n", 0644)
@@ -408,12 +391,7 @@ func TestReviewMediatorDiffResistsPlantedHeaderForgery(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorDiffSuppressesRenameCollapsing is finding A's regression:
-// Git's default rename detection collapses a rename-plus-modify into one
-// "diff --git a/old b/new" header naming both paths, which matches neither
-// path's own exact-string header key. review_diff must still show the new
-// path's real hunk and the old path's real deletion, proving --no-renames is
-// actually applied to review's diff generation.
+// The fixture needs --no-renames: a collapsed rename header matches neither changed path.
 func TestReviewMediatorDiffSuppressesRenameCollapsing(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 3, func(baseline, head string) {
 		writeFile(t, baseline, "payload.txt", "MALICIOUS CONTENT HERE\n", 0644)
@@ -445,11 +423,6 @@ func TestReviewMediatorDiffSuppressesRenameCollapsing(t *testing.T) {
 	}
 }
 
-// TestVerifyDiffSectionCoverageFailsExplicitlyOnAMissingSection is a
-// CodeRabbit finding's defense-in-depth regression: if a changed path's
-// section were ever missing from the parsed diff for any reason (quoting,
-// a parser gap, a future Git change), the whole diff must fail explicitly
-// rather than let review_diff silently report that file as unchanged.
 func TestVerifyDiffSectionCoverageFailsExplicitlyOnAMissingSection(t *testing.T) {
 	changed := []FileChange{{Path: "covered.txt"}, {Path: "missing.txt"}}
 	sections := map[string]string{"covered.txt": "diff --git a/covered.txt b/covered.txt\n..."}
@@ -478,9 +451,6 @@ func TestReviewMediatorTreatsFileContentAsInertData(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorReadDistinguishesMoreLinesFromBudgetHit is the claim 9
-// regression: reading a small window near the top of a file with plenty more
-// content left must not be flagged the same way as a real byte-budget hit.
 func TestReviewMediatorReadDistinguishesMoreLinesFromBudgetHit(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 3, func(_, head string) {
 		var content strings.Builder
@@ -505,10 +475,6 @@ func TestReviewMediatorReadDistinguishesMoreLinesFromBudgetHit(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorReadEmitsPartialFirstLineOverBudget is a CodeRabbit
-// finding's regression: a single line larger than the output budget (a
-// one-line minified asset or lockfile, say) must still return a bounded
-// prefix of it, not just the truncation marker with no content at all.
 func TestReviewMediatorReadEmitsPartialFirstLineOverBudget(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 1, func(_, head string) {
 		writeFile(t, head, "single-line.min.js", strings.Repeat("x", 100*1024), 0644)
@@ -525,11 +491,6 @@ func TestReviewMediatorReadEmitsPartialFirstLineOverBudget(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorReadAndSearchStreamPathologicalFiles is the claim 2
-// regression: a read of a small window near the top of a large, newline-dense
-// file must stay fast regardless of file size (it must not materialize every
-// line first), and review_search must skip a file above its per-file scan
-// cap instead of splitting the whole thing into memory.
 func TestReviewMediatorReadAndSearchStreamPathologicalFiles(t *testing.T) {
 	const size = 20 * 1024 * 1024
 	mediator := reviewMediatorFixture(t, 5, func(_, head string) {
@@ -559,11 +520,6 @@ func TestReviewMediatorReadAndSearchStreamPathologicalFiles(t *testing.T) {
 	}
 }
 
-// TestReviewMediatorResponseBudgetAccountsForJSONEscaping is the claim 4
-// regression: a quote-dense file (as a minified script or lockfile would be)
-// must come back truncated, never as a bare "exceeds its frame limit" error
-// with zero content, because the raw budget already fits comfortably under
-// the response envelope only when escaping is accounted for.
 func TestReviewMediatorResponseBudgetAccountsForJSONEscaping(t *testing.T) {
 	mediator := reviewMediatorFixture(t, 1, func(_, head string) {
 		// Every other byte is a quote: this is the worst realistic case for
@@ -615,12 +571,7 @@ func TestReviewMediatorConcurrentSequenceIsSerialized(t *testing.T) {
 	}
 }
 
-// TestReviewMCPScriptRejectsRepositoryCommandInReviewMode is the other half
-// of claim 5: the bundled MCP script itself, launched in review mode, must
-// not advertise repository_command in tools/list and must refuse a
-// tools/call for it before ever touching the local bridge (there is no
-// /bridge directory in this test at all, so any attempt to use it would
-// surface as a hang or a crash, not a clean JSON-RPC error).
+// No /bridge directory exists in this test, so a wrongly attempted local-bridge call would hang or crash, not fail cleanly.
 func TestReviewMCPScriptRejectsRepositoryCommandInReviewMode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -672,9 +623,6 @@ func TestReviewMCPScriptRejectsRepositoryCommandInReviewMode(t *testing.T) {
 	}
 }
 
-// TestReviewMCPScriptRequiresExplicitMode is claim 6: an unrecognized launch
-// argument must fail closed, never silently default to the more permissive
-// repository mode.
 func TestReviewMCPScriptRequiresExplicitMode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
