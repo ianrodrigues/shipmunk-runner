@@ -10,7 +10,7 @@ Every commit must carry a `Signed-off-by` trailer certifying you wrote it or oth
 git commit -s
 ```
 
-The commit-message hook in `.githooks/commit-msg` warns, without rejecting, on a missing `Signed-off-by` trailer until the first external contribution; after that it will be enforced.
+The commit-message hook in `.githooks/commit-msg` warns, without rejecting, on a missing `Signed-off-by` trailer. This is a manual warning-only state; a maintainer will change the hook to reject missing trailers once the first external contribution lands, rather than the hook enforcing that transition itself.
 
 ## Before opening a pull request
 

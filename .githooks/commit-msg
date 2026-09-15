@@ -21,7 +21,7 @@ case "$subject" in
             echo 'commit-msg: leave the second line blank before the body.' >&2
             exit 1
         fi
-        if ! grep -q '^Signed-off-by: ' "$message"; then
+        if ! git interpret-trailers --parse "$message" | grep -Eq '^Signed-off-by: [^[:space:]].*$'; then
             echo 'commit-msg: missing Signed-off-by trailer; run git commit -s (warning only, will become required after the first external contribution).' >&2
         fi
         ;;
