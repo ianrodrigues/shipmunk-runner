@@ -100,7 +100,8 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 	}
 }
 
-// A mediator that cannot answer once the budget is spent ends the attempt, so the attempt is reported rather than raised as a runner fault.
+// A mediator that cannot answer once the budget is spent still ends the attempt.
+// The attempt is reported rather than raised as a runner fault.
 func TestExecutorReportsAnUnansweredBudgetAsAFailedAttempt(t *testing.T) {
 	executor, transport, _, claim := setupFailureExecutor(t, nil)
 	claim.Manifest = executionManifest()
