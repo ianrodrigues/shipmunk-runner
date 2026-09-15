@@ -45,9 +45,7 @@ func mustRunNativeImageCommand(t *testing.T, args []string) string {
 	return stdout.String()
 }
 
-// Exercises the image's default OpenSSL trust store and its pinned CLI
-// versions without contacting an account or provider, isolated exactly as the
-// runtime isolates a real native invocation.
+// Isolation flags mirror the runtime's real native-invocation sandbox.
 func TestNativeImageTrustStoreAndPinnedVersions(t *testing.T) {
 	image := nativeImageTestImage(t)
 	isolated := []string{
