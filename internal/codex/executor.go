@@ -174,7 +174,8 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	}
 	result, err := transport.RunNative(ctx, argv, []byte(stdin))
 	if err != nil {
-		// A spent budget is this attempt's own limit, not a runner fault, so it is reported rather than raised; the native process outcome is unknown here.
+		// A spent budget is this attempt's own limit, not a runner fault, so it is reported rather than raised.
+		// The native process outcome is unknown here.
 		if errors.Is(err, ErrBudgetExhausted) {
 			return failureExecution(claim, FailureBudgetExhausted, -1), nil
 		}
