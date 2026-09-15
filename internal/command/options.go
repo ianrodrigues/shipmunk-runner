@@ -48,6 +48,8 @@ type parsedProfileOptions struct {
 	version bool
 }
 
+// parseRunnerOptions parses runner flags and rejects syntax or positional
+// arguments; semantic validation and the repository-image fallback are separate.
 func parseRunnerOptions(args []string, output io.Writer) (parsedRunnerOptions, error) {
 	flags := newFlagSet("shipmunk-runner", output)
 	flags.String("base-url", "", "control-plane URL")
@@ -97,6 +99,8 @@ func ParseRunnerOptions(args []string) (RunnerOptions, error) {
 	return parsed.options, nil
 }
 
+// validateRunnerOptions validates runner option combinations and defaults an
+// empty RepositoryImage to Image.
 func validateRunnerOptions(options *RunnerOptions) error {
 	if options.BaseURL == "" || options.TokenFile == "" || options.StateDir == "" || options.Image == "" {
 		return errMissingRunnerOptions

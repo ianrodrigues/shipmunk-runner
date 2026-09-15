@@ -14,7 +14,7 @@ import (
 // Release builds replace Version with the exact release tag.
 var Version = "development"
 
-// RunRunner supports isolated fixture execution; native profile-backed drivers stay unavailable until a separate lifecycle migration finishes.
+// RunRunner executes the runner command and returns its process exit code.
 func RunRunner(args []string, stdout, stderr io.Writer) int {
 	parsed, err := parseRunnerOptions(args, stdout)
 	if errors.Is(err, flagHelpRequested) {

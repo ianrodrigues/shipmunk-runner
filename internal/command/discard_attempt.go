@@ -22,12 +22,11 @@ import (
 // cleanup timeout in package supervisor.
 const sandboxCleanupTimeout = 90 * time.Second
 
-// runDiscardAttempt lets an operator release a local attempt journal
-// immediately, for the case where waiting on supervisor.reconcile's bounded
-// stopped-refusal convergence is not acceptable. The journal is always
-// discarded, but it still attempts the same sandbox reconciliation and
-// stopped acknowledgement recovery would have made, and names the sandbox it
-// could not confirm removed so an operator can check Docker by hand.
+// runDiscardAttempt abandons local recovery of an interrupted attempt after
+// safety checks and operator confirmation. It attempts sandbox reconciliation,
+// a stopped acknowledgement, and workspace removal before clearing the journal,
+// but cleanup failures do not prevent the clear and are reported for manual
+// follow-up.
 func runDiscardAttempt(options RunnerOptions, stdout, stderr io.Writer) int {
 	if setupRuntime.effectiveUID() == 0 {
 		fmt.Fprintln(stderr, "Run commands as the dedicated non-root runner account.")
@@ -96,10 +95,9 @@ func sandboxIdentity(state attemptstate.State) string {
 	return "shipmunk-codex-" + state.AttemptID + "-" + strconv.FormatInt(state.Fence, 10)
 }
 
-// bestEffortSandboxCleanup mirrors supervisor.reconcile's Docker reconciliation
-// so discard does not silently strand a live container; it never blocks the
-// discard on failure, since the operator override exists precisely to avoid
-// waiting on that path.
+// bestEffortSandboxCleanup tries to reconcile either the journaled raw Docker
+// sandbox or the deterministic composite-driver sandbox within
+// sandboxCleanupTimeout. It reports whether cleanup was confirmed.
 func bestEffortSandboxCleanup(options RunnerOptions, state attemptstate.State) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxCleanupTimeout)
 	defer cancel()
@@ -113,24 +111,25 @@ func bestEffortSandboxCleanup(options RunnerOptions, state attemptstate.State) b
 	return codex.CleanupDockerTransport(ctx, codex.TransportConfig{Name: sandboxIdentity(state)}) == nil
 }
 
+// confirmDiscard prompts on stdout and accepts only a case-insensitive "y"
+// read from the configured stdin hook.
 func confirmDiscard(stdout io.Writer) bool {
 	fmt.Fprint(stdout, "This abandons local recovery of that attempt even if the application has not converged. Continue? [y/N] ")
 	answer, _ := bufio.NewReader(setupRuntime.stdin).ReadString('\n')
 	return strings.ToLower(strings.TrimSpace(answer)) == "y"
 }
 
-// acknowledgeStoppedBestEffort tells the application the attempt is
-// discarded when reachable; a discard never blocks on that, since an
-// operator override exists precisely because the ordinary bounded
-// convergence is not acceptable to wait for. Every failure to confirm,
-// including an unreadable token or an invalid client, reports the same line
-// so the operator knows the server-side state was not verified.
+// acknowledgeStoppedBestEffort asks the application to record the stopped
+// attempt and reports when acceptance could not be confirmed.
 func acknowledgeStoppedBestEffort(options RunnerOptions, state attemptstate.State, stdout io.Writer) {
 	if !attemptAcknowledgeStopped(options, state) {
 		fmt.Fprintln(stdout, "The application did not confirm the stopped acknowledgement; the local journal is discarded regardless.")
 	}
 }
 
+// attemptAcknowledgeStopped reports whether the application accepted the
+// stopped acknowledgement before the HTTP timeout. Token, client setup, and
+// request failures all return false.
 func attemptAcknowledgeStopped(options RunnerOptions, state attemptstate.State) bool {
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {

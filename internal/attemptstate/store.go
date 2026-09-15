@@ -299,6 +299,8 @@ func (store *Store) loadLocked() (*State, error) {
 	return &state, nil
 }
 
+// stateFromObject decodes the journal's required field types, leaving semantic
+// validation of their values to validateState.
 func stateFromObject(object map[string]any) (State, error) {
 	var state State
 	var ok bool
@@ -364,6 +366,8 @@ func stateFromObject(object map[string]any) (State, error) {
 	return state, nil
 }
 
+// validateState rejects state that cannot safely identify and recover one
+// fenced attempt.
 func validateState(state State) error {
 	if !stateULIDPattern.MatchString(state.RunID) || !stateULIDPattern.MatchString(state.AttemptID) {
 		return errors.New("attempt state identity is invalid")
@@ -434,6 +438,8 @@ func parseDateAtom(value string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
+// marshalState encodes every journal field and normalizes timestamps to the
+// UTC form of PHP's DATE_ATOM format.
 func marshalState(state State) ([]byte, error) {
 	object := struct {
 		RunID               string  `json:"run_id"`
