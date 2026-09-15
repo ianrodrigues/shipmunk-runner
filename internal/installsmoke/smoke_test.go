@@ -408,9 +408,12 @@ func assertUpstubReceived(t *testing.T, ctx context.Context, container, want str
 	if result.exitCode != 0 {
 		t.Fatalf("read up-stub request log: %s", result.output)
 	}
-	if !strings.Contains(result.output, want) {
-		t.Fatalf("up-stub never received %q; log:\n%s", want, result.output)
+	for _, line := range strings.Split(result.output, "\n") {
+		if line == want {
+			return
+		}
 	}
+	t.Fatalf("up-stub never received exactly %q; log:\n%s", want, result.output)
 }
 
 type execResult struct {
