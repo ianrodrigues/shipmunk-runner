@@ -89,8 +89,6 @@ func launchRefusal(err error) string {
 	}
 }
 
-// dispatchInstalled validates the installed launcher's restricted arguments,
-// binds them to the saved installation, and delegates to the selected command.
 func dispatchInstalled(args []string, root string, configuration install.Configuration, stdout, stderr io.Writer) int {
 	base := []string{"--base-url=" + configuration.Identity.BaseURL, "--profiles-dir=" + filepath.Join(root, "profiles"), "--image=" + configuration.ImageID}
 	if args[0] == "run" {
