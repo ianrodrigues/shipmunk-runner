@@ -22,7 +22,7 @@ The runner persists claim state before artifact preparation and records a create
 
 Docker preflight, lifecycle commands and the independent watchdog share only the host's Docker client configuration (`HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`); provider and control-plane credential variables are excluded. This configuration belongs only to trusted host-side Docker clients and is never injected into repository or native containers, which explicitly clear every upper/lowercase proxy variable so Docker's client-config defaults cannot inject a credential-bearing proxy URL. Keep the selected Docker endpoint and context stable while an attempt or its recovery journal exists.
 
-Run `make runner-check`. The offline check requires a reachable Linux Docker engine and a deliberately preloaded `alpine:3.20` image; it fails with an actionable error instead of pulling or silently skipping when isolation cannot be exercised. It builds the sandbox and lightweight profile fixture images that `make go-check`'s and `make go-runtime-check`'s `internal/sandbox`, `internal/supervisor` and `internal/profile` suites then exercise.
+Run `make runner-check`. The offline check requires a reachable Linux Docker engine and a deliberately preloaded `alpine:3.20` image; it fails with an actionable error instead of pulling or silently skipping when isolation cannot be exercised. It builds the sandbox and lightweight profile fixture images. `make go-runtime-check` sets the Docker test variables. It then exercises these images in the `internal/sandbox`, `internal/supervisor` and `internal/profile` suites. `make go-check` does not set these variables.
 
 ## Native subscription profiles
 
