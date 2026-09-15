@@ -170,8 +170,10 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	state := "initial"
 	items := make(map[string]itemState)
 	var finalMessage string
+	// The pinned CLI reports warnings, notices and retried backend errors as error items or events and still completes the turn, so an error is terminal only when no result follows.
+	var reportedFailure error
 	for _, line := range lines {
-		if line == "" || len(line) > MaxLineBytes || state == "complete" || state == "failed" {
+		if line == "" || len(line) > MaxLineBytes || state == "complete" {
 			return Stream{}, ErrMalformedOutput
 		}
 		value, err := protocol.Decode([]byte(line), MaxLineBytes)
@@ -212,7 +214,9 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			// Codex may report a completed startup error after allocating a
 			// thread but before a turn starts. No other pre-turn item is valid.
 			if state == "thread" && typeName == "item.completed" && kind == "error" {
-				return Stream{}, nativeFailure(item)
+				stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
+				reportedFailure = nativeFailure(item)
+				continue
 			}
 			if state != "turn" {
 				return Stream{}, ErrMalformedOutput
@@ -224,8 +228,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			items[id] = itemState{kind: kind, complete: typeName == "item.completed"}
 			stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
 			if kind == "error" {
-				state = "failed"
-				return Stream{}, nativeFailure(item)
+				reportedFailure = nativeFailure(item)
 			}
 			if kind == "agent_message" && typeName == "item.completed" {
 				message, ok := boundedString(item["text"], MaxLineBytes)
@@ -244,7 +247,8 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			}
 			stream.Usage, state = usage, "complete"
 		case "error":
-			return Stream{}, nativeFailure(event)
+			stream.Events = append(stream.Events, Event{Type: typeName, ItemType: "native"})
+			reportedFailure = nativeFailure(event)
 		case "turn.failed":
 			failure, ok := event["error"].(map[string]any)
 			if !ok {
@@ -257,6 +261,10 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	}
 
 	if state != "complete" || finalMessage == "" {
+		// The last error the stream reported is the one that explains why it stopped.
+		if reportedFailure != nil {
+			return Stream{}, reportedFailure
+		}
 		return Stream{}, ErrMissingResult
 	}
 	result, err := parseResult([]byte(finalMessage))
