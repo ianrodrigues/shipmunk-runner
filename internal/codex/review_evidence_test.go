@@ -126,12 +126,7 @@ func TestValidateReviewResultRejectsNoFindingsWithIncompleteCoverage(t *testing.
 	}
 }
 
-// TestValidateReviewResultRequiresEvidenceOnAChangedFileForIntroducedOrModified
-// covers the deleted-file case citesChangedFile exists for: a finding about
-// the consequences of removing a.go (a changed path) can only cite it on the
-// baseline snapshot, since it has no workspace-snapshot content, and that
-// must still satisfy introduced/modified. Evidence confined to a genuinely
-// unrelated, unchanged file must still fail regardless of which snapshot.
+// A finding about removing a.go can only cite it on the baseline snapshot; a.go has no workspace content.
 func TestValidateReviewResultRequiresEvidenceOnAChangedFileForIntroducedOrModified(t *testing.T) {
 	for _, relation := range []string{"introduced", "modified"} {
 		t.Run(relation+"/baseline citation of a changed file is enough", func(t *testing.T) {
@@ -364,11 +359,7 @@ func manyLongChangedFiles(prefix string) []string {
 	return many
 }
 
-// TestExecutionCommandBoundsArgvWith200LongChangedPaths reproduces the
-// scenario that used to overflow Linux's MAX_ARG_STRLEN silently: 200
-// maximum-length changed-file paths (200 KiB raw) alongside ordinary-sized
-// instructions. The changed-file-list bound alone must keep the assembled
-// argv element well under the guard.
+// 200 maximum-length changed-file paths total 200 KiB raw.
 func TestExecutionCommandBoundsArgvWith200LongChangedPaths(t *testing.T) {
 	claim := protocol.Claim{Manifest: map[string]any{
 		"task_context":     "Review carefully.",
@@ -393,11 +384,7 @@ func TestExecutionCommandBoundsArgvWith200LongChangedPaths(t *testing.T) {
 	}
 }
 
-// TestExecutionCommandFailsClosedInsteadOfExceedingTheArgvLimit combines
-// maximum-length instructions, trusted AGENTS.md and a 200-long-path changed
-// list: even with the list bounded, the total still cannot fit under
-// maxDeveloperInstructionsArgBytes, so executionCommand must fail with a
-// sanitized error instead of building an argv execve would reject with E2BIG.
+// Even with the changed-file list bounded, combined instructions and AGENTS.md still exceed maxDeveloperInstructionsArgBytes here.
 func TestExecutionCommandFailsClosedInsteadOfExceedingTheArgvLimit(t *testing.T) {
 	claim := protocol.Claim{Manifest: map[string]any{
 		"task_context":     "Review carefully.",

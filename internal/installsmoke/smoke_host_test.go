@@ -16,12 +16,8 @@ import (
 // envHostMode, alongside envEnable, selects TestHostNativeInstallsReleaseWithoutPHPOrGo.
 const envHostMode = "SHIPMUNK_INSTALL_SMOKE_HOST"
 
-// TestHostNativeInstallsReleaseWithoutPHPOrGo mirrors
-// TestCleanContainerInstallsReleaseWithoutPHPOrGo natively for darwin, which
-// the Linux container cannot exercise. It cannot start from a clean machine
-// image, so every subprocess under test runs with PATH scrubbed to the
-// fixture's bin plus /usr/bin and /bin; see docs/releases.md for what that
-// does and does not prove.
+// This test cannot start from a clean machine image, so every subprocess
+// runs with PATH scrubbed to the fixture's bin plus /usr/bin and /bin.
 func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	if os.Getenv(envEnable) != "1" || os.Getenv(envHostMode) != "1" {
 		t.Skip("set " + envEnable + "=1 and " + envHostMode + "=1 for the host-native (non-container) install smoke test")
@@ -177,11 +173,8 @@ func copyHostFile(t *testing.T, source, destination string, mode os.FileMode) {
 	}
 }
 
-// freeLoopbackAddr reserves and releases a free loopback port for the
-// up-stub, instead of a fixed one an unrelated process could already hold.
-// The listener is closed before the up-stub binds it, leaving a brief window
-// another process could win; startHostUpstub's caller relies on the up-stub
-// exiting non-zero on a failed bind so that race can't fake readiness.
+// freeLoopbackAddr reserves a free loopback port; the caller relies on the
+// up-stub exiting non-zero on a failed bind, so a rebind race cannot fake readiness.
 func freeLoopbackAddr(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -287,7 +280,6 @@ func assertHostUpstubReceived(t *testing.T, want string) {
 	t.Fatalf("up-stub never received exactly %q; log:\n%s", want, raw)
 }
 
-// runHostScrubbed runs args[0] with PATH set to only path.
 func runHostScrubbed(t *testing.T, dir string, timeout time.Duration, path string, args ...string) execResult {
 	t.Helper()
 	return runHostEnv(t, dir, timeout, []string{"PATH=" + path}, args...)

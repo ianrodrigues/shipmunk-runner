@@ -12,12 +12,8 @@ import (
 	"time"
 )
 
-// This fixture drives the shipped review MCP server and host review mediator
-// against real Linux containers. Review mode registers no repository_command
-// tool at all, so every inspection below goes through review_list,
-// review_search, review_read or review_diff; the direct Docker exec probe is
-// test instrumentation proving the container-level boundaries those tools
-// rely on actually hold, not a capability ever granted to the model.
+// Review mode registers no repository_command tool. The direct Docker exec
+// probe here is test instrumentation, not a model capability.
 func TestDockerReviewToolsInspectOnlyAuthorizedSnapshots(t *testing.T) {
 	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
 		t.Skip("set SHIPMUNK_CODEX_DOCKER_TEST=1 for the credential-free Linux Docker regression")
@@ -56,11 +52,8 @@ func TestDockerReviewToolsInspectOnlyAuthorizedSnapshots(t *testing.T) {
 	}
 	defer sources.close()
 
-	// Synthetic canary credentials, shaped like a real profile's auth cache and
-	// its environment-style export, planted where /profile is bind-mounted into
-	// the native container. The review tool surface has no "profile" snapshot
-	// and no filesystem access outside the two pinned snapshot maps, so it must
-	// never see or echo these values.
+	// Canary credentials sit where /profile is bind-mounted. The review tools
+	// must never return them.
 	profileHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(profileHome, ".codex"), 0700); err != nil {
 		t.Fatal(err)
@@ -106,11 +99,9 @@ func TestDockerReviewToolsInspectOnlyAuthorizedSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The repository container shares this fixture's base image with the
-	// native container, so an empty /profile mount point exists in both by
-	// construction; the security property under test is that it carries no
-	// credential material, i.e. the profile bind mount itself never reaches
-	// this container.
+	// The repository container shares this fixture's base image, so an empty
+	// /profile mount point exists here too. The property under test: this
+	// mount carries no credential material.
 	probe := `set -eu
 for target in /workspace/probe /baseline/probe /workspace/../baseline/probe /proc/self/root/baseline/probe; do
   if (printf corrupted > "$target") 2>/dev/null; then exit 41; fi
@@ -141,11 +132,8 @@ echo probe-ok`
 		{"review_diff", map[string]any{"path": "changed.txt"}},
 		{"review_read", map[string]any{"snapshot": "baseline", "path": "../deleted.txt", "start_line": 1, "line_count": 10}},
 		{"review_read", map[string]any{"snapshot": "workspace", "path": "deleted.txt", "start_line": 1, "line_count": 10}},
-		// A profile-shaped path is absent from baseline (the profile canary was
-		// never loaded into either snapshot map at all), while the SAME path
-		// legitimately exists in workspace with unrelated content planted
-		// there directly (see call 10 below) - proving the isolation is
-		// structural, not merely "that path happens not to exist".
+		// The same path legitimately exists in workspace with unrelated
+		// content (see call 10 below), proving the isolation is structural.
 		{"review_read", map[string]any{"snapshot": "baseline", "path": ".codex/auth.json", "start_line": 1, "line_count": 10}},
 		{"review_search", map[string]any{"snapshot": "workspace", "path": "", "query": canary}},
 		{"review_read", map[string]any{"snapshot": "workspace", "path": ".codex/auth.json", "start_line": 1, "line_count": 10}},
@@ -195,9 +183,8 @@ echo probe-ok`
 	if strings.Contains(outputs[0], "substituted.txt") {
 		t.Fatalf("listing used a path instead of the pinned descriptor: %s", outputs[0])
 	}
-	// snapshot_sha must reach the model in the text content itself, not just
-	// the mediator's own struct: this is what codex-mcp.mjs's reviewBridge
-	// forwards as the actual MCP tool result.
+	// snapshot_sha must reach the model in the text content itself. That
+	// text is the actual MCP tool result codex-mcp.mjs's reviewBridge forwards.
 	if !strings.HasPrefix(outputs[0], "snapshot_sha: "+sampleHeadSHA+"\n") {
 		t.Fatalf("review_list workspace response missing real head snapshot_sha: %s", outputs[0])
 	}
@@ -247,10 +234,8 @@ echo probe-ok`
 		t.Fatalf("canary search unexpected: error=%t output=%s", errored[9], outputs[9])
 	}
 
-	// The same profile-shaped path legitimately exists in workspace (planted
-	// directly in the fixture, not via /profile): it must return that planted
-	// content, never the real profile canary, proving the tool surface has no
-	// channel to /profile regardless of what the path string looks like.
+	// The tool must return the workspace content planted here, never the real
+	// profile canary: the tool surface has no channel to /profile.
 	if errored[10] || strings.TrimSpace(strings.TrimPrefix(outputs[10], "snapshot_sha: "+sampleHeadSHA+"\n")) != "not a credential" {
 		t.Fatalf("profile-shaped path in workspace returned unexpected content: error=%t output=%s", errored[10], outputs[10])
 	}

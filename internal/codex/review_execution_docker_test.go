@@ -16,11 +16,8 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
-// TestDockerReviewExecutionProducesACharterCompliantResult drives the real
-// Executor/transport/mediator/parser/normalizer for a review attempt, with a
-// synthetic native CLI (runner/tests/fixtures/codex-review) standing in for
-// the pinned executable. It builds its own uniquely tagged image and removes
-// it afterward instead of adding a persistent make target.
+// The test builds its own uniquely tagged image and removes it afterward,
+// instead of adding a persistent make target.
 func TestDockerReviewExecutionProducesACharterCompliantResult(t *testing.T) {
 	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
 		t.Skip("set SHIPMUNK_CODEX_DOCKER_TEST=1 for the credential-free Linux Docker regression")
