@@ -84,6 +84,33 @@ func TestParseValidCompleteStream(t *testing.T) {
 	}
 }
 
+// Codex 0.154 adds cache_write_input_tokens to turn usage; the contract has no field for it, so it is validated and dropped.
+func TestParseAcceptsCacheWriteUsageFromCodex0154(t *testing.T) {
+	stream := strings.Replace(
+		validStream(validResult),
+		`{"input_tokens":10,"cached_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":2}`,
+		`{"input_tokens":65430,"cached_input_tokens":44800,"cache_write_input_tokens":0,"output_tokens":2374,"reasoning_output_tokens":809}`,
+		1,
+	)
+
+	parsed, err := Parse([]byte(stream), nil)
+	if err != nil || parsed.Usage == nil || parsed.Usage.InputTokens == nil || *parsed.Usage.InputTokens != 65430 || *parsed.Usage.CachedInputTokens != 44800 || *parsed.Usage.OutputTokens != 2374 {
+		t.Fatalf("usage = %#v, err = %v", parsed.Usage, err)
+	}
+}
+
+func TestParseRejectsUnknownOrInvalidUsageKeys(t *testing.T) {
+	for name, usage := range map[string]string{
+		"unknown key":          `{"input_tokens":10,"output_tokens":4,"future_tokens":1}`,
+		"negative cache write": `{"input_tokens":10,"output_tokens":4,"cache_write_input_tokens":-1}`,
+	} {
+		stream := strings.Replace(validStream(validResult), `{"input_tokens":10,"cached_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":2}`, usage, 1)
+		if _, err := Parse([]byte(stream), nil); !errors.Is(err, ErrMalformedOutput) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+}
+
 func TestParsePreservesUnavailableNativeUsageAsNull(t *testing.T) {
 	stream := strings.Replace(
 		validStream(validResult),

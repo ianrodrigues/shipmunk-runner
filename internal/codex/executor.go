@@ -182,6 +182,13 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 		if errors.Is(parseErr, ErrInvalidResult) {
 			return failureExecution(claim, FailureInvalidResult, result.ExitCode), nil
 		}
+		// A stream the parser cannot read is this attempt's failure too; the runner stays available for the next claim.
+		if errors.Is(parseErr, ErrMalformedOutput) {
+			return failureExecution(claim, FailureMalformedOutput, result.ExitCode), nil
+		}
+		if errors.Is(parseErr, ErrMissingResult) {
+			return failureExecution(claim, FailureMissingResult, result.ExitCode), nil
+		}
 		return supervisor.Execution{}, errors.New("Codex result parsing failed")
 	}
 	if result.ExitCode != 0 {
@@ -213,6 +220,8 @@ func failureExecution(claim protocol.Claim, reason FailureReason, exitCode int) 
 		FailureModelUnavailable:    "Native backend rejected the configured model. Select a supported model for this profile.",
 		FailureInvalidOutputSchema: "Native backend rejected the structured output schema. Update the runner before retrying.",
 		FailureInvalidResult:       "Native backend returned a structured result the result contract rejects.",
+		FailureMalformedOutput:     "Native runtime produced output the runner cannot read. Update the runner before retrying.",
+		FailureMissingResult:       "Native runtime finished without a structured result.",
 	}
 	summary := summaries[reason] + " Stage: execution. Reason: " + string(reason) + ". Native exit code: "
 	if exitCode < 0 || exitCode > 255 {

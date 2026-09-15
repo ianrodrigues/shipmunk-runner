@@ -50,6 +50,9 @@ const (
 	FailureInvalidOutputSchema FailureReason = "invalid_output_schema"
 	// FailureInvalidResult is the executor's own classification of a structured result the contract rejects; no provider code maps to it.
 	FailureInvalidResult FailureReason = "invalid_result"
+	// FailureMalformedOutput and FailureMissingResult classify a stream the parser rejects; no provider code maps to them.
+	FailureMalformedOutput FailureReason = "malformed_output"
+	FailureMissingResult   FailureReason = "missing_result"
 )
 
 // ClassifiedFailure carries only a closed failure reason; raw provider text is deliberately excluded so callers can safely turn it into protocol output.
@@ -376,7 +379,7 @@ func parseUsage(value any) (*Usage, error) {
 	if !ok {
 		return nil, ErrMalformedOutput
 	}
-	allowed := map[string]bool{"input_tokens": true, "cached_input_tokens": true, "output_tokens": true, "reasoning_output_tokens": true}
+	allowed := map[string]bool{"input_tokens": true, "cached_input_tokens": true, "output_tokens": true, "reasoning_output_tokens": true, "cache_write_input_tokens": true}
 	for key := range object {
 		if !allowed[key] {
 			return nil, ErrMalformedOutput
@@ -398,6 +401,12 @@ func parseUsage(value any) (*Usage, error) {
 		}
 	}
 	if raw, exists := object["reasoning_output_tokens"]; exists {
+		if _, ok := nonnegativeInteger(raw); !ok {
+			return nil, ErrMalformedOutput
+		}
+	}
+	// Codex 0.154 reports cache writes; the contract carries no field for them, so the value is validated and dropped.
+	if raw, exists := object["cache_write_input_tokens"]; exists {
 		if _, ok := nonnegativeInteger(raw); !ok {
 			return nil, ErrMalformedOutput
 		}
