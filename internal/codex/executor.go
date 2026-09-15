@@ -327,10 +327,12 @@ func (e *Executor) Renew(claim protocol.Claim, expiry time.Time) error {
 	return watchdog.Renew(expiry)
 }
 
-// executionCommand builds the native argv and stdin for one attempt. review
-// means claim.Manifest["kind"] == "review", tied by executionInputs to exactly
-// two sources, so the offered tool surface can never diverge from the
-// enforced boundary. evidence is non-nil exactly when review is true.
+// executionCommand builds the native argv and stdin for one attempt. Review
+// attempts also receive the charter, snapshot evidence, and instructions to
+// evaluate declared author intent within the changed-file scope. review means
+// claim.Manifest["kind"] == "review", tied by executionInputs to exactly two
+// sources, so the offered tool surface can never diverge from the enforced
+// boundary. evidence is non-nil exactly when review is true.
 func executionCommand(claim protocol.Claim, session *codexsession.Session, trusted string, review bool, evidence *reviewEvidence) ([]string, string, error) {
 	if review != (evidence != nil) {
 		return nil, "", errors.New("Codex review evidence does not match the execution mode")
