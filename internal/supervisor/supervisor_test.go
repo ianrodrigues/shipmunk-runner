@@ -478,7 +478,7 @@ func TestRecoveryReportsInterruptedAttemptThenClearsJournal(t *testing.T) {
 		wantAcknowledged        int
 	}{
 		"live lease": {wantCompletions: 1, wantAcknowledged: 1},
-		// An expired lease can carry no result, and a refused result cannot be retried into acceptance, so neither holds the attempt.
+		// An expired lease can carry no result. A refused result cannot be retried into acceptance either. Neither case holds the attempt.
 		"expired lease":  {expiredLease: true, wantCompletions: 0, wantAcknowledged: 1},
 		"result refused": {completeError: conflict, wantCompletions: 1, wantAcknowledged: 1},
 		// Only the acknowledgement releases the attempt, so its refusal keeps the journal for the next run.

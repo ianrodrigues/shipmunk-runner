@@ -234,9 +234,9 @@ func (s *Supervisor) reportInterrupted(ctx context.Context, claim protocol.Claim
 		if err != nil {
 			return err
 		}
-		// The result is best effort: the control plane refuses it once the attempt
-		// is reconciled or its lease has lapsed, and a retry that could never be
-		// accepted must not hold the journal.
+		// The result is best effort.
+		// The control plane refuses it once the attempt is reconciled or its lease has lapsed.
+		// A refused retry must not hold the journal.
 		_ = s.Client.Complete(ctx, claim, raw)
 	}
 	// Only the acknowledgement releases the attempt, so its refusal keeps the journal for the next run.
