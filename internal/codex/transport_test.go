@@ -3,6 +3,7 @@ package codex
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -481,8 +482,8 @@ func TestDockerTransportCancellationRacesSelectAgainstDone(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := transport.RunNative(ctx, []string{"codex", "exec"}, nil); err == nil {
-		t.Fatal("cancellation was ignored")
+	if _, err := transport.RunNative(ctx, []string{"codex", "exec"}, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunNative() error = %v, want context.Canceled", err)
 	}
 
 	d.mu.Lock()
