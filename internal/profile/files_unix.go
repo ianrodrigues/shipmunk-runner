@@ -422,7 +422,40 @@ func sameNativeSnapshot(entry nativeProfileEntry, info os.FileInfo) bool {
 	return ok && uint64(stat.Dev) == entry.dev && uint64(stat.Ino) == entry.ino && uint32(stat.Mode) == entry.mode && uint32(stat.Uid) == entry.uid && uint64(stat.Nlink) == entry.nlink
 }
 
+// nativeScratchPath names the native runtime's own temporary tree, which the runner owns and never retains.
+var nativeScratchPath = []string{".codex", "tmp"}
+
+// The pinned CLI leaves arg0 helper symlinks here, so the tree is pruned instead of refused; every other entry stays strict.
+func pruneNativeScratch(home string, hooks nativeTreeHooks) error {
+	root, err := os.OpenRoot(home)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	scratch := ""
+	for _, component := range nativeScratchPath {
+		scratch = filepath.Join(scratch, component)
+		info, err := root.Lstat(scratch)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+	}
+	return removeProfileEntries(root, scratch, hooks)
+}
+
 func normalizeNativeProfileTree(home string, hooks nativeTreeHooks) error {
+	if err := pruneNativeScratch(home, hooks); err != nil {
+		return fmt.Errorf("prune native scratch: %w", err)
+	}
 	entries, root, err := inspectNativeProfileTree(home, hooks)
 	if err != nil {
 		return err
