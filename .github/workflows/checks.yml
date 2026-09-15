@@ -90,6 +90,7 @@ jobs:
       - name: Run the clean-container install smoke test
         run: |
           set -eu
+          command -v docker >/dev/null 2>&1 || { echo 'install-smoke: docker is missing; this job must not silently skip the smoke flow.' >&2; exit 1; }
           command -v expect >/dev/null 2>&1 || { echo 'install-smoke: expect is missing; install it on this runner to provide an operator terminal.' >&2; exit 1; }
           chmod +x dist/install-smoke.test dist/upstub/upstub-linux-amd64 dist/upstub/upstub-linux-arm64
           runner_temp=$(mktemp -d "${RUNNER_TEMP}/shipmunk-install-smoke.XXXXXX")
