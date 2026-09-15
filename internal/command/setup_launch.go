@@ -77,7 +77,7 @@ var (
 func launchRefusal(err error) string {
 	switch {
 	case errors.Is(err, install.ErrRecoveryPending):
-		return "An interrupted runner attempt awaits recovery. Run the runner command to recover it."
+		return "An interrupted runner attempt awaits recovery. Run 'run' to recover it, or 'run --discard-attempt' to release it immediately instead of waiting for it to converge."
 	case errors.Is(err, errActivationPending):
 		return "Runner activation is unfinished. Run setup again to complete it."
 	case errors.Is(err, errConfigurationChanged):
