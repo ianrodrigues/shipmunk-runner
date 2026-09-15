@@ -14,12 +14,9 @@ import (
 	"time"
 )
 
-// nativeImageTestImage returns the pinned native/credential image to exercise.
-// It is the same image `shipmunk-profile` runs for login, probe and native
-// execution, built from runner/containers/Dockerfile, and the same image
-// internal/codex's Docker-gated tests default to; this reuses their env vars
-// rather than SHIPMUNK_PROFILE_DOCKER_TEST, which gates the unrelated
-// lightweight fixture image in runtime_docker_integration_test.go.
+// nativeImageTestImage returns the pinned native image.
+// The internal/codex Docker tests use the same image, so this helper reuses their env vars.
+// SHIPMUNK_PROFILE_DOCKER_TEST gates a different, lightweight fixture image.
 func nativeImageTestImage(t *testing.T) string {
 	t.Helper()
 	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
@@ -84,9 +81,8 @@ fi`
 	}
 }
 
-// The baked schema and MCP assets must keep the exact ownership and mode the
-// Dockerfile assigns them, and remain readable to the unprivileged agent
-// account the runtime actually executes as.
+// The baked schema and MCP assets keep the ownership and mode from the Dockerfile.
+// The unprivileged agent account must be able to read them.
 func TestNativeImageBakedAssetsAreReadableByUnprivilegedUser(t *testing.T) {
 	image := nativeImageTestImage(t)
 	modes := mustRunNativeImageCommand(t, []string{
@@ -109,12 +105,9 @@ JSON.parse(fs.readFileSync('/usr/local/lib/shipmunk/codex-result.schema.json', '
 	})
 }
 
-// Dockerfile.dockerignore is the only thing keeping a live-checkout build of
-// the native image (see docs/runtime/RT-02.md) from including a checkout's
-// own environment and setup secrets. A trivial probe Dockerfile re-exports
-// Docker's actual filtered build context via `--output type=local`, proving
-// what the real ignore file admits without building the full multi-hundred
-// megabyte runtime image just to inspect its context.
+// Dockerfile.dockerignore alone keeps checkout secrets out of the native image.
+// The probe exports the filtered build context with --output type=local, so the test does not build the full image.
+// See docs/runtime/RT-02.md.
 func TestNativeImageDockerfileContextExcludesCheckoutSecrets(t *testing.T) {
 	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
 		t.Skip("set SHIPMUNK_CODEX_DOCKER_TEST=1 to run the native image content regression")
