@@ -285,7 +285,7 @@ func TestDiscardAttemptLeavesUnreadableJournalUntouched(t *testing.T) {
 
 	original := setupRuntime
 	t.Cleanup(func() { setupRuntime = original })
-	setupRuntime.effectiveUID = os.Geteuid
+	setupRuntime.effectiveUID = func() int { return 1000 }
 
 	options := discardAttemptOptions(t, root, "https://runner.example")
 	options.Confirmed = true
