@@ -721,9 +721,6 @@ func TestExecutionJournalUsesPHPIdentityAndRequiresLock(t *testing.T) {
 	}
 }
 
-// An unsafe entry left in the home by a stopped native process must keep the
-// execution reservation durably quarantined even though the process itself
-// exited cleanly; only removing the unsafe entry lets release proceed.
 func TestReleaseExecutionRetainsReservationWhenHomeIsUnsafe(t *testing.T) {
 	store, root := openTestStore(t)
 	home := createTestHome(t, store)
