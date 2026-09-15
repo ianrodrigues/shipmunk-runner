@@ -1,7 +1,0 @@
-{
-    "runtime": "codex-cli",
-    "version": "0.154.0",
-    "origin": "synthetic",
-    "source": "https://developers.openai.com/codex/noninteractive/",
-    "description": "Hand-authored sanitized JSONL examples exercising the documented exec transport. These are not captured account executions and do not establish live subscription compatibility. Errors use synthetic allowlisted codes; unknown native error wording remains process_error."
-}

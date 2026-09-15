@@ -17,7 +17,7 @@ docker run --rm -i --network none --read-only \
   > runner/tests/fixtures/source-archive/git-archives.json
 ```
 
-Run `php runner/tests/SourceArchiveTest.php`. The fixture proves compatibility with real Git archive headers without calling GitHub. Separate negative cases construct valid tar checksums around hostile PAX records to verify traversal, unsupported metadata, duplicates, malformed lengths, and extraction limits. Source normalization checks use the recorded manifest revision; an arbitrary single-directory archive is preserved.
+Run `go test ./internal/workspace -run 'TestPrepareGitSourceArchivesAndTrustedInstructions|TestExtractGitArchiveVariants'`. The fixture proves compatibility with real Git archive headers without calling GitHub. Separate negative cases construct valid tar checksums around hostile PAX records to verify traversal, unsupported metadata, duplicates, malformed lengths, and extraction limits. Source normalization checks use the recorded manifest revision; an arbitrary single-directory archive is preserved.
 
 The extractor intentionally supports global `comment` and per-entry `path` PAX keys only. Sparse-file metadata, links, size overrides, and other extensions remain rejected. File permissions retain owner read/write and the original owner execute bit, with group, other, set-ID, and sticky bits removed.
 

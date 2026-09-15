@@ -1,5 +1,0 @@
-{"type":"thread.started","thread_id":"synthetic-preflight-thread"}
-{"type":"turn.started"}
-{"type":"item.started","item":{"id":"unfinished-item","type":"reasoning","text":"SYNTHETIC_PRIVATE_NATIVE_OUTPUT"}}
-{"type":"item.completed","item":{"id":"auth-message","type":"agent_message","text":"SHIPMUNK_AUTH_OK"}}
-{"type":"turn.completed"}
