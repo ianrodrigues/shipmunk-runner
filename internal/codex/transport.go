@@ -432,6 +432,7 @@ func ensureScratchDirectory(root *os.Root, relative string, replace bool) error 
 		if err := root.Remove(relative); err != nil {
 			return errors.New("cannot replace the native scratch mount point")
 		}
+	// An existing directory is trusted here because Store.ValidateHome already pruned and recreated it before this call.
 	default:
 		return nil
 	}
