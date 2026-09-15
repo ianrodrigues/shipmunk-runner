@@ -33,6 +33,9 @@ func RunRunner(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if parsed.options.DiscardAttempt {
+		return runDiscardAttempt(parsed.options, stdout, stderr)
+	}
 	if parsed.options.Driver == "codex" {
 		return runCodexRunner(parsed.options, stdout, stderr)
 	}
@@ -106,6 +109,8 @@ func writeUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "  --driver NAME           fixture or codex (default fixture)")
 		fmt.Fprintln(output, "  --profiles-dir DIR      Protected profile directory")
 		fmt.Fprintln(output, "  --repository-image IMG  Repository command image (default --image)")
+		fmt.Fprintln(output, "  --discard-attempt       Discard the local attempt journal instead of running")
+		fmt.Fprintln(output, "  --yes                   Skip the --discard-attempt confirmation prompt")
 		fmt.Fprintln(output, "  --version               Print version")
 	case "shipmunk-profile":
 		fmt.Fprintln(output, "Usage: shipmunk-profile --base-url URL --token-file FILE --profiles-dir DIR --image IMAGE --profile ULID --operation NAME --operation-id ULID")
