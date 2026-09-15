@@ -19,8 +19,8 @@ import (
 // ErrProtocolIncompatible identifies an HTTP 426 response through errors.Is.
 var ErrProtocolIncompatible = errors.New("runner protocol major is incompatible")
 
-// ControlPlaneError preserves the status needed for fenced recovery decisions.
-// Its message never includes an untrusted response body.
+// ControlPlaneError preserves the status for fenced recovery and never includes
+// the untrusted response body.
 type ControlPlaneError struct {
 	StatusCode int
 }
@@ -41,8 +41,8 @@ func (err *ControlPlaneError) Unwrap() error {
 	return nil
 }
 
-// HTTPClient performs bounded, authenticated protocol requests without retries.
-// Callers own durable recovery when a mutation's acknowledgement is uncertain.
+// HTTPClient performs bounded, authenticated protocol requests without retries;
+// callers own recovery from an uncertain acknowledgement.
 type HTTPClient struct {
 	baseURL *url.URL
 	token   string
@@ -74,9 +74,8 @@ func NewHTTPClient(baseURL, token string, transport http.RoundTripper) (*HTTPCli
 	}}, nil
 }
 
-// Claim requests work, returning (nil, nil) when the queue is idle.
-// A successful claim is fully validated and receives a local lease based on now;
-// the caller must persist it before preparing or executing the attempt.
+// Claim requests work and returns (nil, nil) when the queue is idle; the
+// caller must persist the lease before use.
 func (client *HTTPClient) Claim(ctx context.Context, now time.Time) (*Claim, error) {
 	response, err := client.json(ctx, http.MethodPost, "/runner/v1/claims", map[string]any{"protocol_version": Version}, ManifestMaxBytes)
 	if err != nil {
@@ -96,8 +95,8 @@ func (client *HTTPClient) Claim(ctx context.Context, now time.Time) (*Claim, err
 	return &claim, nil
 }
 
-// Heartbeat renews the fenced attempt and returns its lease expiry and stop flag.
-// The caller must still enforce the overall deadline and act on a stop request.
+// Heartbeat renews the fenced attempt and returns the lease expiry and stop
+// flag; the caller must still enforce the deadline.
 func (client *HTTPClient) Heartbeat(ctx context.Context, claim Claim) (time.Time, bool, error) {
 	if err := validateFence(claim); err != nil {
 		return time.Time{}, false, err
@@ -138,8 +137,8 @@ func (client *HTTPClient) Heartbeat(ctx context.Context, claim Claim) (time.Time
 	return lease, stop, nil
 }
 
-// AcknowledgeStopped reports confirmed cleanup under the active fence.
-// Callers must not invoke it while containers or workspaces remain unconfirmed.
+// AcknowledgeStopped reports confirmed cleanup under the active fence; callers
+// must wait until containers and workspaces are confirmed.
 func (client *HTTPClient) AcknowledgeStopped(ctx context.Context, claim Claim) error {
 	if err := validateFence(claim); err != nil {
 		return err
@@ -153,8 +152,8 @@ func (client *HTTPClient) AcknowledgeStopped(ctx context.Context, claim Claim) e
 	return expect(response, http.StatusOK, http.StatusNoContent)
 }
 
-// SendEvents validates a raw event batch, each event's byte bound and its attempt
-// fence before sending any bytes. It does not assign or retry event sequences.
+// SendEvents validates the batch, each event's byte bound, and the attempt
+// fence before sending; it never assigns or retries sequences.
 func (client *HTTPClient) SendEvents(ctx context.Context, claim Claim, raw []byte) error {
 	if err := validateFence(claim); err != nil {
 		return err
@@ -216,8 +215,8 @@ func (client *HTTPClient) UploadArtifact(ctx context.Context, claim Claim, kind 
 	return id, nil
 }
 
-// Complete validates and submits a result whose identity matches the claim.
-// Accepted completion does not replace cleanup or the stopped acknowledgement.
+// Complete validates and submits a result matching the claim; accepted
+// completion does not replace cleanup or the stopped acknowledgement.
 func (client *HTTPClient) Complete(ctx context.Context, claim Claim, raw []byte) error {
 	if err := validateFence(claim); err != nil {
 		return err
@@ -243,8 +242,8 @@ func (client *HTTPClient) Complete(ctx context.Context, claim Claim, raw []byte)
 	return expect(response, http.StatusOK, http.StatusNoContent)
 }
 
-// DownloadArtifact returns an attempt-scoped input only after checking its byte
-// bound, declared length and both header/body hashes against the expected hash.
+// DownloadArtifact returns attempt-scoped input only after checking its byte
+// bound, declared length, and both hashes.
 func (client *HTTPClient) DownloadArtifact(ctx context.Context, claim Claim, artifactID, expectedSHA256 string) ([]byte, error) {
 	if err := validateFence(claim); err != nil {
 		return nil, err

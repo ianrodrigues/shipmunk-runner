@@ -48,7 +48,8 @@ func resolveRef(root map[string]any, ref string) (any, error) {
 	return target, nil
 }
 
-// Validate checks a raw protocol document against the runner's embedded contract schema, which is pinned with the binary and never fetched at runtime.
+// Validate checks a document against the runner's embedded contract schema,
+// pinned at build time and never fetched at runtime.
 func Validate(contract string, raw []byte) error {
 	schema, err := schemaBytes(contract)
 	if err != nil {
@@ -58,8 +59,8 @@ func Validate(contract string, raw []byte) error {
 	return err
 }
 
-// ValidateFixture loads a pinned schema from a fixture directory and checks one
-// document. Runtime callers should use Validate so schemas stay embedded.
+// ValidateFixture loads a pinned schema from a fixture directory for one
+// document; runtime callers should use Validate to keep schemas embedded.
 func ValidateFixture(contract, schemaDirectory string, raw []byte) error {
 	schema, err := os.ReadFile(filepath.Join(schemaDirectory, contract+".schema.json"))
 	if err != nil {
@@ -103,7 +104,7 @@ func decodeValidated(contract string, schemaRaw, raw []byte) (any, error) {
 	return document, nil
 }
 
-// assertEvidenceRanges rejects line_end below line_start: JSON Schema can't
+// assertEvidenceRanges rejects line_end below line_start. JSON Schema cannot
 // compare sibling properties, so this mirrors the server's ProtocolValidator.
 func assertEvidenceRanges(document any) error {
 	root, ok := document.(map[string]any)

@@ -1,8 +1,5 @@
-// Package protocol implements the versioned runner control-plane boundary.
-//
-// Package protocol intentionally uses json.Number and a duplicate-key-aware
-// decoder. The control plane treats numeric identifiers as integers.
-// Decoding through float64 would silently change valid identities above 2^53.
+// Package protocol decodes with json.Number and duplicate-key detection so a
+// large identifier is never silently corrupted through float64.
 package protocol
 
 import (
@@ -26,8 +23,8 @@ const (
 	MaxJSONDepth          = 64
 )
 
-// Decode strictly decodes one JSON value. It rejects invalid UTF-8, duplicate
-// object keys at every depth, and any non-whitespace bytes after that value.
+// Decode strictly decodes one JSON value, rejecting invalid UTF-8, duplicate
+// keys at any depth, and trailing non-whitespace bytes.
 func Decode(raw []byte, maxBytes int) (any, error) {
 	if maxBytes < 0 || len(raw) > maxBytes {
 		return nil, fmt.Errorf("protocol document exceeded its byte limit")

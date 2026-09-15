@@ -265,7 +265,7 @@ func assertHostAbsent(t *testing.T, path string) {
 }
 
 // assertHostUpstubReceived confirms the request reached the up-stub over the
-// network rather than failing at an earlier local step.
+// network, not an earlier local failure.
 func assertHostUpstubReceived(t *testing.T, want string) {
 	t.Helper()
 	raw, err := os.ReadFile(upstubRequestLog)

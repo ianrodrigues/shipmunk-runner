@@ -11,9 +11,8 @@ import (
 const ProfileControlPlaneMaxBytes = 32 * 1024
 
 // ProfileRequest sends one profile-scoped lifecycle request using the same
-// endpoint, headers, timeout, and response checks as the PHP control plane.
-// suffix is one of operations, operations/{operation-id}/heartbeat, or
-// operations/{operation-id}/completion.
+// endpoint, headers, timeout, and checks as the PHP control plane; suffix is
+// "operations", "operations/{id}/heartbeat", or "operations/{id}/completion".
 func (client *HTTPClient) ProfileRequest(
 	ctx context.Context,
 	profileID string,
