@@ -52,7 +52,7 @@ async function run() {
     for await (const chunk of process.stdin) context += chunk;
     assert.ok(context === 'SCENARIO:success' || context === 'SCENARIO:cancel');
 
-    const bridge = spawn('/usr/local/bin/node', ['/usr/local/lib/shipmunk/codex-mcp.mjs'], {
+    const bridge = spawn('/usr/local/bin/node', ['/usr/local/lib/shipmunk/codex-mcp.mjs', 'repository'], {
         stdio: ['pipe', 'pipe', 'ignore'],
     });
     const responses = new Map();

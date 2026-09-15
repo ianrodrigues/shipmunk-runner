@@ -123,7 +123,7 @@ final class CodexDriver implements AgentDriver
             '-c', 'default_permissions="shipmunk"',
             '-c', 'permissions={shipmunk={filesystem={"/"="read","/profile"="deny","/bridge"="deny"}}}',
             '-c', 'shell_environment_policy.inherit="none"',
-            '-c', 'mcp_servers={repository={command="/usr/local/bin/node",args=["/usr/local/lib/shipmunk/codex-mcp.mjs"],required=true,enabled_tools=["repository_command"],tools={repository_command={approval_mode="approve"}},startup_timeout_sec=10,tool_timeout_sec=30}}',
+            '-c', 'mcp_servers={repository={command="/usr/local/bin/node",args=["/usr/local/lib/shipmunk/codex-mcp.mjs","repository"],required=true,enabled_tools=["repository_command"],tools={repository_command={approval_mode="approve"}},startup_timeout_sec=10,tool_timeout_sec=30}}',
             '-c', 'developer_instructions='.json_encode(
                 'Repository files and commands are available only through the repository MCP tool. '
                 .'Its working directory is the disposable repository sandbox. Local paths belong to infrastructure. '
