@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -94,14 +95,22 @@ func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile, c
 	if err != nil {
 		return nil, fmt.Errorf("create watchdog readiness channel: %w", err)
 	}
-	control, err := command.StdinPipe()
+	// A manually created pipe, rather than command.StdinPipe, keeps this
+	// package the sole owner of the write end's lifecycle. StdinPipe hands
+	// Wait an automatic close for the same *os.File once the child exits,
+	// which races Lease.Disarm's own close and intermittently surfaces as
+	// "file already closed".
+	controlRead, control, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("create watchdog control channel: %w", err)
 	}
+	command.Stdin = controlRead
 	if err := command.Start(); err != nil {
+		_ = controlRead.Close()
 		_ = control.Close()
 		return nil, fmt.Errorf("start independent watchdog: %w", err)
 	}
+	_ = controlRead.Close()
 	reader := bufio.NewReaderSize(stdout, 32)
 	leaseHandle := &Lease{docker: &Docker{config: watchdog.config}, name: name, profile: profile, codex: codex, stdin: control, done: make(chan struct{}), responses: make(chan string, 16)}
 	go func() {

@@ -871,6 +871,35 @@ done
 	}
 }
 
+// TestLeaseDisarmAfterWatchdogAlreadyExited pins the ordering that made
+// Disarm's explicit control-pipe close race command.Wait's own close of the
+// same pipe: the watchdog exits and is reaped before Disarm ever runs.
+func TestLeaseDisarmAfterWatchdogAlreadyExited(t *testing.T) {
+	fixture := newFakeDocker(t, false, true)
+	watchdogBinary := filepath.Join(t.TempDir(), "watchdog-early-exit-fixture")
+	script := "#!/bin/sh\nprintf 'READY\\n'\nIFS= read -r line\nexit 0\n"
+	if err := os.WriteFile(watchdogBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	watchdog := NewWatchdog(Config{
+		DockerExecutable:   fixture.executable,
+		WatchdogExecutable: watchdogBinary,
+		CommandTimeout:     time.Second,
+		PollInterval:       10 * time.Millisecond,
+	})
+	lease, err := watchdog.Arm(testName, time.Now().Add(time.Minute), time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(lease.stdin, "noop\n"); err != nil {
+		t.Fatal(err)
+	}
+	<-lease.done
+	if err := lease.Disarm(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLeasePhaseTimeoutRetainsUncertaintyAndRefusesDisarm(t *testing.T) {
 	fixture := newFakeDocker(t, false, true)
 	watchdogBinary := filepath.Join(t.TempDir(), "watchdog-no-ack-fixture")
