@@ -467,6 +467,50 @@ func TestDockerTransportCancellationCleansEverySibling(t *testing.T) {
 	}
 }
 
+// select can pick either ready case in RunNative.
+// This test forces both cases ready at once.
+// Repeated runs then hit each branch.
+func TestDockerTransportCancellationRacesSelectAgainstDone(t *testing.T) {
+	d := &recordedDocker{blockNative: true, owned: true}
+	transport := transportFixture(t, d)
+	transport.started = true
+
+	previousHook := runNativeRaceHook
+	runNativeRaceHook = func(done <-chan struct{}) { <-done }
+	t.Cleanup(func() { runNativeRaceHook = previousHook })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := transport.RunNative(ctx, []string{"codex", "exec"}, nil); err == nil {
+		t.Fatal("cancellation was ignored")
+	}
+
+	d.mu.Lock()
+	// This inspect shape runs on every cleanup call, even when already removed.
+	// A different inspect shape runs only once.
+	// Counting it would hide a repeat.
+	stops := 0
+	for _, call := range d.calls {
+		if len(call) == 4 && call[0] == "inspect" && call[1] == "--format" && call[3] == testTransportName {
+			stops++
+		}
+	}
+	removed := make(map[string]bool, len(d.removed))
+	for name, gone := range d.removed {
+		removed[name] = gone
+	}
+	d.mu.Unlock()
+
+	if stops != 1 {
+		t.Fatalf("Stop ran %d times, want exactly 1", stops)
+	}
+	for _, name := range []string{testTransportName, testTransportName + "-repo", testTransportName + "-diff", testTransportName + "-workspace"} {
+		if !removed[name] {
+			t.Fatalf("cleanup omitted %s", name)
+		}
+	}
+}
+
 func TestExtractSnapshotRejectsLinksAndTraversal(t *testing.T) {
 	for _, fixture := range [][]byte{tarFixture(t, "../escape", 0), tarFixture(t, "link", 2)} {
 		if err := extractSnapshot(strings.NewReader(string(fixture)), t.TempDir()); err == nil {

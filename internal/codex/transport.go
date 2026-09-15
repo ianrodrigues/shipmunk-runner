@@ -435,6 +435,10 @@ func (t *DockerTransport) attestProfileMount(ctx context.Context) error {
 	return nil
 }
 
+// The hook is nil in production.
+// A test can use it to force the select race without a sleep.
+var runNativeRaceHook func(done <-chan struct{})
+
 // RunNative executes the pinned native command while servicing fenced bridge requests.
 func (t *DockerTransport) RunNative(ctx context.Context, argv []string, stdin []byte) (CommandResult, error) {
 	t.mu.Lock()
@@ -461,6 +465,11 @@ func (t *DockerTransport) RunNative(ctx context.Context, argv []string, stdin []
 		result, runErr = t.docker.Run(runCtx, 30*time.Minute, MaxOutputBytes, bytes.NewReader(stdin), arguments...)
 		close(done)
 	}()
+	// Tests use this hook to wait for done before select runs.
+	// This wait forces the same race window a slow native exec can hit.
+	if runNativeRaceHook != nil {
+		runNativeRaceHook(done)
+	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -471,12 +480,13 @@ func (t *DockerTransport) RunNative(ctx context.Context, argv []string, stdin []
 			_ = t.Stop(context.Background())
 			return CommandResult{}, ctx.Err()
 		case <-done:
-			// select can pick this case even when the caller already canceled ctx.
-			// Checking ctx.Err here makes cleanup run on every cancellation.
+			// select can choose the done case when the context is already canceled.
+			// So the done case also checks ctx.Err and calls Stop.
 			if ctx.Err() != nil {
 				_ = t.Stop(context.Background())
 				return CommandResult{}, ctx.Err()
 			}
+			// The caller owns cleanup after a native failure here.
 			if runErr != nil {
 				return CommandResult{}, errors.New("native execution failed")
 			}
