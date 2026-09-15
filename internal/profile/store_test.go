@@ -721,6 +721,52 @@ func TestExecutionJournalUsesPHPIdentityAndRequiresLock(t *testing.T) {
 	}
 }
 
+// An unsafe entry left in the home by a stopped native process must keep the
+// execution reservation durably quarantined even though the process itself
+// exited cleanly; only removing the unsafe entry lets release proceed.
+func TestReleaseExecutionRetainsReservationWhenHomeIsUnsafe(t *testing.T) {
+	store, root := openTestStore(t)
+	home := createTestHome(t, store)
+	claim := protocol.Claim{
+		RunID: "01k4w000000000000000000005", AttemptID: "01k4w000000000000000000006", Fence: 1,
+		LeaseExpiresAt: time.Now().Add(45 * time.Second), Deadline: time.Now().Add(15 * time.Minute),
+		Manifest: map[string]any{"profile_id": testProfileID},
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unsafe := filepath.Join(home, "unsafe")
+	if err := os.Symlink(outside, unsafe); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithExclusive(func(locked *Store) error {
+		if err := locked.ReserveExecution(claim); err != nil {
+			return err
+		}
+		if err := locked.ReleaseExecution(claim); err == nil {
+			return errors.New("release accepted an unsafe native home")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := store.Read("execution"); err != nil || value == nil {
+		t.Fatalf("reservation was released despite the unsafe home: %v %v", value, err)
+	}
+	if err := os.Remove(unsafe); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithExclusive(func(locked *Store) error {
+		return locked.ReleaseExecution(claim)
+	}); err != nil {
+		t.Fatalf("release did not recover once the unsafe entry was removed: %v", err)
+	}
+	if value, err := store.Read("execution"); err != nil || value != nil {
+		t.Fatalf("reservation remained after a clean release: %v %v", value, err)
+	}
+}
+
 func fileMode(t *testing.T, path string) os.FileMode {
 	t.Helper()
 	info, err := os.Lstat(path)
