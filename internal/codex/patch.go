@@ -47,8 +47,7 @@ type fileState struct {
 	data       []byte
 }
 
-// CollectSnapshots generates and verifies a canonical patch from two protected
-// filesystem snapshots.
+// CollectSnapshots generates and verifies a canonical patch from two protected filesystem snapshots.
 func CollectSnapshots(beforeRoot, afterRoot string) (*Patch, error) {
 	return collectSnapshots(beforeRoot, afterRoot, nil)
 }
@@ -75,8 +74,7 @@ func collectSnapshots(beforeRoot, afterRoot string, beforeHandle *os.File) (*Pat
 	return collectSnapshotPatch(before, after, generated, true)
 }
 
-// CollectPatch verifies independently collected patch bytes against protected snapshot trees,
-// since repository Git state itself is never trusted here.
+// CollectPatch verifies independently collected patch bytes against protected snapshot trees.
 func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 	if len(patch) > MaxPatchBytes {
 		return nil, errors.New("repository patch exceeds its byte limit")

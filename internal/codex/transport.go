@@ -27,8 +27,7 @@ import (
 
 const transportCommandLimit = 4 << 20
 
-// ErrTransportCleanupUnconfirmed means startup crossed a Docker side-effect
-// boundary and the transport could not prove every deterministic resource absent.
+// ErrTransportCleanupUnconfirmed means startup could not prove every deterministic Docker resource absent.
 var ErrTransportCleanupUnconfirmed = errors.New("Codex transport cleanup is unconfirmed")
 
 var transportNamePattern = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
@@ -52,8 +51,7 @@ type dockerCommand interface {
 	Run(context.Context, time.Duration, int, io.Reader, ...string) (transportResult, error)
 }
 
-// DockerTransport keeps provider credentials out of the network-disabled
-// repository and collector containers.
+// DockerTransport keeps provider credentials out of the network-disabled repository and collector containers.
 type DockerTransport struct {
 	cfg             TransportConfig
 	docker          dockerCommand
@@ -75,8 +73,7 @@ func NewDockerTransport(cfg TransportConfig) (*DockerTransport, error) {
 	return newDockerTransport(cfg, execDockerCommand{executable: cfg.DockerExecutable})
 }
 
-// CleanupDockerTransport reconciles deterministic resources after a restart,
-// without reopening source or profile paths.
+// CleanupDockerTransport reconciles deterministic resources after a restart, without reopening source or profile paths.
 func CleanupDockerTransport(ctx context.Context, cfg TransportConfig) error {
 	if !transportNamePattern.MatchString(cfg.Name) {
 		return errors.New("Codex transport name is invalid")
@@ -662,8 +659,7 @@ func (t *DockerTransport) repoExec(argv ...string) []string {
 	return append([]string{"exec", "-i", t.cfg.Name + "-repo", "/usr/bin/env", "-i", "HOME=/workspace", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}, argv...)
 }
 
-// CollectPatch freezes repository writers and snapshots through a separate,
-// network-disabled, read-only collector mount before trusted host verification.
+// CollectPatch snapshots through a separate, network-disabled, read-only collector mount.
 func (t *DockerTransport) CollectPatch(ctx context.Context) (_ *Patch, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

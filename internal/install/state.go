@@ -606,8 +606,7 @@ func (err *ReleaseOrderError) Error() string {
 	return fmt.Sprintf("runner release %s is older than the installed release %s", err.Incoming, err.Installed)
 }
 
-// ReleaseArchiveMismatchError reports a same-version renewal whose archive
-// digest differs from the installed release's.
+// ReleaseArchiveMismatchError reports a same-version renewal whose archive digest differs from the installed release's.
 type ReleaseArchiveMismatchError struct {
 	Version string
 }

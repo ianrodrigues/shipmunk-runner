@@ -25,8 +25,7 @@ type ControlPlane interface {
 	ProfileRequest(context.Context, string, string, map[string]any) (map[string]any, error)
 }
 
-// WatchdogLease remains alive independently of the lifecycle process and owns
-// cleanup when its control channel closes or its renewed lease expires.
+// WatchdogLease owns cleanup when its control channel closes or its renewed lease expires.
 type WatchdogLease interface {
 	CreatePhase
 	Renew(time.Time) error
@@ -49,8 +48,7 @@ func (watchdog SandboxWatchdog) Arm(name string, lease, deadline time.Time) (Wat
 	return watchdog.Watchdog.ArmProfile(name, lease, deadline)
 }
 
-// Lifecycle runs serialized profile operations and recovers their durable
-// pending journal before starting any new operation.
+// Lifecycle runs serialized profile operations and recovers their durable pending journal.
 type Lifecycle struct {
 	ControlPlane ControlPlane
 	Runtime      Runtime
@@ -73,8 +71,7 @@ func NewLifecycle(controlPlane ControlPlane, runtime Runtime, watchdog Watchdog)
 	}
 }
 
-// Operate performs login, probe, or disconnect under the profile's OS lock.
-// It reduces native and transport detail to a single health reason before returning it.
+// Operate performs login, probe, or disconnect under the profile's OS lock, and reduces detail to one health reason.
 func (lifecycle *Lifecycle) Operate(ctx context.Context, store *Store, profileID, operation, operationID string) (Health, error) {
 	if store == nil {
 		return Health{}, errors.New("profile lifecycle dependencies are incomplete")

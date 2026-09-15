@@ -23,8 +23,7 @@ const (
 	MaxJSONDepth          = 64
 )
 
-// Decode strictly decodes one JSON value, rejecting invalid UTF-8, duplicate
-// keys at any depth, and trailing non-whitespace bytes.
+// Decode strictly decodes one JSON value, rejecting invalid UTF-8, duplicate keys, and trailing bytes.
 func Decode(raw []byte, maxBytes int) (any, error) {
 	if maxBytes < 0 || len(raw) > maxBytes {
 		return nil, fmt.Errorf("protocol document exceeded its byte limit")

@@ -63,8 +63,7 @@ type Event struct {
 	ItemType string
 }
 
-// EvidenceRef.Snapshot is the real 40-character SHA of one attempt snapshot,
-// never the "baseline"/"workspace" label review_* tools use.
+// EvidenceRef.Snapshot is the real 40-character SHA of one attempt snapshot, never a "baseline"/"workspace" label.
 type EvidenceRef struct {
 	Snapshot  string
 	Path      string
@@ -115,8 +114,7 @@ type Test struct {
 	Summary string
 }
 
-// Result mirrors contracts/v1/result.schema.json minus the envelope fields normalizeExecution adds;
-// CharterVersion, Coverage, VerificationState and Questions populate only as Outcome's allOf conditionals permit.
+// Result mirrors contracts/v1/result.schema.json minus the envelope fields normalizeExecution adds.
 type Result struct {
 	Summary           string
 	Outcome           string

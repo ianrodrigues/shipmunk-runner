@@ -31,8 +31,7 @@ const (
 	profileReservationLabel = "shipmunk.profile-create-reservation"
 )
 
-// ErrCreateUncertain means the runtime cannot confirm whether Docker committed a create request.
-// Callers must retain their create-attempt phase until reconciliation resolves it.
+// ErrCreateUncertain means the runtime cannot confirm whether Docker committed the create request.
 var ErrCreateUncertain = errors.New("profile sandbox create outcome is uncertain")
 
 var (
@@ -44,8 +43,7 @@ var (
 // Checkpoint renews the operation lease or reports revocation, and runtime methods call it before and during Docker work.
 type Checkpoint func() error
 
-// CreatePhase reports the uncertain window around Docker container creation
-// to the independent watchdog.
+// CreatePhase reports the uncertain window around Docker container creation to the independent watchdog.
 type CreatePhase interface {
 	CreateStarted() error
 	CreateFinished(string) error
@@ -97,8 +95,7 @@ type runtimeConfig struct {
 	checkpointInterval time.Duration
 }
 
-// NewDockerRuntime creates a native runtime that resolves the configured image
-// tag to a content-addressed local image before creating each container.
+// NewDockerRuntime resolves the configured image tag to a content-addressed local image before each container.
 func NewDockerRuntime(image string) (Runtime, error) {
 	return newDockerRuntime(runtimeConfig{
 		image:              image,

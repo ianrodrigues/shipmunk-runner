@@ -32,14 +32,12 @@ func (process *Process) ID() string {
 	return process.name
 }
 
-// ContainerID returns Docker's immutable full container ID.
-// Persist it after Create succeeds, so Reconcile can confirm an absent ID despite name reuse.
+// ContainerID returns Docker's immutable container ID; persist it after Create so Reconcile can confirm an absent ID.
 func (process *Process) ContainerID() string {
 	return process.id
 }
 
-// Start starts the container, copies the workspace and agent input, then marks
-// the execution inputs ready for the pinned sandbox entrypoint.
+// Start starts the container and marks the execution inputs ready for the pinned sandbox entrypoint.
 func (process *Process) Start(ctx context.Context) error {
 	if _, err := process.inspectOwned(ctx); err != nil {
 		return fmt.Errorf("verify sandbox before start: %w", err)
@@ -65,8 +63,7 @@ func (process *Process) Start(ctx context.Context) error {
 	return nil
 }
 
-// Wait waits for the container command to finish and returns its exit code and output.
-// The caller must still stop and remove the sandbox before disarming the watchdog.
+// Wait waits for the container command to finish; the caller must stop and remove the sandbox before disarming the watchdog.
 func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	if _, err := process.inspectOwned(ctx); err != nil {
 		return 0, nil, fmt.Errorf("verify sandbox before wait: %w", err)
@@ -98,8 +95,7 @@ func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	return exitCode, output, nil
 }
 
-// Stop sends TERM through Docker's stop operation, escalates to KILL if needed,
-// and verifies that the sandbox is no longer running.
+// Stop sends TERM, escalates to KILL if needed, and verifies the sandbox is no longer running.
 func (process *Process) Stop(ctx context.Context) error {
 	inspection, err := process.inspectOwned(ctx)
 	if errors.Is(err, errContainerAbsent) {

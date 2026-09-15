@@ -37,7 +37,6 @@ var (
 )
 
 // Config controls the Docker sandbox and independent watchdog executable.
-// Child processes receive only ClientEnvironment's allowlist, not the full environment.
 type Config struct {
 	Image              string
 	DockerExecutable   string
@@ -101,7 +100,6 @@ func New(config Config) (*Docker, error) {
 }
 
 // Name returns the stable Docker name the coordinator must journal before calling Create.
-// It matches the historical attempt/fence naming scheme for on-disk compatibility.
 func (docker *Docker) Name(claim protocol.Claim) (string, error) {
 	if !ulidPattern.MatchString(claim.RunID) || !ulidPattern.MatchString(claim.AttemptID) || claim.Fence < 1 || claim.Fence > protocol.MaxSafeInteger {
 		return "", errors.New("claim identity is invalid for sandbox naming")
@@ -212,8 +210,7 @@ func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInp
 	return &Process{docker: docker, name: name, id: created.ID, claim: claim, workspace: workspace, agentInput: input}, nil
 }
 
-// Reconcile stops and removes a Shipmunk-owned container and verifies its absence.
-// It accepts both deterministic names and legacy hex IDs as the identifier.
+// Reconcile stops and removes a Shipmunk-owned container, accepting both deterministic names and legacy hex IDs.
 func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	if !containerNamePattern.MatchString(identifier) && !containerIDPattern.MatchString(identifier) {
 		return errors.New("unsafe sandbox identifier")

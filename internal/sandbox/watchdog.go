@@ -19,8 +19,7 @@ type Watchdog struct {
 	config Config
 }
 
-// NewWatchdog creates a watchdog launcher using the same Docker command
-// configuration as the sandbox.
+// NewWatchdog creates a watchdog launcher using the same Docker command configuration as the sandbox.
 func NewWatchdog(config Config) *Watchdog {
 	if config.DockerExecutable == "" {
 		config.DockerExecutable = "docker"
@@ -47,8 +46,7 @@ func (watchdog *Watchdog) ArmProfile(name string, lease, deadline time.Time) (*L
 	return watchdog.arm(name, lease, deadline, true, false)
 }
 
-// ArmCodex owns the deterministic native, repository, collector, and workspace
-// volume topology for one Codex attempt.
+// ArmCodex owns the deterministic native, repository, collector, and workspace volume topology.
 func (watchdog *Watchdog) ArmCodex(name string, lease, deadline time.Time) (*Lease, error) {
 	return watchdog.arm(name, lease, deadline, false, true)
 }
@@ -172,9 +170,7 @@ func (lease *Lease) Renew(expiry time.Time) error {
 	return lease.writeMessageLocked(fmt.Sprintf("renew:%d\n", expiry.UnixNano()))
 }
 
-// CreateStarted tells the independent watchdog a Docker create request is about
-// to be issued: cleanup stays active until CreateFinished, because the parent's
-// absence alone cannot prove the daemon rejected the request.
+// CreateStarted keeps cleanup active until CreateFinished, since the parent's absence cannot prove rejection.
 func (lease *Lease) CreateStarted() error {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
