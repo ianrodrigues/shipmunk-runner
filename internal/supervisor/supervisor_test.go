@@ -528,6 +528,71 @@ func TestRecoveryReportsInterruptedAttemptThenClearsJournal(t *testing.T) {
 	}
 }
 
+// A stopped acknowledgement can only be refused for a fence mismatch or a
+// non-current attempt, both permanent, so three consecutive refusals on the
+// same journal must converge without ever seeing the acknowledgement accepted.
+func TestRecoveryConvergesAfterThreeConsecutiveStoppedRefusals(t *testing.T) {
+	conflict := &protocol.ControlPlaneError{StatusCode: 409}
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	profileID := claim.Manifest["profile_id"].(string)
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+		Deadline: claim.Deadline, Workspace: w.Path(claim),
+	}
+	executor := &fixtureExecutor{}
+	s.Executor, s.Sandbox, s.Watchdog = executor, nil, nil
+	c.claim, c.ackError = nil, conflict
+
+	for run := int64(1); run <= 2; run++ {
+		if _, err := s.RunOnce(context.Background()); !errors.Is(err, ErrCleanupUnconfirmed) {
+			t.Fatalf("run %d: refusal was not retained: %v", run, err)
+		}
+		saved, err := state.Load()
+		if err != nil || saved == nil || saved.RefusedStoppedCount != run {
+			t.Fatalf("run %d: refused_stopped_count = %+v, %v", run, saved, err)
+		}
+	}
+
+	out, err := s.RunOnce(context.Background())
+	if err != nil || out.Worked {
+		t.Fatalf("third consecutive refusal did not converge: %+v %v", out, err)
+	}
+	if saved, err := state.Load(); err != nil || saved != nil {
+		t.Fatalf("journal retained past the settle threshold: %+v %v", saved, err)
+	}
+	if c.acks != 3 || c.claims != 1 {
+		t.Fatalf("convergence did not retry the acknowledgement or resume claiming: acks=%d claims=%d", c.acks, c.claims)
+	}
+}
+
+// A non-409 failure, such as a network error, is not a refusal the control
+// plane made a decision about, so it must never advance the settle counter.
+func TestRecoveryDoesNotConvergeOnNonRefusalAcknowledgementFailures(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	profileID := claim.Manifest["profile_id"].(string)
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+		Deadline: claim.Deadline, Workspace: w.Path(claim),
+	}
+	executor := &fixtureExecutor{}
+	s.Executor, s.Sandbox, s.Watchdog = executor, nil, nil
+	c.claim, c.ackError = nil, &protocol.ControlPlaneError{StatusCode: 503}
+
+	for run := 0; run < refusedStoppedSettleThreshold; run++ {
+		if _, err := s.RunOnce(context.Background()); !errors.Is(err, ErrCleanupUnconfirmed) {
+			t.Fatalf("run %d: unreachable control plane converged: %v", run, err)
+		}
+	}
+	saved, err := state.Load()
+	if err != nil || saved == nil || saved.RefusedStoppedCount != 0 {
+		t.Fatalf("non-refusal failures advanced the settle counter: %+v %v", saved, err)
+	}
+}
+
 func TestCompositeRecoveryRefusesLegacySandboxWithoutReconciler(t *testing.T) {
 	s, c, state, _, w, _ := fixtureSupervisor(t)
 	claim := *c.claim
