@@ -627,6 +627,37 @@ func TestRecoveryPreservesRefusalCountAcrossNonRefusalFailure(t *testing.T) {
 	}
 }
 
+func TestRecoveryAtSettleBoundaryStillRequiresAConflict(t *testing.T) {
+	s, c, state, _, w, _ := fixtureSupervisor(t)
+	claim := *c.claim
+	profileID := claim.Manifest["profile_id"].(string)
+	state.state = &attemptstate.State{
+		RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+		Deadline: claim.Deadline, Workspace: w.Path(claim),
+		RefusedStoppedCount: refusedStoppedSettleThreshold - 1,
+	}
+	s.Executor, s.Sandbox, s.Watchdog = &fixtureExecutor{}, nil, nil
+	c.claim, c.ackError = nil, &protocol.ControlPlaneError{StatusCode: 503}
+
+	if _, err := s.RunOnce(context.Background()); !errors.Is(err, ErrCleanupUnconfirmed) {
+		t.Fatalf("non-conflict at the settle boundary unexpectedly converged: %v", err)
+	}
+	saved, err := state.Load()
+	if err != nil || saved == nil || saved.RefusedStoppedCount != refusedStoppedSettleThreshold-1 || c.claims != 0 {
+		t.Fatalf("non-conflict changed or released boundary state: saved=%+v err=%v claims=%d", saved, err, c.claims)
+	}
+
+	c.ackError = &protocol.ControlPlaneError{StatusCode: 409}
+	out, err := s.RunOnce(context.Background())
+	if err != nil || out.Worked {
+		t.Fatalf("conflict after the retained boundary did not converge: out=%+v err=%v", out, err)
+	}
+	if saved, err := state.Load(); err != nil || saved != nil || c.acks != 2 || c.claims != 1 {
+		t.Fatalf("boundary conflict did not release recovery: saved=%+v err=%v acks=%d claims=%d", saved, err, c.acks, c.claims)
+	}
+}
+
 func TestRecoveryRetainsJournalWhenRefusalCountCannotBeSaved(t *testing.T) {
 	s, c, state, _, w, _ := fixtureSupervisor(t)
 	claim := *c.claim

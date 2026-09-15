@@ -94,7 +94,13 @@ func TestDiscardAttemptRequiresConfirmationUnlessYes(t *testing.T) {
 			setupRuntime.effectiveUID = os.Geteuid
 			setupRuntime.stdin = strings.NewReader(test.stdin)
 			setupRuntime.isTerminal = func(any) bool { return true }
-			stubDiscardSandboxCleanup(t, true)
+			var cleanups atomic.Int64
+			originalCleanup := discardSandboxCleanup
+			t.Cleanup(func() { discardSandboxCleanup = originalCleanup })
+			discardSandboxCleanup = func(RunnerOptions, attemptstate.State) bool {
+				cleanups.Add(1)
+				return true
+			}
 
 			options := discardAttemptOptions(t, root, server.URL)
 			options.Confirmed = test.confirmed
@@ -127,6 +133,13 @@ func TestDiscardAttemptRequiresConfirmationUnlessYes(t *testing.T) {
 			}
 			if acks.Load() != test.wantAcks {
 				t.Fatalf("acknowledgements = %d, want %d", acks.Load(), test.wantAcks)
+			}
+			wantCleanups := int64(0)
+			if test.wantRemove {
+				wantCleanups = 1
+			}
+			if cleanups.Load() != wantCleanups {
+				t.Fatalf("sandbox cleanups = %d, want %d", cleanups.Load(), wantCleanups)
 			}
 			_, statErr := os.Stat(workspaceDir)
 			if removed := os.IsNotExist(statErr); removed != test.wantRemove {
@@ -296,6 +309,95 @@ func TestDiscardAttemptLeavesUnreadableJournalUntouched(t *testing.T) {
 	actual, err := os.ReadFile(journal)
 	if err != nil || !bytes.Equal(actual, contents) {
 		t.Fatalf("unreadable journal changed: %q, %v", actual, err)
+	}
+}
+
+func TestRunRunnerRoutesDiscardAttemptBeforeStartingAWorker(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("discard-attempt refuses root")
+	}
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+	setupRuntime.effectiveUID = os.Geteuid
+
+	var stdout, stderr bytes.Buffer
+	code := RunRunner([]string{
+		"--base-url=https://runner.example",
+		"--token-file=" + filepath.Join(root, "missing.token"),
+		"--state-dir=" + stateDir,
+		"--image=fixture:local",
+		"--discard-attempt",
+		"--yes",
+	}, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "No interrupted attempt journal to discard.") {
+		t.Fatalf("discard routing: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestDiscardAttemptClearsJournalWhenWorkspaceRemovalIsUnsafe(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("discard-attempt refuses root")
+	}
+	root := t.TempDir()
+	writeInterruptedAttempt(t, root)
+	workspaceDir := filepath.Join(root, "state", "workspaces", testOperation+"-1")
+	if err := os.MkdirAll(workspaceDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "outside-workspace")
+	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(workspaceDir, "unsafe-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	var acknowledgements atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/heartbeat") {
+			acknowledgements.Add(1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+	setupRuntime.effectiveUID = os.Geteuid
+	stubDiscardSandboxCleanup(t, true)
+
+	options := discardAttemptOptions(t, root, server.URL)
+	options.Confirmed = true
+	var stdout, stderr bytes.Buffer
+	if code := runDiscardAttempt(options, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Could not remove the attempt workspace; the journal is discarded regardless:") {
+		t.Fatalf("workspace removal failure was not reported: %q", stdout.String())
+	}
+	if acknowledgements.Load() != 1 {
+		t.Fatalf("stopped acknowledgements = %d, want 1", acknowledgements.Load())
+	}
+	if contents, err := os.ReadFile(target); err != nil || string(contents) != "preserve" {
+		t.Fatalf("unsafe workspace link target changed: %q, %v", contents, err)
+	}
+	if _, err := os.Lstat(filepath.Join(workspaceDir, "unsafe-link")); err != nil {
+		t.Fatalf("unsafe workspace was partially removed: %v", err)
+	}
+
+	store, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if saved, err := store.Load(); err != nil || saved != nil {
+		t.Fatalf("journal retained after workspace removal failure: %+v, %v", saved, err)
 	}
 }
 
