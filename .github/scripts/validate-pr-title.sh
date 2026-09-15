@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The type, scope, and description grammar below mirrors .githooks/commit-msg,
-# the source of truth for this project's Conventional Commit rules. The blank
-# second line and fixup/squash/amend exceptions in that hook do not apply
-# here: a pull request title is always a single line, never a commit body.
+# This script copies the type, scope and description grammar from .githooks/commit-msg.
+# That hook defines the Conventional Commit rules for this project.
+# The hook also requires a blank second line and allows fixup, squash and amend commits.
+# This script skips those rules because a pull request title is always one line.
 
 if [[ $# -gt 1 ]]; then
     echo 'usage: validate-pr-title.sh [title] (reads stdin when no argument is given)' >&2
