@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,11 @@ const (
 	MaxReviewSearchMatches = 200
 	MaxReviewSnippetBytes  = 300
 	MaxReviewLineCount     = 400
+	// MaxReviewScanBytes bounds the total bytes review_search reads across all
+	// files in one request, and any single file larger than this is skipped
+	// (marked truncated) rather than scanned, so one oversized file cannot
+	// consume the whole request's work by itself.
+	MaxReviewScanBytes = 16 * 1024 * 1024
 )
 
 // ReviewMediator serves bounded, read-only list/search/read/diff operations
@@ -53,6 +59,10 @@ type ReviewMediator struct {
 	diffOnce sync.Once
 	diffErr  error
 	diff     *Patch
+	// sections holds one raw diff section per changed path, keyed by the
+	// verified path from diff.ChangedFiles rather than parsed from the diff
+	// text, so file content can never masquerade as another file's section.
+	sections map[string]string
 }
 
 // NewReviewMediator binds one attempt's fence and request budget to the two
@@ -131,16 +141,16 @@ func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error)
 func (m *ReviewMediator) execute(request reviewRequest) (output string, truncated, ok bool) {
 	switch request.Op {
 	case "review_list":
-		return m.list(request.Snapshot, request.Path)
+		return m.list(request.Snapshot, request.Path, request.Offset)
 	case "review_search":
 		return m.search(request.Snapshot, request.Path, request.Query)
 	case "review_read":
 		return m.read(request.Snapshot, request.Path, request.StartLine, request.LineCount)
 	case "review_diff":
 		return m.reviewDiff(request.Path)
-	default:
-		return "unsupported review operation", false, false
 	}
+	// decodeReviewRequest only ever produces one of the ops above.
+	panic("review request op was not validated: " + request.Op)
 }
 
 func (m *ReviewMediator) snapshotByName(name string) map[string]fileState {
@@ -150,7 +160,7 @@ func (m *ReviewMediator) snapshotByName(name string) map[string]fileState {
 	return m.head
 }
 
-func (m *ReviewMediator) list(snapshotName, dir string) (string, bool, bool) {
+func (m *ReviewMediator) list(snapshotName, dir string, offset int64) (string, bool, bool) {
 	if dir != "" && !safeRepositoryPath(dir) {
 		return "path is invalid", false, false
 	}
@@ -180,24 +190,34 @@ func (m *ReviewMediator) list(snapshotName, dir string) (string, bool, bool) {
 		}
 	}
 	sort.Strings(names)
-	if len(names) == 0 {
+	total := int64(len(names))
+	if total == 0 {
 		return "no entries", false, true
 	}
-	total := len(names)
-	truncated := total > MaxReviewListEntries
-	if truncated {
-		names = names[:MaxReviewListEntries]
+	if offset < 0 || offset >= total {
+		return "offset is beyond the end of the listing", false, false
 	}
 	var b strings.Builder
-	for _, name := range names {
+	shown := int64(0)
+	truncated := false
+	for _, name := range names[offset:] {
 		kind := "file"
 		if isDir[name] {
 			kind = "dir"
 		}
-		fmt.Fprintf(&b, "%s\t%s\n", kind, name)
+		entry := fmt.Sprintf("%s\t%s\n", kind, name)
+		// Cap both the entry count and the response bytes: a directory of many
+		// long names must truncate with a marker, never silently exceed the
+		// response frame and come back as an unqualified failure.
+		if shown >= MaxReviewListEntries || b.Len()+len(entry) > MaxReviewOutputBytes {
+			truncated = true
+			break
+		}
+		b.WriteString(entry)
+		shown++
 	}
 	if truncated {
-		fmt.Fprintf(&b, "... truncated: showing %d of %d entries\n", len(names), total)
+		fmt.Fprintf(&b, "... truncated: showing entries %d-%d of %d (pass offset=%d for the next page)\n", offset+1, offset+shown, total, offset+shown)
 	}
 	return strings.TrimRight(b.String(), "\n"), truncated, true
 }
@@ -218,44 +238,74 @@ func (m *ReviewMediator) search(snapshotName, dir, query string) (string, bool, 
 		}
 	}
 	sort.Strings(keys)
+	needle := []byte(query)
 	var b strings.Builder
 	matches := 0
 	truncated := false
+	var scanned int64
 outer:
 	for _, key := range keys {
 		content := files[key].data
 		if !utf8.Valid(content) {
 			continue
 		}
-		for number, line := range strings.Split(string(content), "\n") {
-			if !strings.Contains(line, query) {
-				continue
+		// Bound work per file and in aggregate without ever materializing a
+		// per-line slice of the whole file (that scales with line count, not
+		// file size, and a newline-dense file can blow it up by two orders of
+		// magnitude).
+		if int64(len(content)) > MaxReviewScanBytes {
+			truncated = true
+			continue
+		}
+		if scanned+int64(len(content)) > MaxReviewScanBytes {
+			truncated = true
+			break
+		}
+		scanned += int64(len(content))
+		number := int64(1)
+		for pos := 0; pos <= len(content); {
+			line, next := nextLine(content, pos)
+			if bytes.Contains(line, needle) {
+				matches++
+				if matches > MaxReviewSearchMatches {
+					truncated = true
+					break outer
+				}
+				snippet, ellipsis := line, ""
+				if len(snippet) > MaxReviewSnippetBytes {
+					snippet, ellipsis = snippet[:MaxReviewSnippetBytes], "…"
+				}
+				entry := fmt.Sprintf("%s:%d: %s%s\n", key, number, snippet, ellipsis)
+				if b.Len()+len(entry) > MaxReviewOutputBytes {
+					truncated = true
+					break outer
+				}
+				b.WriteString(entry)
 			}
-			matches++
-			if matches > MaxReviewSearchMatches {
-				truncated = true
-				break outer
-			}
-			snippet := line
-			if len(snippet) > MaxReviewSnippetBytes {
-				snippet = snippet[:MaxReviewSnippetBytes] + "…"
-			}
-			entry := fmt.Sprintf("%s:%d: %s\n", key, number+1, snippet)
-			if b.Len()+len(entry) > MaxReviewOutputBytes {
-				truncated = true
-				break outer
-			}
-			b.WriteString(entry)
+			number++
+			pos = next
 		}
 	}
 	if matches == 0 {
-		return "no matches", false, true
+		return "no matches", truncated, true
 	}
 	text := strings.TrimRight(b.String(), "\n")
 	if truncated {
 		text += "\n... truncated: additional matches not shown"
 	}
 	return text, truncated, true
+}
+
+// nextLine returns the next line of data starting at pos (without its
+// trailing newline) and the byte offset to resume from. It never allocates:
+// the returned slice aliases data. The caller's loop condition must be
+// `pos <= len(data)`, and nextLine advances pos past len(data) once the final
+// line (which may lack a trailing newline) has been returned.
+func nextLine(data []byte, pos int) (line []byte, next int) {
+	if newline := bytes.IndexByte(data[pos:], '\n'); newline >= 0 {
+		return data[pos : pos+newline], pos + newline + 1
+	}
+	return data[pos:], len(data) + 1
 }
 
 func (m *ReviewMediator) read(snapshotName, path string, startLine, lineCount int64) (string, bool, bool) {
@@ -266,36 +316,47 @@ func (m *ReviewMediator) read(snapshotName, path string, startLine, lineCount in
 	if !exists {
 		return "file not found", false, false
 	}
-	if !utf8.Valid(state.data) {
+	data := state.data
+	if !utf8.Valid(data) {
 		return "binary content is not shown", false, false
 	}
-	lines := strings.Split(string(state.data), "\n")
-	total := int64(len(lines))
-	if startLine > total {
+	// Skip to startLine without materializing any earlier line, so a request
+	// near the start of a huge file costs O(requested window), not O(file size).
+	number, pos := int64(1), 0
+	for number < startLine {
+		if pos > len(data) {
+			return "start line is beyond the end of the file", false, false
+		}
+		_, next := nextLine(data, pos)
+		pos = next
+		number++
+	}
+	if pos > len(data) {
 		return "start line is beyond the end of the file", false, false
 	}
-	end := startLine - 1 + lineCount
-	if end > total {
-		end = total
-	}
-	window := lines[startLine-1 : end]
 	var b strings.Builder
-	truncated := end < total
-	shown := len(window)
-	for index, line := range window {
+	collected := int64(0)
+	budgetHit := false
+	for collected < lineCount && pos <= len(data) {
+		line, next := nextLine(data, pos)
 		if int64(b.Len()+len(line)+1) > MaxReviewOutputBytes {
-			truncated = true
-			shown = index
+			budgetHit = true
 			break
 		}
-		b.WriteString(line)
+		b.Write(line)
 		b.WriteByte('\n')
+		collected++
+		pos = next
 	}
+	moreLines := !budgetHit && pos <= len(data)
 	text := strings.TrimRight(b.String(), "\n")
-	if truncated {
-		text += fmt.Sprintf("\n... truncated: showing lines %d-%d of %d", startLine, startLine-1+int64(shown), total)
+	switch {
+	case budgetHit:
+		text += fmt.Sprintf("\n... truncated: output budget reached after %d line(s) from line %d", collected, startLine)
+	case moreLines:
+		text += fmt.Sprintf("\n... more lines follow after line %d", startLine-1+collected)
 	}
-	return text, truncated, true
+	return text, budgetHit, true
 }
 
 func (m *ReviewMediator) reviewDiff(path string) (string, bool, bool) {
@@ -333,10 +394,7 @@ func (m *ReviewMediator) reviewDiff(path string) (string, bool, bool) {
 	if !inBaseline && !inHead {
 		return "file not found in either snapshot", false, false
 	}
-	if m.diff == nil {
-		return "no differences", false, true
-	}
-	chunk, found := extractFileDiff(m.diff.Bytes, path)
+	chunk, found := m.sections[path]
 	if !found {
 		return "no differences", false, true
 	}
@@ -364,24 +422,65 @@ func (m *ReviewMediator) loadDiff() error {
 			return
 		}
 		m.diff = patch
+		if patch != nil {
+			m.sections = parseDiffSections(patch.Bytes, patch.ChangedFiles)
+		}
 	})
 	return m.diffErr
 }
 
-// extractFileDiff returns the single-file section of a unified diff produced
-// without rename detection, so each file's header is exactly one line.
-func extractFileDiff(diff []byte, path string) (string, bool) {
-	marker := "diff --git a/" + path + " b/" + path
-	text := string(diff)
-	index := strings.Index(text, marker)
-	if index < 0 {
-		return "", false
+// parseDiffSections splits a unified diff produced without rename detection
+// into one raw section per changed path. It never searches for a path's
+// header as a substring of the diff text: file content is fully attacker
+// controlled and a content line that happens to read "diff --git a/x b/x"
+// would otherwise be indistinguishable from a real header. Instead it looks
+// for an exact, whole-line match against one of the header strings implied by
+// the independently verified ChangedFiles list, at the true start of a diff
+// line, immediately followed by a genuine header continuation line. A forged
+// header can never satisfy both: every content line inside a unified diff
+// hunk carries a mandatory " "/"+"/"-" prefix, so it can never be byte-equal
+// to a bare "diff --git a/<path> b/<path>" line.
+func parseDiffSections(diff []byte, changedFiles []FileChange) map[string]string {
+	sections := make(map[string]string, len(changedFiles))
+	if len(diff) == 0 || len(changedFiles) == 0 {
+		return sections
 	}
-	rest := text[index:]
-	if next := strings.Index(rest[1:], "\ndiff --git a/"); next >= 0 {
-		rest = rest[:next+1]
+	headerToPath := make(map[string]string, len(changedFiles))
+	for _, change := range changedFiles {
+		headerToPath["diff --git a/"+change.Path+" b/"+change.Path] = change.Path
 	}
-	return strings.TrimRight(rest, "\n"), true
+	lines := strings.Split(strings.TrimRight(string(diff), "\n"), "\n")
+	var starts []int
+	var paths []string
+	for i, line := range lines {
+		path, known := headerToPath[line]
+		if !known || !hasDiffHeaderContinuation(lines, i) {
+			continue
+		}
+		starts = append(starts, i)
+		paths = append(paths, path)
+	}
+	for i, start := range starts {
+		end := len(lines)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		sections[paths[i]] = strings.Join(lines[start:end], "\n")
+	}
+	return sections
+}
+
+func hasDiffHeaderContinuation(lines []string, headerIndex int) bool {
+	if headerIndex+1 >= len(lines) {
+		return false
+	}
+	next := lines[headerIndex+1]
+	for _, prefix := range []string{"index ", "--- ", "new file mode", "deleted file mode", "similarity index", "rename from", "old mode"} {
+		if strings.HasPrefix(next, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type reviewRequest struct {
@@ -393,6 +492,7 @@ type reviewRequest struct {
 	Query     string
 	StartLine int64
 	LineCount int64
+	Offset    int64
 }
 
 // decodeReviewRequest independently re-validates a closed schema per
@@ -429,14 +529,15 @@ func decodeReviewRequest(raw []byte, requireFence bool) (reviewRequest, error) {
 	baseFields := 2 + extra
 	switch op {
 	case "review_list":
-		if len(object) != baseFields+2 {
+		if len(object) != baseFields+3 {
 			return reviewRequest{}, errors.New("review request schema is invalid")
 		}
 		snapshot, path, ok := reviewSnapshotAndPath(object)
-		if !ok {
+		offset, offsetOK := safeNonNegativeInteger(object["offset"])
+		if !ok || !offsetOK {
 			return reviewRequest{}, errors.New("review request schema is invalid")
 		}
-		request.Snapshot, request.Path = snapshot, path
+		request.Snapshot, request.Path, request.Offset = snapshot, path, offset
 	case "review_search":
 		if len(object) != baseFields+3 {
 			return reviewRequest{}, errors.New("review request schema is invalid")
@@ -487,13 +588,22 @@ func reviewSnapshotAndPath(object map[string]any) (string, string, bool) {
 	return snapshot, path, true
 }
 
+func safeNonNegativeInteger(value any) (int64, bool) {
+	number, ok := value.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	parsed, err := number.Int64()
+	return parsed, err == nil && parsed >= 0 && parsed <= protocol.MaxSafeInteger
+}
+
 // encodeFencedReviewRequest re-serializes a request validated without a fence
 // (from the untrusted bridge frame) into the canonical, fence-bound wire form.
 func encodeFencedReviewRequest(fence int64, request reviewRequest) ([]byte, error) {
 	object := map[string]any{"fence": fence, "id": request.ID, "op": request.Op}
 	switch request.Op {
 	case "review_list":
-		object["snapshot"], object["path"] = request.Snapshot, request.Path
+		object["snapshot"], object["path"], object["offset"] = request.Snapshot, request.Path, request.Offset
 	case "review_search":
 		object["snapshot"], object["path"], object["query"] = request.Snapshot, request.Path, request.Query
 	case "review_read":
@@ -515,15 +625,98 @@ type reviewResponse struct {
 	Truncated bool   `json:"truncated"`
 }
 
+// reviewResponseOverhead generously bounds the encoded size of every
+// reviewResponse field except Output: braces, field names, punctuation and
+// the widest fence/id/bool renderings.
+const reviewResponseOverhead = 128
+
+const jsonTruncationMarker = "\n... [truncated: response exceeds the frame limit]"
+
+// encodeReviewResponse enforces the response budget on the JSON-encoded wire
+// size, not the raw string length: a string dense in quotes, backslashes or
+// control characters can expand well past its raw byte count once escaped,
+// and budgeting on raw bytes alone lets that content silently fail closed
+// with no output at all instead of a bounded, truncated one.
 func encodeReviewResponse(fence, id int64, ok bool, output string, truncated bool) ([]byte, error) {
+	budget := MaxReviewResponseBytes - reviewResponseOverhead
+	if budget < 0 {
+		budget = 0
+	}
+	if cut, didTruncate := truncateForJSONBudget(output, budget); didTruncate {
+		output, truncated = cut, true
+	}
 	response := reviewResponse{Fence: fence, ID: id, OK: ok, Output: output, Truncated: truncated}
-	encoded, err := json.Marshal(response)
+	encoded, err := marshalReviewResponse(response)
 	if err != nil || len(encoded) > MaxReviewResponseBytes {
 		response = reviewResponse{Fence: fence, ID: id, OK: false, Output: "review response exceeds its frame limit."}
-		encoded, err = json.Marshal(response)
+		encoded, err = marshalReviewResponse(response)
 	}
 	if err != nil || len(encoded) > MaxReviewResponseBytes {
 		return nil, errors.New("review response is invalid")
 	}
 	return encoded, nil
+}
+
+// marshalReviewResponse encodes without HTML escaping: the response travels
+// over a local file bridge to a JSON-RPC client, never into HTML or a
+// <script> context, so escaping "<", ">" and "&" would only inflate ordinary
+// source text (comparison operators, XML, HTML fixtures) for no benefit.
+func marshalReviewResponse(response reviewResponse) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(response); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// truncateForJSONBudget returns a prefix of s (plus an explicit marker) whose
+// JSON-encoded length, matching marshalReviewResponse's escaping rules, fits
+// within budget bytes. It cuts at a rune boundary so the result stays valid
+// UTF-8.
+func truncateForJSONBudget(s string, budget int) (string, bool) {
+	if jsonEncodedLen(s) <= budget {
+		return s, false
+	}
+	available := budget - jsonEncodedLen(jsonTruncationMarker)
+	if available < 0 {
+		available = 0
+	}
+	used, cut := 0, 0
+	for _, r := range s {
+		add := jsonEncodedRuneLen(r)
+		if used+add > available {
+			break
+		}
+		used += add
+		cut += utf8.RuneLen(r)
+	}
+	return s[:cut] + jsonTruncationMarker, true
+}
+
+func jsonEncodedLen(s string) int {
+	total := 0
+	for _, r := range s {
+		total += jsonEncodedRuneLen(r)
+	}
+	return total
+}
+
+// jsonEncodedRuneLen mirrors encoding/json's escaping with HTML escaping
+// disabled: '"' and '\\' become two-byte escapes, '\n'/'\r'/'\t' become their
+// short two-byte escapes, every other C0 control character becomes a six-byte
+// "\u00XX" escape, and everything else is emitted as its own UTF-8 bytes.
+func jsonEncodedRuneLen(r rune) int {
+	switch r {
+	case '"', '\\', '\n', '\r', '\t':
+		return 2
+	}
+	if r < 0x20 {
+		return 6
+	}
+	if size := utf8.RuneLen(r); size > 0 {
+		return size
+	}
+	return 1
 }
