@@ -22,12 +22,10 @@ import (
 // cleanup timeout in package supervisor.
 const sandboxCleanupTimeout = 90 * time.Second
 
-// runDiscardAttempt lets an operator release a local attempt journal
-// immediately, for the case where waiting on supervisor.reconcile's bounded
-// stopped-refusal convergence is not acceptable. The journal is always
-// discarded, but it still attempts the same sandbox reconciliation and
-// stopped acknowledgement recovery would have made, and names the sandbox it
-// could not confirm removed so an operator can check Docker by hand.
+// runDiscardAttempt validates and optionally confirms an operator request to
+// abandon local recovery. Once accepted, sandbox cleanup, the stopped
+// acknowledgement, and workspace removal are best effort and do not prevent
+// an attempt to clear the journal.
 func runDiscardAttempt(options RunnerOptions, stdout, stderr io.Writer) int {
 	if setupRuntime.effectiveUID() == 0 {
 		fmt.Fprintln(stderr, "Run commands as the dedicated non-root runner account.")
@@ -96,10 +94,9 @@ func sandboxIdentity(state attemptstate.State) string {
 	return "shipmunk-codex-" + state.AttemptID + "-" + strconv.FormatInt(state.Fence, 10)
 }
 
-// bestEffortSandboxCleanup mirrors supervisor.reconcile's Docker reconciliation
-// so discard does not silently strand a live container; it never blocks the
-// discard on failure, since the operator override exists precisely to avoid
-// waiting on that path.
+// bestEffortSandboxCleanup tries to reconcile legacy and composite-driver
+// sandbox resources within the discard timeout. It reports whether cleanup
+// was confirmed.
 func bestEffortSandboxCleanup(options RunnerOptions, state attemptstate.State) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxCleanupTimeout)
 	defer cancel()
@@ -113,6 +110,8 @@ func bestEffortSandboxCleanup(options RunnerOptions, state attemptstate.State) b
 	return codex.CleanupDockerTransport(ctx, codex.TransportConfig{Name: sandboxIdentity(state)}) == nil
 }
 
+// confirmDiscard prompts on the configured input and accepts only a
+// case-insensitive "y" response after trimming whitespace.
 func confirmDiscard(stdout io.Writer) bool {
 	fmt.Fprint(stdout, "This abandons local recovery of that attempt even if the application has not converged. Continue? [y/N] ")
 	answer, _ := bufio.NewReader(setupRuntime.stdin).ReadString('\n')
@@ -131,6 +130,8 @@ func acknowledgeStoppedBestEffort(options RunnerOptions, state attemptstate.Stat
 	}
 }
 
+// attemptAcknowledgeStopped sends a bounded stopped acknowledgement for state.
+// It returns false when credentials, client setup, or the request fails.
 func attemptAcknowledgeStopped(options RunnerOptions, state attemptstate.State) bool {
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {

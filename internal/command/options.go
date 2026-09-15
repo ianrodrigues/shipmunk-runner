@@ -48,6 +48,9 @@ type parsedProfileOptions struct {
 	version bool
 }
 
+// parseRunnerOptions parses runner flags without validating their
+// relationships. It preserves --version separately so callers can print it
+// without otherwise required options.
 func parseRunnerOptions(args []string, output io.Writer) (parsedRunnerOptions, error) {
 	flags := newFlagSet("shipmunk-runner", output)
 	flags.String("base-url", "", "control-plane URL")
@@ -97,6 +100,8 @@ func ParseRunnerOptions(args []string) (RunnerOptions, error) {
 	return parsed.options, nil
 }
 
+// validateRunnerOptions validates runner option combinations and fills the
+// repository image from the sandbox image when omitted.
 func validateRunnerOptions(options *RunnerOptions) error {
 	if options.BaseURL == "" || options.TokenFile == "" || options.StateDir == "" || options.Image == "" {
 		return errMissingRunnerOptions

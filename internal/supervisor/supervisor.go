@@ -200,6 +200,9 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	return Outcome{Worked: true, RunID: claim.RunID, AttemptID: claim.AttemptID, Result: result}, nil
 }
 
+// reconcile attempts to clean up a durable attempt before a new claim. It
+// retains unconfirmed recovery state, recording stopped-acknowledgement
+// conflicts until the settle threshold permits clearing the journal.
 func (s *Supervisor) reconcile(parent context.Context) error {
 	state, err := s.State.Load()
 	if err != nil || state == nil {

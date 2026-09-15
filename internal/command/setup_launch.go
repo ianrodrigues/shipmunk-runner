@@ -89,6 +89,8 @@ func launchRefusal(err error) string {
 	}
 }
 
+// dispatchInstalled validates the installed launcher's restricted command
+// surface and invokes the runner or profile command with bound configuration.
 func dispatchInstalled(args []string, root string, configuration install.Configuration, stdout, stderr io.Writer) int {
 	base := []string{"--base-url=" + configuration.Identity.BaseURL, "--profiles-dir=" + filepath.Join(root, "profiles"), "--image=" + configuration.ImageID}
 	if args[0] == "run" {
