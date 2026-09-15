@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ianrodrigues/shipmunk-server",
-  "commit": "5242593a3c9b07f7c67474075f710756ee0f1a82",
+  "commit": "9883ac3a27294485c352b28abb5c233bcd85061c",
   "files": {
     "contracts/v1/event-batch.schema.json": {
       "source": "contracts/v1/event-batch.schema.json",
@@ -72,7 +72,7 @@
     },
     "testdata/contracts/v1/fixtures/valid/run-input.json": {
       "source": "contracts/v1/fixtures/valid/run-input.json",
-      "sha256": "12d48e286832d5ed1d9a3b4d6727f99044592fbdd2676878d9c437f5578c4714"
+      "sha256": "fbecfcd8e8b6289941f19080280c0f5842adfb7d1a57d726cd4fe9b494e3c8b8"
     },
     "testdata/contracts/v1/fixtures/valid/worker-event.json": {
       "source": "contracts/v1/fixtures/valid/worker-event.json",
@@ -92,7 +92,7 @@
     },
     "contracts/v1/run-input.schema.json": {
       "source": "contracts/v1/run-input.schema.json",
-      "sha256": "3f4542a05764209757de1dd661f3e732a006cd6a02491dd220c76fae16b41bff"
+      "sha256": "27e624ed03e071236a33b7116be53b7f4b3fc356a0deebb8208e1b80a79c0a11"
     },
     "contracts/v1/worker-event.schema.json": {
       "source": "contracts/v1/worker-event.schema.json",
