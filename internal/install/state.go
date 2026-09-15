@@ -661,9 +661,8 @@ func (guard Guard) Configuration() (Configuration, error) {
 	return configuration, err
 }
 
-// decodeConfiguration accepts only the current eight-field configuration
-// shape; any other shape, including a prior release's, is refused fail-closed
-// rather than migrated.
+// decodeConfiguration accepts only the eight-field shape.
+// It rejects every other shape and never migrates old data.
 func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	if len(raw) == 0 || len(raw) > maxConfigBytes {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")
