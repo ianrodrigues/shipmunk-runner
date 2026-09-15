@@ -41,8 +41,8 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 		binary   string
 		contains []string
 	}{
-		{[]string{"run", root, "--once"}, "shipmunk-runner", []string{"--driver=codex", "--once", "--token-file=" + filepath.Join(root, "execution.token")}},
-		{[]string{"connect", root}, "shipmunk-profile", []string{"--operation=login", "--token-file=" + filepath.Join(root, "profile.token")}},
+		{[]string{"run", root, "--once"}, "shipmunk-runner", []string{"--driver=codex", "--once", "--token-file=" + filepath.Join(root, "execution.token"), "--image=sha256:" + strings.Repeat("b", 64), "--repository-image=sha256:" + strings.Repeat("b", 64)}},
+		{[]string{"connect", root}, "shipmunk-profile", []string{"--operation=login", "--token-file=" + filepath.Join(root, "profile.token"), "--image=sha256:" + strings.Repeat("b", 64)}},
 		{[]string{"connect", root, "probe"}, "shipmunk-profile", []string{"--operation=probe"}},
 	} {
 		var stdout, stderr bytes.Buffer
