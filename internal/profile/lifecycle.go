@@ -490,7 +490,7 @@ func (lifecycle *Lifecycle) recover(ctx context.Context, store *Store, profileID
 	}
 	recoveryFailed := isTrue(pending["recovery_failed"])
 	if outcome.Health == HealthReady {
-		if err := store.ValidateHome(); err != nil {
+		if err := store.RepairHome(); err != nil {
 			outcome = Health{Health: HealthError, Reason: "operation_stopped"}
 			pending["outcome"] = healthJournal(outcome)
 			pending["recovery_failed"] = true

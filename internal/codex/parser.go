@@ -170,7 +170,8 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	state := "initial"
 	items := make(map[string]itemState)
 	var finalMessage string
-	// The pinned CLI reports warnings, notices and retried backend errors as error items or events and still completes the turn, so an error is terminal only when no result follows.
+	// The pinned CLI reports warnings, notices and retried backend errors as error items or events, then still completes the turn.
+	// An error is therefore terminal only when no result follows.
 	var reportedFailure error
 	for _, line := range lines {
 		if line == "" || len(line) > MaxLineBytes || state == "complete" {

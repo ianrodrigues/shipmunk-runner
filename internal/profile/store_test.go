@@ -480,6 +480,44 @@ func TestNativeNormalizationPrunesNativeScratchAndProtectsTheRest(t *testing.T) 
 	}
 }
 
+func TestNativeScratchMountPointIsReplacedRatherThanRefused(t *testing.T) {
+	store, root := openTestStore(t)
+	home := createTestHome(t, store)
+	scratch := filepath.Join(home, ".codex", "tmp")
+	// Docker creates this mount point inside the bind mount and leaves a foreign mode behind.
+	if err := os.MkdirAll(scratch, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, filepath.Join(scratch, "linked")); err != nil {
+		t.Skipf("hard link unavailable: %v", err)
+	}
+	if err := store.WithExclusive(func(locked *Store) error { return locked.RepairHome() }); err != nil {
+		t.Fatal(err)
+	}
+	if mode := fileMode(t, scratch); mode != 0700 {
+		t.Fatalf("replaced scratch directory mode %#o, want 0700", mode)
+	}
+	if children, err := os.ReadDir(scratch); err != nil || len(children) != 0 {
+		t.Fatalf("scratch was not replaced: %v, %v", children, err)
+	}
+	if contents, err := os.ReadFile(outside); err != nil || string(contents) != "outside" {
+		t.Fatalf("pruning changed the hard link target: %q, %v", contents, err)
+	}
+	if err := os.Remove(scratch); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateHome(); err != nil {
+		t.Fatal(err)
+	}
+	if mode := fileMode(t, scratch); mode != 0700 {
+		t.Fatalf("scratch mount point was not recreated before a container start: %#o", mode)
+	}
+}
+
 func TestNativeNormalizationRejectsSymlinkOutsideNativeScratch(t *testing.T) {
 	store, root := openTestStore(t)
 	home := createTestHome(t, store)

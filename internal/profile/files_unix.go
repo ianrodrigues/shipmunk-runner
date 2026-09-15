@@ -422,10 +422,11 @@ func sameNativeSnapshot(entry nativeProfileEntry, info os.FileInfo) bool {
 	return ok && uint64(stat.Dev) == entry.dev && uint64(stat.Ino) == entry.ino && uint32(stat.Mode) == entry.mode && uint32(stat.Uid) == entry.uid && uint64(stat.Nlink) == entry.nlink
 }
 
-// nativeScratchPath names the native runtime's own temporary tree, which the runner owns and never retains.
-var nativeScratchPath = []string{".codex", "tmp"}
+// nativeScratchRelative names the native runtime's own temporary tree, which the runner owns and never retains.
+const nativeScratchRelative = ".codex/tmp"
 
-// The pinned CLI leaves arg0 helper symlinks here, so the tree is pruned instead of refused; every other entry stays strict.
+// The pinned CLI leaves arg0 helper symlinks here and Docker may leave a foreign mount point, so the runner replaces the whole tree instead of inspecting it; every entry outside it stays strict.
+// A hard-linked file under the scratch is removed for the same reason, rather than refused.
 func pruneNativeScratch(home string, hooks nativeTreeHooks) error {
 	root, err := os.OpenRoot(home)
 	if errors.Is(err, os.ErrNotExist) {
@@ -435,21 +436,39 @@ func pruneNativeScratch(home string, hooks nativeTreeHooks) error {
 		return err
 	}
 	defer root.Close()
-	scratch := ""
-	for _, component := range nativeScratchPath {
-		scratch = filepath.Join(scratch, component)
-		info, err := root.Lstat(scratch)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
+	parent, err := root.Lstat(filepath.Dir(nativeScratchRelative))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !parent.IsDir() || parent.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if err := removeNativeScratch(root, hooks); err != nil {
+		return err
+	}
+	if err := root.Mkdir(nativeScratchRelative, 0700); err != nil {
+		return err
+	}
+	return root.Chmod(nativeScratchRelative, 0700)
+}
+
+func removeNativeScratch(root *os.Root, hooks nativeTreeHooks) error {
+	info, err := root.Lstat(nativeScratchRelative)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if err := removeProfileEntries(root, nativeScratchRelative, hooks); err != nil {
 			return err
 		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
 	}
-	return removeProfileEntries(root, scratch, hooks)
+	return root.Remove(nativeScratchRelative)
 }
 
 func normalizeNativeProfileTree(home string, hooks nativeTreeHooks) error {
@@ -490,7 +509,12 @@ func validateNativeProfileTree(home string) error {
 	return nil
 }
 
-func validateProfileTree(path string) error {
+func validateProfileTree(home string) error {
+	return validateProfileSubtree(home, ".")
+}
+
+func validateProfileSubtree(home, relative string) error {
+	path := filepath.Join(home, relative)
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -503,13 +527,17 @@ func validateProfileTree(path string) error {
 		return err
 	}
 	for _, child := range children {
-		childPath := filepath.Join(path, child.Name())
-		childInfo, err := os.Lstat(childPath)
+		childRelative := filepath.Join(relative, child.Name())
+		childInfo, err := os.Lstat(filepath.Join(home, childRelative))
 		if err != nil {
 			return err
 		}
 		if childInfo.IsDir() && childInfo.Mode()&os.ModeSymlink == 0 {
-			if err := validateProfileTree(childPath); err != nil {
+			// The scratch tree is transient runner-owned storage that pruning replaces, so its entries never decide whether the home is safe.
+			if childRelative == nativeScratchRelative {
+				continue
+			}
+			if err := validateProfileSubtree(home, childRelative); err != nil {
 				return err
 			}
 		} else if err := validateProfileFile(childInfo); err != nil {
