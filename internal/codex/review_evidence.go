@@ -17,15 +17,13 @@ import (
 var fullSHAPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
 // maxReviewChangedFileListBytes bounds the changed-file list injected into
-// the prompt (see reviewEvidencePreamble), independently of the argv-wide
-// guard in executionCommand: a large list is truncated with an explicit
-// marker pointing at review_diff rather than silently consuming the whole
-// argv budget on its own.
+// the prompt; see reviewEvidencePreamble. A large list is truncated with a
+// marker pointing at review_diff, instead of consuming the argv budget.
 const maxReviewChangedFileListBytes = 16 * 1024
 
 // stableFDPath mirrors the Docker transport's Source/Baseline substitution:
-// derived from the fd, not the original path, so replacing what now lives at
-// that path cannot affect what gets read.
+// it derives the path from the fd, not the original path. Replacing what now
+// lives at that path cannot affect what gets read.
 func stableFDPath(handle *os.File) string {
 	switch runtime.GOOS {
 	case "linux":
@@ -39,19 +37,17 @@ func stableFDPath(handle *os.File) string {
 
 // reviewLineIndex is the only per-file information evidence validation
 // needs: a line count and whether review_read would refuse the file as
-// binary. Keeping just this (not the file content) after buildReviewEvidence
-// returns avoids retaining a second full copy of both snapshots alongside
-// ReviewMediator's own lazily loaded one.
+// binary. Keeping just this, not the file content, avoids a second full
+// snapshot copy alongside ReviewMediator's own.
 type reviewLineIndex struct {
 	lines  int64
 	binary bool
 }
 
 // reviewEvidence is one review attempt's snapshot identity and planned
-// changed-file set, computed the same way review_diff computes its own (see
-// loadDiff), since the manifest carries no structured changed-file list. It
-// backs both the prompt injection in executionCommand and
-// normalizeExecution's evidence/coverage checks.
+// changed-file set, computed the same way review_diff computes its own; see
+// loadDiff. It backs both the prompt injection and normalizeExecution's
+// evidence/coverage checks.
 type reviewEvidence struct {
 	baselineSHA, headSHA     string
 	changedFiles             []string
@@ -65,22 +61,19 @@ func reviewSHAs(claim protocol.Claim) (base, head string, ok bool) {
 }
 
 // buildReviewEvidence loads both review snapshots and computes the planned
-// changed-file set for one review attempt. sources must be the same
-// executionSources already validated and handed to the transport. The full
-// snapshot content (loaded here, and again independently by ReviewMediator
-// on the model's first review_* call) is reduced to a per-path line-count
-// and binary index before returning, so only one of the two loads retains
-// the actual bytes at a time; see the "diff generated twice" tradeoff in
-// docs/compatibility/codex.md for why the load itself is still duplicated.
+// changed-file set. sources must be the same executionSources already
+// validated and handed to the transport. The content is reduced here to a
+// per-path line-count and binary index, so only one of the two loads retains
+// full bytes at a time; see the "diff generated twice" tradeoff in
+// docs/compatibility/codex.md.
 func buildReviewEvidence(claim protocol.Claim, sources *executionSources) (*reviewEvidence, error) {
 	base, head, ok := reviewSHAs(claim)
 	if !ok {
 		return nil, errors.New("Codex review claim SHAs are invalid")
 	}
-	// stableFDPath, not sources.baselinePath()/sources.head.Name(): the
-	// transport may legitimately replace what now lives at that original
-	// path, and snapshotPinned would otherwise treat that as "changed while
-	// opening".
+	// This uses stableFDPath, not sources.baselinePath()/sources.head.Name().
+	// The transport may legitimately replace what now lives at that path;
+	// snapshotPinned would otherwise treat that as "changed while opening".
 	baselineStates, err := snapshotPinned(stableFDPath(sources.baseline), sources.baseline)
 	if err != nil {
 		return nil, errors.New("Codex review baseline snapshot is unavailable")
@@ -118,8 +111,8 @@ func buildLineIndex(states map[string]fileState) map[string]reviewLineIndex {
 	return index
 }
 
-// resolveSnapshot maps an evidence citation's real SHA back to which loaded
-// snapshot it names, rejecting a syntactically valid but wrong snapshot ID.
+// resolveSnapshot maps an evidence citation's real SHA back to the loaded
+// snapshot it names. It rejects a syntactically valid but wrong snapshot ID.
 func (r *reviewEvidence) resolveSnapshot(sha string) (map[string]reviewLineIndex, bool) {
 	switch sha {
 	case r.baselineSHA:
@@ -147,12 +140,10 @@ func (r *reviewEvidence) lineCount(sha, path string) (int64, bool) {
 	return entry.lines, ok
 }
 
-// countLines matches nextLine's own counting convention exactly (see
-// review_mediation.go), not the "obvious" convention: nextLine's
-// pos <= len(data) loop still runs once more immediately after a trailing
-// newline, so a review_read request can reach one further (empty) line past
-// it. "" is 1 line and "a\n" is 2. Evidence validation must accept exactly
-// what review_read can actually return, not a stricter count of its own.
+// countLines matches nextLine's own counting convention (see
+// review_mediation.go). nextLine's pos <= len(data) loop runs once more after
+// a trailing newline, so a review_read request can reach one further, empty
+// line. Evidence validation must accept exactly what review_read can return.
 func countLines(data []byte) int64 {
 	return int64(bytes.Count(data, []byte("\n"))) + 1
 }
@@ -166,8 +157,8 @@ func (r *reviewEvidence) changedFileSet() map[string]bool {
 }
 
 // validateReviewResult checks what only the runner can, against snapshot
-// content it actually holds; the server re-checks scope from its own frozen
-// changed-file inventory (contracts/v1/result.schema.json's ProtocolValidator).
+// content it holds. The server re-checks scope from its own frozen
+// changed-file inventory.
 func validateReviewResult(result Result, review *reviewEvidence) error {
 	if review == nil {
 		return errors.New("Codex review evidence is unavailable")
@@ -247,13 +238,11 @@ func validateEvidenceRefs(refs []EvidenceRef, review *reviewEvidence) error {
 }
 
 // citesChangedFile requires only that some evidence path is in the planned
-// changed-file set, not that it sits on the workspace snapshot specifically:
-// validateEvidenceRefs already proved each ref's snapshot+path combination
-// is real, so a changed path can only be cited on a snapshot where it
-// actually exists (workspace for an added or modified path, baseline for a
-// deleted one). Requiring the workspace snapshot specifically would make an
-// honest "modified by deletion" finding unsatisfiable, since a deleted path
-// has no workspace-snapshot content to cite at all.
+// changed-file set, not that it sits on the workspace snapshot specifically.
+// A changed path can be cited on whichever snapshot it actually exists on:
+// workspace for an added or modified path, baseline for a deleted one.
+// Requiring the workspace snapshot specifically would make an honest
+// "modified by deletion" finding unsatisfiable.
 func citesChangedFile(refs []EvidenceRef, changed map[string]bool) bool {
 	for _, ref := range refs {
 		if changed[ref.Path] {
@@ -317,14 +306,10 @@ func questionsToWire(questions []Question) []any {
 }
 
 // reviewEvidencePreamble injects this attempt's real snapshot identity and
-// its planned changed-file list after the trusted charter text, so the model
-// cites the actual baseline/head SHAs rather than a label, and accounts for
-// coverage against the exact set normalizeExecution will check it against.
-// The list itself is bounded (maxReviewChangedFileListBytes): a large
-// changed-file set is truncated with an explicit marker naming review_diff,
-// which returns the complete list within its own, larger output budget,
-// instead of letting the list alone threaten the argv-wide guard in
-// executionCommand.
+// changed-file list after the charter text, so the model cites real SHAs and
+// accounts for coverage against the exact checked set. The list is bounded by
+// maxReviewChangedFileListBytes: a large set is truncated with a marker
+// naming review_diff, which returns the complete list within its own budget.
 func reviewEvidencePreamble(evidence *reviewEvidence) string {
 	var b strings.Builder
 	b.WriteString("This attempt's charter_version is \"")

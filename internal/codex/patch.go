@@ -95,10 +95,8 @@ func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 }
 
 // collectSnapshotPatch verifies patch against the independently computed
-// before/after snapshots. detectRenames must match whatever setting produced
-// patch: it is only used to regenerate a comparison diff for the byte-equal
-// check, never to reinterpret the changed-file list, which is derived purely
-// from snapshot hashes and is unaffected by rename detection either way.
+// before/after snapshots. detectRenames must match the setting that produced
+// patch: it only regenerates the comparison diff, never the changed-file list.
 func collectSnapshotPatch(before, after map[string]fileState, patch []byte, detectRenames bool) (*Patch, error) {
 	paths := make([]string, 0, len(before)+len(after))
 	seen := make(map[string]bool)
@@ -258,12 +256,9 @@ func snapshotRoot(rootHandle *os.Root, beforeOpen func(string)) (map[string]file
 }
 
 // generatePatch runs `git diff` between two materialized snapshots.
-// detectRenames controls Git's default rename detection: implement/fix patch
-// artifacts keep it enabled (unchanged, compact rename hunks); review's
-// per-path diff lookup needs it disabled, because a combined rename header
-// mixes the old and new paths ("diff --git a/old b/new") and can never match
-// either path's own exact-string header key, silently hiding the hunk from
-// whichever path is looked up.
+// detectRenames controls Git's rename detection: implement/fix keep it
+// enabled, review disables it. A combined rename header would otherwise match
+// neither path's exact-string key, silently hiding the hunk.
 func generatePatch(before, after map[string]fileState, detectRenames bool) (patch []byte, returnedErr error) {
 	temporary, err := os.MkdirTemp("", "shipmunk-patch-")
 	if err != nil {
@@ -322,11 +317,10 @@ func generatePatch(before, after map[string]fileState, detectRenames bool) (patc
 		return nil, err
 	}
 	output := &boundedWriter{remaining: MaxPatchBytes + 1}
-	// core.quotePath=false keeps each file header a single literal "diff --git
-	// a/<path> b/<path>" line, which review_diff matches without re-parsing.
-	// A literal '"' in a path is still C-quoted and escaped regardless of
-	// core.quotePath; safeRepositoryPath rejects such paths at snapshot load
-	// instead.
+	// core.quotePath=false keeps each file header a single literal line,
+	// matched by review_diff without re-parsing. A literal '"' in a path is
+	// still C-quoted regardless; safeRepositoryPath rejects such paths at
+	// snapshot load instead.
 	diffArgs := []string{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary"}
 	if !detectRenames {
 		diffArgs = append(diffArgs, "--no-renames")
@@ -387,11 +381,10 @@ func runGit(ctx context.Context, home, work string, stdout *boundedWriter, argum
 }
 
 func safeRepositoryPath(path string) bool {
-	// '"' is rejected alongside '\\': Git always C-quotes and backslash-escapes
-	// a literal quote in a "diff --git a/<path> b/<path>" header regardless of
-	// core.quotePath, so a path containing one can never be matched back to
-	// its exact-string header key and would otherwise become silently
-	// unreadable through review_diff rather than failing the snapshot load.
+	// '"' is rejected alongside '\\': Git always C-quotes both in a diff header,
+	// so a path containing one could never match its header key. The path
+	// would otherwise become silently unreadable instead of failing the
+	// snapshot load.
 	if path == "" || len(path) > MaxPathBytes || !utf8.ValidString(path) || filepath.IsAbs(path) || strings.ContainsAny(path, "\\\"\x00\r\n") {
 		return false
 	}

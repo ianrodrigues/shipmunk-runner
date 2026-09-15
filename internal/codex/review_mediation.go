@@ -24,23 +24,14 @@ const (
 	MaxReviewSearchMatches = 200
 	MaxReviewSnippetBytes  = 300
 	MaxReviewLineCount     = 400
-	// MaxReviewScanBytes bounds the total bytes review_search reads across all
-	// files in one request, and any single file larger than this is skipped
-	// (marked truncated) rather than scanned, so one oversized file cannot
-	// consume the whole request's work by itself.
+	// MaxReviewScanBytes bounds the total bytes review_search reads per
+	// request; any single file larger than this is skipped instead of scanned.
 	MaxReviewScanBytes = 16 * 1024 * 1024
 )
 
 // ReviewMediator serves bounded, read-only list/search/read/diff operations
-// over the two authorized review snapshots. It loads both snapshots into
-// memory once, through the same validated snapshotRoot used for trusted patch
-// collection, and every operation afterward resolves against those in-memory
-// maps only. A request path can therefore never reach the filesystem again:
-// traversal, absolute paths and symlink-escape strings simply fail to match
-// any entry, and a snapshot containing a symlink, hard link or special file
-// fails to load at all. This is the enforced sharing boundary: only bytes
-// physically present in the two authorized snapshots, bounded and possibly
-// truncated, are ever returned. It is not general data-loss prevention.
+// over two review snapshots loaded once into memory; a request path can
+// never reach the filesystem again.
 type ReviewMediator struct {
 	mu        sync.Mutex
 	fence     int64
@@ -61,15 +52,14 @@ type ReviewMediator struct {
 	diffErr  error
 	diff     *Patch
 	// sections holds one raw diff section per changed path, keyed by the
-	// verified path from diff.ChangedFiles rather than parsed from the diff
-	// text, so file content can never masquerade as another file's section.
+	// verified path from diff.ChangedFiles, not parsed from the diff text.
 	sections map[string]string
 }
 
 // NewReviewMediator binds one attempt's fence and request budget to the two
-// pinned snapshot directories already opened by the transport. headSHA and
-// baselineSHA are the real commit identities so review_list/review_read
-// responses can carry snapshot_sha and the model can cite them verbatim.
+// pinned snapshot directories the transport already opened; headSHA and
+// baselineSHA are the real commit identities so responses can carry a
+// citable snapshot_sha.
 func NewReviewMediator(fence int64, maxRequests int, headRoot string, headHandle *os.File, baselineRoot string, baselineHandle *os.File, headSHA, baselineSHA string) (*ReviewMediator, error) {
 	if fence < 1 || fence > protocol.MaxSafeInteger || maxRequests < 1 || headRoot == "" || headHandle == nil || baselineRoot == "" || baselineHandle == nil || !fullSHAPattern.MatchString(headSHA) || !fullSHAPattern.MatchString(baselineSHA) {
 		return nil, errors.New("review mediator configuration is invalid")
@@ -101,11 +91,9 @@ func (m *ReviewMediator) load() error {
 	return m.loadErr
 }
 
-// Handle validates and executes exactly one closed-schema review request.
-// Only protocol-level violations (bad schema, fence, sequence, exhausted
-// budget, an unsafe snapshot) fail the call outright; an ordinary business
-// rejection such as an unknown path is returned as a normal ok:false result
-// so a single mistaken argument does not end the attempt.
+// Handle validates and executes exactly one closed-schema review request;
+// only protocol-level violations fail the call outright, while an ordinary
+// business rejection returns a normal ok:false result.
 func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -221,8 +209,7 @@ func (m *ReviewMediator) list(snapshotName, dir string, offset int64) (string, b
 		}
 		entry := fmt.Sprintf("%s\t%s\n", kind, name)
 		// Cap both the entry count and the response bytes: a directory of many
-		// long names must truncate with a marker, never silently exceed the
-		// response frame and come back as an unqualified failure.
+		// long names must truncate with a marker, not silently exceed the frame.
 		if shown >= MaxReviewListEntries || b.Len()+len(entry) > MaxReviewOutputBytes {
 			truncated = true
 			break
@@ -264,9 +251,8 @@ outer:
 			continue
 		}
 		// Bound work per file and in aggregate without ever materializing a
-		// per-line slice of the whole file (that scales with line count, not
-		// file size, and a newline-dense file can blow it up by two orders of
-		// magnitude).
+		// per-line slice of the whole file, which scales with line count, not
+		// file size.
 		if int64(len(content)) > MaxReviewScanBytes {
 			truncated = true
 			continue
@@ -310,11 +296,10 @@ outer:
 	return text, truncated, true
 }
 
-// nextLine returns the next line of data starting at pos (without its
-// trailing newline) and the byte offset to resume from. It never allocates:
-// the returned slice aliases data. The caller's loop condition must be
-// `pos <= len(data)`, and nextLine advances pos past len(data) once the final
-// line (which may lack a trailing newline) has been returned.
+// nextLine returns the next line of data starting at pos, without its
+// trailing newline, and the offset to resume from. It never allocates: the
+// returned slice aliases data. The caller's loop condition must be
+// `pos <= len(data)`.
 func nextLine(data []byte, pos int) (line []byte, next int) {
 	if newline := bytes.IndexByte(data[pos:], '\n'); newline >= 0 {
 		return data[pos : pos+newline], pos + newline + 1
@@ -357,10 +342,9 @@ func (m *ReviewMediator) read(snapshotName, path string, startLine, lineCount in
 		if int64(b.Len()+len(line)+1) > MaxReviewOutputBytes {
 			budgetHit = true
 			if collected == 0 {
-				// Even the first line alone exceeds the budget (a one-line
-				// minified asset or lockfile, say). Emit a bounded,
-				// rune-boundary-safe prefix of it instead of leaving the
-				// response with nothing but the truncation marker.
+				// Even the first line alone can exceed the budget. Emit a
+				// bounded, rune-boundary-safe prefix instead of returning only
+				// the truncation marker.
 				remaining := int(MaxReviewOutputBytes) - b.Len()
 				cut := boundedRunePrefixLen(line, remaining)
 				b.Write(line[:cut])
@@ -455,10 +439,8 @@ func (m *ReviewMediator) reviewDiff(path string) (string, bool, bool) {
 func (m *ReviewMediator) loadDiff() error {
 	m.diffOnce.Do(func() {
 		// detectRenames is false: parseDiffSections keys sections by an exact
-		// "diff --git a/<path> b/<path>" match against each independently
-		// verified changed path. A combined rename header ("diff --git
-		// a/old b/new") would match neither the old nor the new path,
-		// silently hiding the hunk from a per-path lookup on either name.
+		// header match against each verified changed path. A combined rename
+		// header would match neither path, silently hiding the hunk.
 		generated, err := generatePatch(m.baseline, m.head, false)
 		if err != nil {
 			m.diffErr = err
@@ -473,11 +455,9 @@ func (m *ReviewMediator) loadDiff() error {
 		if patch != nil {
 			m.sections = parseDiffSections(patch.Bytes, patch.ChangedFiles)
 			// Defense in depth: safeRepositoryPath already rejects a quote
-			// character at snapshot load, which is the known way Git can
-			// still C-quote a header despite core.quotePath=false, but if
-			// any changed path's section is ever missing for any other
-			// reason, fail the whole diff explicitly rather than silently
-			// reporting an unaffected file as unchanged.
+			// character at snapshot load. If any changed path's section is
+			// still missing, fail the whole diff instead of reporting the
+			// file as unchanged.
 			if err := verifyDiffSectionCoverage(m.sections, patch.ChangedFiles); err != nil {
 				m.diffErr = err
 				m.diff = nil
@@ -499,17 +479,12 @@ func verifyDiffSectionCoverage(sections map[string]string, changedFiles []FileCh
 	return nil
 }
 
-// parseDiffSections splits a unified diff produced without rename detection
-// into one raw section per changed path. It never searches for a path's
-// header as a substring of the diff text: file content is fully attacker
-// controlled and a content line that happens to read "diff --git a/x b/x"
-// would otherwise be indistinguishable from a real header. Instead it looks
-// for an exact, whole-line match against one of the header strings implied by
-// the independently verified ChangedFiles list, at the true start of a diff
-// line, immediately followed by a genuine header continuation line. A forged
-// header can never satisfy both: every content line inside a unified diff
-// hunk carries a mandatory " "/"+"/"-" prefix, so it can never be byte-equal
-// to a bare "diff --git a/<path> b/<path>" line.
+// parseDiffSections splits a unified diff into one raw section per changed
+// path. It never matches a header as a substring, since attacker-controlled
+// content could imitate one; instead it requires an exact, whole-line match
+// against the verified ChangedFiles list, immediately followed by a real
+// header continuation line. A forged header can never satisfy both, since
+// every content line carries a mandatory " "/"+"/"-" prefix.
 func parseDiffSections(diff []byte, changedFiles []FileChange) map[string]string {
 	sections := make(map[string]string, len(changedFiles))
 	if len(diff) == 0 || len(changedFiles) == 0 {
@@ -545,11 +520,10 @@ func hasDiffHeaderContinuation(lines []string, headerIndex int) bool {
 		return false
 	}
 	next := lines[headerIndex+1]
-	// "similarity index" and "rename from" never actually appear in review's
-	// own diff, which always requests --no-renames (see generatePatch), so
-	// every rename surfaces as a plain delete plus add keyed by its real path.
-	// They stay here so this parser remains correct on its own terms if it is
-	// ever pointed at a diff generated with rename detection enabled.
+	// "similarity index" and "rename from" never appear in review's own diff,
+	// which always requests --no-renames (see generatePatch); they stay here
+	// so this parser is still correct if ever pointed at a diff with rename
+	// detection enabled.
 	for _, prefix := range []string{"index ", "--- ", "new file mode", "deleted file mode", "similarity index", "rename from", "old mode"} {
 		if strings.HasPrefix(next, prefix) {
 			return true
@@ -572,8 +546,8 @@ type reviewRequest struct {
 
 // decodeReviewRequest independently re-validates a closed schema per
 // operation. requireFence distinguishes the host-trusted, fence-bound frame
-// handled here from the untrusted bridge frame the transport decodes first
-// (which must never itself carry a fence).
+// handled here from the untrusted bridge frame the transport decodes first,
+// which must never itself carry a fence.
 func decodeReviewRequest(raw []byte, requireFence bool) (reviewRequest, error) {
 	value, err := protocol.Decode(raw, MaxReviewRequestBytes)
 	if err != nil {
@@ -649,11 +623,10 @@ func decodeReviewRequest(raw []byte, requireFence bool) (reviewRequest, error) {
 	return request, nil
 }
 
-// reviewSnapshotAndPath validates only the request's shape (type, length, no
-// NUL byte). Whether the path is actually safe to resolve is a per-operation
-// business decision, checked again by list/search/read/diff themselves so an
-// unsafe path is rejected as an ordinary ok:false result rather than aborting
-// the whole attempt.
+// reviewSnapshotAndPath validates only the request's shape. Whether the path
+// is actually safe to resolve is a per-operation decision, checked again by
+// list/search/read/diff, so an unsafe path fails as an ordinary ok:false
+// result rather than aborting the attempt.
 func reviewSnapshotAndPath(object map[string]any) (string, string, bool) {
 	snapshot, snapshotOK := object["snapshot"].(string)
 	path, pathOK := object["path"].(string)
@@ -702,17 +675,16 @@ type reviewResponse struct {
 }
 
 // reviewResponseOverhead generously bounds the encoded size of every
-// reviewResponse field except Output: braces, field names, punctuation, the
-// widest fence/id/bool renderings and one optional 40-character snapshot_sha.
+// reviewResponse field except Output, covering braces, field names,
+// punctuation, and one optional 40-character snapshot_sha.
 const reviewResponseOverhead = 192
 
 const jsonTruncationMarker = "\n... [truncated: response exceeds the frame limit]"
 
 // encodeReviewResponse enforces the response budget on the JSON-encoded wire
-// size, not the raw string length: a string dense in quotes, backslashes or
-// control characters can expand well past its raw byte count once escaped,
-// and budgeting on raw bytes alone lets that content silently fail closed
-// with no output at all instead of a bounded, truncated one.
+// size, not the raw string length, since escaping can expand quote-dense
+// content well past its raw byte count. Budgeting on raw bytes alone would
+// let that content silently fail closed with no output.
 func encodeReviewResponse(fence, id int64, ok bool, output string, truncated bool, snapshotSHA string) ([]byte, error) {
 	budget := MaxReviewResponseBytes - reviewResponseOverhead
 	if budget < 0 {
@@ -734,9 +706,8 @@ func encodeReviewResponse(fence, id int64, ok bool, output string, truncated boo
 }
 
 // marshalReviewResponse encodes without HTML escaping: the response travels
-// over a local file bridge to a JSON-RPC client, never into HTML or a
-// <script> context, so escaping "<", ">" and "&" would only inflate ordinary
-// source text (comparison operators, XML, HTML fixtures) for no benefit.
+// over a local file bridge to JSON-RPC, never into HTML. Escaping would only
+// inflate ordinary source text for no benefit.
 func marshalReviewResponse(response reviewResponse) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
@@ -747,10 +718,9 @@ func marshalReviewResponse(response reviewResponse) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-// truncateForJSONBudget returns a prefix of s (plus an explicit marker) whose
-// JSON-encoded length, matching marshalReviewResponse's escaping rules, fits
-// within budget bytes. It cuts at a rune boundary so the result stays valid
-// UTF-8.
+// truncateForJSONBudget returns a prefix of s plus an explicit marker, whose
+// JSON-encoded length fits within budget bytes. It cuts at a rune boundary to
+// stay valid UTF-8.
 func truncateForJSONBudget(s string, budget int) (string, bool) {
 	if jsonEncodedLen(s) <= budget {
 		return s, false
@@ -769,9 +739,9 @@ func truncateForJSONBudget(s string, budget int) (string, bool) {
 		cut += utf8.RuneLen(r)
 	}
 	// range decodes an invalid UTF-8 byte as one U+FFFD rune while advancing
-	// by exactly one byte, but utf8.RuneLen(U+FFFD) is 3: on such input cut
-	// could otherwise overshoot len(s). s is UTF-8-gated by every caller
-	// today, so this is unreachable, but slicing must stay safe regardless.
+	// by exactly one byte, but utf8.RuneLen(U+FFFD) is 3, so cut could
+	// otherwise overshoot len(s). Every caller today UTF-8-gates s, so this is
+	// unreachable, but slicing must stay safe regardless.
 	if cut > len(s) {
 		cut = len(s)
 	}
@@ -787,9 +757,9 @@ func jsonEncodedLen(s string) int {
 }
 
 // jsonEncodedRuneLen mirrors encoding/json's escaping with HTML escaping
-// disabled: '"' and '\\' become two-byte escapes, '\n'/'\r'/'\t' become their
-// short two-byte escapes, every other C0 control character becomes a six-byte
-// "\u00XX" escape, and everything else is emitted as its own UTF-8 bytes.
+// disabled. '"' and '\\' become two-byte escapes; '\n'/'\r'/'\t' become short
+// two-byte escapes; other C0 control characters become six-byte "\u00XX"
+// escapes; everything else is emitted as-is.
 func jsonEncodedRuneLen(r rune) int {
 	switch r {
 	case '"', '\\', '\n', '\r', '\t':
