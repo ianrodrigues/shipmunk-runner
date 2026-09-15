@@ -270,7 +270,7 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	root := filepath.Join(home, ".shipmunk", "runners", bundle.RunnerID)
-	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}, IncomingReleaseVersion: manifest.Version}
+	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}, IncomingReleaseVersion: manifest.Version, IncomingArchiveDigest: platform.Archive.SHA256}
 	if err := guard.Preflight(); err != nil {
 		printRenewalRefusal(stderr, err)
 		return 1
@@ -333,16 +333,20 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printRenewalRefusal surfaces a release-order refusal's sanitized message,
-// naming both versions, and falls back to the generic identity/recovery
-// refusal for every other Preflight or Validate failure.
+// printRenewalRefusal names both versions for a release-order refusal, or the
+// version for a same-version archive mismatch, else prints the generic
+// identity/recovery refusal.
 func printRenewalRefusal(stderr io.Writer, err error) {
 	var releaseOrderErr *install.ReleaseOrderError
-	if errors.As(err, &releaseOrderErr) {
+	var archiveMismatchErr *install.ReleaseArchiveMismatchError
+	switch {
+	case errors.As(err, &releaseOrderErr):
 		fmt.Fprintln(stderr, "Runner renewal is blocked: "+releaseOrderErr.Error()+".")
-		return
+	case errors.As(err, &archiveMismatchErr):
+		fmt.Fprintln(stderr, "Runner renewal is blocked: "+archiveMismatchErr.Error()+".")
+	default:
+		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
 	}
-	fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
 }
 
 func checkSetupServer(baseURL string) error {

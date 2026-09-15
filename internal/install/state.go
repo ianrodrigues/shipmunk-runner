@@ -23,11 +23,8 @@ const activationJournalName = ".activation.json"
 var releaseVersionPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 var imageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
-// compareReleaseVersions orders two "vMAJOR.MINOR.PATCH[-prerelease][+build]"
-// release tags by semver 2.0.0 precedence (build metadata never affects the
-// result). It returns a negative number when a precedes b, zero when they are
-// the same release, and a positive number when a follows b, or an error when
-// either tag does not match releaseVersionPattern.
+// compareReleaseVersions orders release tags by semver 2.0.0 precedence:
+// negative means a precedes b, zero means equal, positive means a follows b.
 func compareReleaseVersions(a, b string) (int, error) {
 	aCore, aPrerelease, err := parseReleaseVersion(a)
 	if err != nil {
@@ -65,10 +62,8 @@ func parseReleaseVersion(version string) ([3]string, []string, error) {
 	return [3]string{parts[0], parts[1], parts[2]}, prerelease, nil
 }
 
-// compareNumericIdentifier compares two digit-only identifiers by magnitude
-// without integer parsing. releaseVersionPattern forbids leading zeros (other
-// than "0" itself), so equal-length digit strings compare correctly byte by
-// byte, and a shorter digit string is always numerically smaller.
+// No leading zeros are possible here, so length then byte order equals
+// numeric order without parsing.
 func compareNumericIdentifier(a, b string) int {
 	if len(a) != len(b) {
 		if len(a) < len(b) {
@@ -79,10 +74,7 @@ func compareNumericIdentifier(a, b string) int {
 	return strings.Compare(a, b)
 }
 
-// comparePrerelease implements semver 2.0.0 rule 11: no prerelease outranks
-// any prerelease of the same core version, shared identifiers are compared
-// left to right, and a longer identifier list outranks a shared-prefix
-// shorter one.
+// comparePrerelease implements semver 2.0.0 precedence rule 11.
 func comparePrerelease(a, b []string) int {
 	switch {
 	case len(a) == 0 && len(b) == 0:
@@ -146,13 +138,13 @@ type Identity struct {
 type Guard struct {
 	Root     string
 	Identity Identity
-	// IncomingReleaseVersion is the release tag setup is about to install or
-	// renew into. Left empty, renewal skips release-order enforcement (used
-	// by read-only paths such as loading the active configuration to run it).
+	// IncomingReleaseVersion enforces release order when set; empty skips it.
 	IncomingReleaseVersion string
-	Rename                 func(string, string) error
-	Sync                   func(string) error
-	Write                  func(string, []byte) error
+	// IncomingArchiveDigest is required at equal version precedence; see validateReleaseOrder.
+	IncomingArchiveDigest string
+	Rename                func(string, string) error
+	Sync                  func(string) error
+	Write                 func(string, []byte) error
 }
 
 type ActivationOutcome uint8
@@ -575,7 +567,7 @@ func (guard Guard) validateExistingIdentity() error {
 	if err != nil || configuration.Identity != guard.Identity || guard.validateReleaseBinding(configuration) != nil {
 		return errors.New("setup identity differs from the existing runner")
 	}
-	if err := guard.validateReleaseOrder(configuration.ReleaseVersion); err != nil {
+	if err := guard.validateReleaseOrder(configuration.ReleaseVersion, configuration.ReleasePath); err != nil {
 		return err
 	}
 	if configuration.ImageID == "" {
@@ -588,13 +580,12 @@ func (guard Guard) validateExistingIdentity() error {
 	return nil
 }
 
-// validateReleaseOrder refuses an incoming release older than the one already
-// installed, so a stale or mismatched manifest can never silently downgrade a
-// runner. The same release renews tokens without changing the release, and a
-// newer release proceeds; downgrades are refused by design rather than
-// offering rollback or PHP-state migration. A malformed installed version
-// fails closed.
-func (guard Guard) validateReleaseOrder(installed string) error {
+// Downgrades are refused by design (no rollback or PHP-state migration); a
+// malformed installed version also fails closed. At equal precedence, build
+// metadata is ignored (semver 2.0.0), so the incoming archive digest must
+// match the installed one, or a differently built same-version archive could
+// silently replace the installed release.
+func (guard Guard) validateReleaseOrder(installed, installedReleasePath string) error {
 	if guard.IncomingReleaseVersion == "" {
 		return nil
 	}
@@ -605,18 +596,34 @@ func (guard Guard) validateReleaseOrder(installed string) error {
 	if cmp < 0 {
 		return &ReleaseOrderError{Incoming: guard.IncomingReleaseVersion, Installed: installed}
 	}
+	if cmp == 0 {
+		if !digestPattern.MatchString(guard.IncomingArchiveDigest) {
+			return errors.New("incoming runner release archive digest is unsafe")
+		}
+		if guard.IncomingArchiveDigest != filepath.Base(installedReleasePath) {
+			return &ReleaseArchiveMismatchError{Version: guard.IncomingReleaseVersion}
+		}
+	}
 	return nil
 }
 
-// ReleaseOrderError reports that an incoming release is older than the one
-// already installed. Both versions have already passed releaseVersionPattern,
-// so its message is safe to surface to the operator verbatim.
+// ReleaseOrderError reports an incoming release older than the installed one.
 type ReleaseOrderError struct {
 	Incoming, Installed string
 }
 
 func (err *ReleaseOrderError) Error() string {
 	return fmt.Sprintf("runner release %s is older than the installed release %s", err.Incoming, err.Installed)
+}
+
+// ReleaseArchiveMismatchError reports a same-version renewal whose archive
+// digest differs from the installed release's.
+type ReleaseArchiveMismatchError struct {
+	Version string
+}
+
+func (err *ReleaseArchiveMismatchError) Error() string {
+	return fmt.Sprintf("runner release %s has a different archive than the installed release", err.Version)
 }
 
 type installedConfiguration struct {
