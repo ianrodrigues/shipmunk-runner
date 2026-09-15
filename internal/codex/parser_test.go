@@ -353,3 +353,125 @@ func TestParseRejectsEveryC0ControlInEvidencePath(t *testing.T) {
 		}
 	}
 }
+
+// strictFindingJSON is the wire shape the strict output schema forces: anchor is
+// always present because strict mode cannot omit a property.
+func strictFindingJSON(anchor string) string {
+	return `{"category":"correctness","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` +
+		evidenceJSON(sampleHeadSHA, findingPath, 1, 2) + `],"anchor":` + anchor + `}`
+}
+
+func strictCoverageJSON(reason string) string {
+	return `{"files":[{"path":"` + findingPath + `","status":"reviewed","reason":` + reason + `}],"context_gaps":[]}`
+}
+
+func TestParseNormalizesStrictSchemaNullsToAbsentFields(t *testing.T) {
+	clean := `{"summary":"Done.","outcome":"no_findings","charter_version":"1","findings":[],"questions":null,"coverage":` +
+		strictCoverageJSON("null") + `,"verification_state":"none","tests":[]}`
+	stream, err := Parse([]byte(validStream(clean)), nil)
+	if err != nil || stream.Result.Questions != nil || stream.Result.Coverage == nil || stream.Result.Coverage.Files[0].Reason != "" {
+		t.Fatalf("nullable charter fields not normalized: %#v err=%v", stream.Result, err)
+	}
+
+	withNullAnchor := `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + strictFindingJSON("null") +
+		`],"questions":null,"coverage":` + strictCoverageJSON("null") + `,"verification_state":"none","tests":[]}`
+	stream, err = Parse([]byte(validStream(withNullAnchor)), nil)
+	if err != nil || stream.Result.Findings[0].Anchor != nil {
+		t.Fatalf("null anchor not normalized: %#v err=%v", stream.Result, err)
+	}
+
+	anchor := `{"path":"` + findingPath + `","line":2,"side":"RIGHT"}`
+	withAnchor := strings.Replace(withNullAnchor, `"anchor":null`, `"anchor":`+anchor, 1)
+	stream, err = Parse([]byte(validStream(withAnchor)), nil)
+	if err != nil || stream.Result.Findings[0].Anchor == nil || stream.Result.Findings[0].Anchor.Side != "RIGHT" {
+		t.Fatalf("real anchor dropped with the nulls: %#v err=%v", stream.Result, err)
+	}
+
+	proposed := `{"summary":"Done.","outcome":"changes_proposed","charter_version":null,"findings":[` + strictFindingJSON("null") +
+		`],"questions":null,"coverage":null,"verification_state":null,"tests":[]}`
+	stream, err = Parse([]byte(validStream(proposed)), nil)
+	if err != nil || stream.Result.CharterVersion != "" || stream.Result.VerificationState != "" || stream.Result.Coverage != nil {
+		t.Fatalf("outcome-forbidden fields not normalized away: %#v err=%v", stream.Result, err)
+	}
+
+	for name, result := range map[string]string{
+		"null summary":  strings.Replace(clean, `"summary":"Done."`, `"summary":null`, 1),
+		"null findings": strings.Replace(clean, `"findings":[]`, `"findings":null`, 1),
+		"null tests":    strings.Replace(clean, `"tests":[]`, `"tests":null`, 1),
+		"null evidence": strings.Replace(withNullAnchor, `"evidence":[`+evidenceJSON(sampleHeadSHA, findingPath, 1, 2)+`]`, `"evidence":null`, 1),
+		"null in array": strings.Replace(clean, `"findings":[]`, `"findings":[null]`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(validStream(result)), nil); !errors.Is(err, ErrInvalidResult) {
+				t.Fatalf("null in a required position was accepted: %v", err)
+			}
+		})
+	}
+}
+
+// The strict output schema cannot carry minLength, maxLength or the array counts
+// it once declared, so every bound below is now enforced only here.
+func TestParseEnforcesLimitsTheOutputSchemaCannotDeclare(t *testing.T) {
+	text := func(length int) string { return strings.Repeat("x", length) }
+	repeat := func(entry string, count int) string {
+		return strings.TrimSuffix(strings.Repeat(entry+",", count), ",")
+	}
+	question := `{"topic":"t","question":"q","why_material":"w"}`
+	coverageFile := `{"path":"` + findingPath + `","status":"reviewed"}`
+
+	for name, result := range map[string]string{
+		"empty summary":         strings.Replace(noFindingsResult(), `"summary":"Done."`, `"summary":""`, 1),
+		"summary too long":      strings.Replace(noFindingsResult(), `"summary":"Done."`, `"summary":"`+text(16_385)+`"`, 1),
+		"empty scenario":        strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":""`, 1),
+		"scenario too long":     strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":"`+text(2001)+`"`, 1),
+		"explanation too long":  strings.Replace(findingsResult(), `"explanation":"An explanation."`, `"explanation":"`+text(8193)+`"`, 1),
+		"charter version long":  strings.Replace(noFindingsResult(), `"charter_version":"1"`, `"charter_version":"`+text(9)+`"`, 1),
+		"snapshot not a SHA":    strings.Replace(findingsResult(), `"snapshot":"`+sampleHeadSHA+`"`, `"snapshot":"`+text(40)+`"`, 1),
+		"evidence line below 1": strings.Replace(findingsResult(), `"line_start":1`, `"line_start":0`, 1),
+		"evidence path long":    strings.Replace(findingsResult(), `"path":"`+findingPath+`"`, `"path":"`+text(1025)+`"`, 1),
+		"question topic long":   strings.Replace(noFindingsResult(), `"tests":[]`, `"questions":[{"topic":"`+text(201)+`","question":"q","why_material":"w"}],"tests":[]`, 1),
+		"question text long":    strings.Replace(noFindingsResult(), `"tests":[]`, `"questions":[{"topic":"t","question":"`+text(2001)+`","why_material":"w"}],"tests":[]`, 1),
+		"coverage reason long":  strings.Replace(noFindingsResult(), coverageJSON(findingPath), `{"files":[{"path":"`+findingPath+`","status":"unreviewed","reason":"`+text(501)+`"}],"context_gaps":[]}`, 1),
+		"context gap long":      strings.Replace(noFindingsResult(), coverageJSON(findingPath), `{"files":[`+coverageFile+`],"context_gaps":["`+text(501)+`"]}`, 1),
+		"test command long":     strings.Replace(noFindingsResult(), `"tests":[]`, `"tests":[{"command":"`+text(2049)+`","status":"not_run","summary":"s"}]`, 1),
+		"test summary long":     strings.Replace(noFindingsResult(), `"tests":[]`, `"tests":[{"command":"c","status":"not_run","summary":"`+text(4097)+`"}]`, 1),
+		"evidence beyond five":  strings.Replace(findingsResult(), `"evidence":[`+evidenceJSON(sampleHeadSHA, findingPath, 1, 2)+`]`, `"evidence":[`+repeat(evidenceJSON(sampleHeadSHA, findingPath, 1, 2), MaxFindingEvidence+1)+`]`, 1),
+		"findings beyond limit": strings.Replace(findingsResult(), `"findings":[`+findingJSON(findingPath, 1, 2)+`]`, `"findings":[`+repeat(findingJSON(findingPath, 1, 2), MaxFindings+1)+`]`, 1),
+		"questions beyond limit": strings.Replace(noFindingsResult(), `"tests":[]`,
+			`"questions":[`+repeat(question, MaxQuestions+1)+`],"tests":[]`, 1),
+		"coverage files beyond limit": strings.Replace(noFindingsResult(), coverageJSON(findingPath),
+			`{"files":[`+repeat(coverageFile, MaxCoverageFiles+1)+`],"context_gaps":[]}`, 1),
+		"context gaps beyond limit": strings.Replace(noFindingsResult(), coverageJSON(findingPath),
+			`{"files":[`+coverageFile+`],"context_gaps":[`+repeat(`"gap"`, MaxCoverageContextGaps+1)+`]}`, 1),
+		"tests beyond limit": strings.Replace(noFindingsResult(), `"tests":[]`,
+			`"tests":[`+repeat(`{"command":"c","status":"not_run","summary":"s"}`, 101)+`]`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(validStream(result)), nil); !errors.Is(err, ErrInvalidResult) {
+				t.Fatalf("limit was not enforced after parsing: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseClassifiesBackendSchemaRejectionHoweverTheCLIWrapsIt(t *testing.T) {
+	body := `{"error":{"message":"Invalid schema for response_format 'codex_output_schema'.","type":"invalid_request_error","param":"text.format.schema","code":"invalid_json_schema"}}`
+	for name, message := range map[string]string{
+		"bare body":       body,
+		"prefixed body":   "invalid request: " + body,
+		"body with notes": body + " (retrying)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, event := range []string{
+				`{"type":"error","message":` + quote(message) + `}` + "\n",
+				`{"type":"turn.failed","error":{"message":` + quote(message) + `}}` + "\n",
+			} {
+				_, err := Parse([]byte(event), nil)
+				var failure *ClassifiedFailure
+				if !errors.As(err, &failure) || failure.Reason != FailureInvalidOutputSchema {
+					t.Fatalf("schema rejection = %#v (%v)", failure, err)
+				}
+			}
+		})
+	}
+}

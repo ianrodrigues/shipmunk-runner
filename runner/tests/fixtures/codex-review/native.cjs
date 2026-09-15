@@ -106,8 +106,9 @@ async function run() {
                 outcome: 'no_findings',
                 charter_version: '1',
                 findings: [],
+                questions: null,
                 coverage: {
-                    files: files.map(path => ({ path, status: 'reviewed' })),
+                    files: files.map(path => ({ path, status: 'reviewed', reason: null })),
                     context_gaps: [],
                 },
                 verification_state: 'none',
