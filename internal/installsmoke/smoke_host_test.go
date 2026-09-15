@@ -3,6 +3,7 @@ package installsmoke
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,8 +73,9 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	copyHostFile(t, checksumsPath, filepath.Join(fixture, "SHA256SUMS"), 0644)
 	copyHostFile(t, writeFakeDockerScript(t), filepath.Join(fixture, "bin", "docker"), 0755)
 	copyHostFile(t, resolveHostUpstub(t), filepath.Join(fixture, "upstub"), 0755)
+	upstubAddr := freeLoopbackAddr(t)
 	bundlePath := filepath.Join(fixture, "setup.json")
-	copyHostFile(t, writeSetupBundle(t, smokeRunnerID, smokeProfileID), bundlePath, 0600)
+	copyHostFile(t, writeSetupBundle(t, smokeRunnerID, smokeProfileID, "http://"+upstubAddr), bundlePath, 0600)
 
 	// Excludes /usr/local/bin and /opt/homebrew/bin, where php and go live.
 	scrubbedPath := fixture + "/bin:/usr/bin:/bin"
@@ -98,7 +100,7 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 		t.Fatalf("installed setup --version = %q (exit %d), want %q", versionResult.output, versionResult.exitCode, wantVersion)
 	}
 
-	startHostUpstub(t, filepath.Join(fixture, "upstub"))
+	startHostUpstub(t, filepath.Join(fixture, "upstub"), upstubAddr)
 
 	output, exitCode := runExpect(t, 90*time.Second,
 		"env", "-i", "HOME="+home, "PATH="+scrubbedPath,
@@ -175,11 +177,31 @@ func copyHostFile(t *testing.T, source, destination string, mode os.FileMode) {
 	}
 }
 
-func startHostUpstub(t *testing.T, upstubPath string) {
+// freeLoopbackAddr reserves and releases a free loopback port for the
+// up-stub, instead of a fixed one an unrelated process could already hold.
+// The listener is closed before the up-stub binds it, leaving a brief window
+// another process could win; startHostUpstub's caller relies on the up-stub
+// exiting non-zero on a failed bind so that race can't fake readiness.
+func freeLoopbackAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a free loopback port: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func startHostUpstub(t *testing.T, upstubPath, addr string) {
 	t.Helper()
 	_ = os.Remove(upstubRequestLog)
+	env := append(os.Environ(), upstubAddrEnv+"="+addr)
 	ctx, cancel := context.WithCancel(context.Background())
 	command := exec.CommandContext(ctx, upstubPath)
+	command.Env = env
 	if err := command.Start(); err != nil {
 		cancel()
 		t.Fatalf("start up-stub server: %v", err)
@@ -189,7 +211,7 @@ func startHostUpstub(t *testing.T, upstubPath string) {
 		_ = command.Wait()
 		_ = os.Remove(upstubRequestLog)
 	})
-	ready := runHostEnv(t, "", 15*time.Second, nil, upstubPath, "-wait")
+	ready := runHostEnv(t, "", 15*time.Second, env, upstubPath, "-wait")
 	if ready.exitCode != 0 {
 		t.Fatalf("synthetic /up server did not become ready: %s", ready.output)
 	}

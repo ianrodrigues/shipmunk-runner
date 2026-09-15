@@ -63,6 +63,8 @@ const (
 
 	// Must match testdata/upstub/main.go's requestLogPath.
 	upstubRequestLog = "/tmp/upstub-requests.log"
+	// Must match testdata/upstub/main.go's addrEnv.
+	upstubAddrEnv = "SHIPMUNK_UPSTUB_ADDR"
 )
 
 func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
@@ -126,7 +128,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	upstub := resolveUpstub(t, arch)
 	fakeDocker := writeFakeDockerScript(t)
-	bundlePath := writeSetupBundle(t, smokeRunnerID, smokeProfileID)
+	bundlePath := writeSetupBundle(t, smokeRunnerID, smokeProfileID, "http://127.0.0.1:8080")
 
 	for local, remote := range map[string]string{
 		archivePath: fixture + "/" + platform.Archive.Name,
@@ -316,10 +318,10 @@ func writeFakeDockerScript(t *testing.T) string {
 	return path
 }
 
-func writeSetupBundle(t *testing.T, runnerID, profileID string) string {
+func writeSetupBundle(t *testing.T, runnerID, profileID, baseURL string) string {
 	t.Helper()
 	bundle := map[string]any{
-		"version": 1, "runtime_version": "0.154.0", "base_url": "http://127.0.0.1:8080",
+		"version": 1, "runtime_version": "0.154.0", "base_url": baseURL,
 		"runner_id": runnerID, "profile_id": profileID, "expires_at": "2099-01-01T00:00:00Z",
 		"profile_token":   "1|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		"execution_token": "2|BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
