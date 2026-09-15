@@ -4,7 +4,7 @@ This repository is licensed under the GNU Affero General Public License v3.0 (se
 
 ## Go dependencies
 
-`go.mod` lists this module's dependencies. Run `go list -m all` for the current resolved set and each module's own license.
+This module has no external Go dependencies today (`go.mod` has zero `require` entries). If dependencies are added, `go list -m all` gives the current resolved set and each module's own license.
 
 ## Native agent clients and container images
 

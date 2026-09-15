@@ -65,6 +65,7 @@ lint:
 	@bash -n tools/publish-release.sh
 
 package-check:
+	@cmp -s LICENSE runner/LICENSE || { echo 'package-check: LICENSE and runner/LICENSE have drifted; runner/LICENSE is the one that ships in release archives.' >&2; exit 1; }
 	bash tests/ReleaseUploadTest.sh
 
 runner-check:
