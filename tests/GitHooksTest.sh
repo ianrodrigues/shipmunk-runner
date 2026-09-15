@@ -114,6 +114,14 @@ for prefix in fixup squash amend; do
 done
 pass 'Conventional Commit grammar, entire subject length, and autosquash exception'
 
+printf 'fix: warn without a sign-off\n\nbody\n' > "$message"
+sign_off_warning=$(.githooks/commit-msg "$message" 2>&1 >/dev/null)
+[[ "$sign_off_warning" == *'Signed-off-by'* ]] || fail 'commit-msg did not warn about a missing Signed-off-by trailer'
+printf 'fix: accept a sign-off\n\nbody\n\nSigned-off-by: Hook Fixture <hooks@example.test>\n' > "$message"
+signed_off_output=$(.githooks/commit-msg "$message" 2>&1 >/dev/null)
+[[ -z "$signed_off_output" ]] || fail 'commit-msg warned despite a present Signed-off-by trailer'
+pass 'missing Signed-off-by trailer warns without rejecting the commit'
+
 # No tests, Git process, or network is required to interpret pre-push records.
 object=$(git rev-parse HEAD)
 zero=0000000000000000000000000000000000000000
