@@ -38,6 +38,7 @@ func TestReviewCharterDefinesSeverityGroupingAndProportionality(t *testing.T) {
 			name: "Grouping",
 			clauses: []string{
 				"One root cause produces one finding.",
+				"five-citation limit",
 				"cite the most representative ones and say in the explanation how many others share the pattern",
 				"A missing regression test for a root cause is part of that finding, not a second one.",
 				"Never report two findings that trace back to the same root cause",
