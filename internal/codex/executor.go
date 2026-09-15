@@ -366,8 +366,7 @@ func normalizeExecution(ctx context.Context, claim protocol.Claim, stream Stream
 			return supervisor.Execution{}, err
 		}
 	case isReview && stream.Result.Outcome == "incomplete" && stream.Result.Coverage != nil:
-		// incomplete's optional coverage is forwarded to the wire below. It
-		// must still be checked against the real changed-file set here, as
+		// Coverage must still be checked against the real changed-file set here, as
 		// validateReviewResult does for findings/no_findings.
 		if review == nil {
 			return supervisor.Execution{}, errors.New("Codex review evidence is unavailable")

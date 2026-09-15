@@ -480,11 +480,9 @@ func verifyDiffSectionCoverage(sections map[string]string, changedFiles []FileCh
 }
 
 // parseDiffSections splits a unified diff into one raw section per changed
-// path. It never matches a header as a substring, since attacker-controlled
-// content could imitate one; instead it requires an exact, whole-line match
-// against the verified ChangedFiles list, immediately followed by a real
-// header continuation line. A forged header can never satisfy both, since
-// every content line carries a mandatory " "/"+"/"-" prefix.
+// path. It never matches a header as a substring, since forged content could
+// imitate one; it requires an exact ChangedFiles line followed by a real
+// header line.
 func parseDiffSections(diff []byte, changedFiles []FileChange) map[string]string {
 	sections := make(map[string]string, len(changedFiles))
 	if len(diff) == 0 || len(changedFiles) == 0 {
@@ -624,9 +622,9 @@ func decodeReviewRequest(raw []byte, requireFence bool) (reviewRequest, error) {
 }
 
 // reviewSnapshotAndPath validates only the request's shape. Whether the path
-// is actually safe to resolve is a per-operation decision, checked again by
-// list/search/read/diff, so an unsafe path fails as an ordinary ok:false
-// result rather than aborting the attempt.
+// is safe to resolve is checked again per operation by list, search, read
+// and diff, so an unsafe path fails as an ordinary ok:false result, not an
+// aborted attempt.
 func reviewSnapshotAndPath(object map[string]any) (string, string, bool) {
 	snapshot, snapshotOK := object["snapshot"].(string)
 	path, pathOK := object["path"].(string)
@@ -757,9 +755,7 @@ func jsonEncodedLen(s string) int {
 }
 
 // jsonEncodedRuneLen mirrors encoding/json's escaping with HTML escaping
-// disabled. '"' and '\\' become two-byte escapes; '\n'/'\r'/'\t' become short
-// two-byte escapes; other C0 control characters become six-byte "\u00XX"
-// escapes; everything else is emitted as-is.
+// disabled.
 func jsonEncodedRuneLen(r rune) int {
 	switch r {
 	case '"', '\\', '\n', '\r', '\t':
