@@ -212,8 +212,15 @@ const reviewPathSchema = {
 
 // The active tool set is chosen once from the fixed launch argument the
 // runner supplies; it never changes for the life of this process, and a
-// review process never advertises or accepts repository_command.
-const mode = process.argv[2] === 'review' ? 'review' : 'repository';
+// review process never advertises or accepts repository_command. An
+// unrecognized argument fails closed rather than silently defaulting to the
+// more permissive repository mode.
+const modeArgument = process.argv[2];
+if (modeArgument !== 'review' && modeArgument !== 'repository') {
+    process.stderr.write('Unsupported repository bridge mode.\n');
+    process.exit(1);
+}
+const mode = modeArgument;
 
 const toolsByMode = {
     repository: [
@@ -242,19 +249,29 @@ const toolsByMode = {
         {
             name: 'review_list',
             description:
-                'List the immediate entries of a directory in the authorized baseline or workspace snapshot.',
+                'List the immediate entries of a directory in the authorized baseline or workspace snapshot. Pass the next offset from a truncated response to continue.',
             inputSchema: {
                 type: 'object',
-                properties: { snapshot: reviewSnapshotSchema, path: reviewPathSchema },
-                required: ['snapshot', 'path'],
+                properties: {
+                    snapshot: reviewSnapshotSchema,
+                    path: reviewPathSchema,
+                    offset: {
+                        type: 'integer',
+                        minimum: 0,
+                        description: 'Entries to skip before listing. Use 0 for the first page.',
+                    },
+                },
+                required: ['snapshot', 'path', 'offset'],
                 additionalProperties: false,
             },
             validate: (args) =>
-                object(args, ['snapshot', 'path']) &&
+                object(args, ['snapshot', 'path', 'offset']) &&
                 validSnapshot(args.snapshot) &&
-                validPath(args.path),
+                validPath(args.path) &&
+                Number.isSafeInteger(args.offset) &&
+                args.offset >= 0,
             call: (args) =>
-                reviewBridge('review_list', { snapshot: args.snapshot, path: args.path }),
+                reviewBridge('review_list', { snapshot: args.snapshot, path: args.path, offset: args.offset }),
         },
         {
             name: 'review_search',
