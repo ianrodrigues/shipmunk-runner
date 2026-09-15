@@ -166,8 +166,9 @@ func TestParseRejectsMalformedAndIncompleteStreams(t *testing.T) {
 	}
 }
 
-// Codex 0.154 reports configuration warnings, deprecation notices and model reroutes as completed error
-// items, and a retried transient backend error as a top-level error event; both precede a normal turn.
+// Codex 0.154 reports configuration warnings, deprecation notices and model reroutes as completed error items.
+// It also reports a retried transient backend error as a top-level error event.
+// Both precede a normal turn.
 func TestParseAcceptsReportedErrorsBeforeACompletedTurn(t *testing.T) {
 	for name, test := range map[string]struct{ reported, before string }{
 		"startup item":  {`{"type":"item.completed","item":{"id":"startup","type":"error","message":"private configuration warning"}}`, `{"type":"turn.started"}`},

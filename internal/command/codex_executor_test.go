@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -83,6 +84,45 @@ func TestProfileExecutorRejectsMismatchedCredentialBeforeSideEffects(t *testing.
 	executor, _ := newProfileExecutor(store, delegate)
 	if _, err := executor.Execute(context.Background(), claim, map[string]any{}, t.TempDir()); err == nil || delegate.executes != 0 || delegate.cleanups != 0 {
 		t.Fatalf("mismatched profile reached transport: executes=%d cleanups=%d err=%v", delegate.executes, delegate.cleanups, err)
+	}
+}
+
+// Codex 0.154 leaves arg0 helper symlinks in its own scratch tree and writes 0644 metadata beside them.
+func TestProfileExecutorRepairsNativeScratchAndMetadataBeforeExecuting(t *testing.T) {
+	store, claim := preparedExecutionProfile(t)
+	home := store.Home()
+	scratch := filepath.Join(home, ".codex", "tmp")
+	if err := os.MkdirAll(filepath.Join(scratch, "arg0", "codex-arg0test"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(scratch, "arg0", "codex-arg0test", "codex-linux-sandbox")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	metadata := filepath.Join(home, ".codex", "installation_id")
+	if err := os.WriteFile(metadata, []byte("identifier"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	delegate := &commandFixtureExecutor{}
+	executor, err := newProfileExecutor(store, delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Execute(context.Background(), claim, map[string]any{}, t.TempDir()); err != nil || delegate.executes != 1 {
+		t.Fatalf("native scratch or metadata blocked execution: executes=%d err=%v", delegate.executes, err)
+	}
+	if children, err := os.ReadDir(scratch); err != nil || len(children) != 0 {
+		t.Fatalf("native scratch was not replaced: %v, %v", children, err)
+	}
+	if info, err := os.Lstat(metadata); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("native metadata was not protected: %v, %v", info, err)
+	}
+	if contents, err := os.ReadFile(outside); err != nil || string(contents) != "outside" {
+		t.Fatalf("repair followed a scratch symlink: %q, %v", contents, err)
 	}
 }
 

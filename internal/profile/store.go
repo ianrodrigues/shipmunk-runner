@@ -377,13 +377,16 @@ func equalJournalIdentity(left, right map[string]any) bool {
 	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
 }
 
-// ValidateHome verifies every home entry uses the required protected mode.
+// ValidateHome replaces the native scratch tree, so the runner owns that mount point before any container starts, then verifies every remaining home entry uses the required protected mode.
 func (store *Store) ValidateHome() error {
 	if err := store.ensureOpen(); err != nil {
 		return err
 	}
 	if err := store.verifyDirectories(); err != nil {
 		return err
+	}
+	if err := pruneNativeScratch(store.Home(), nativeTreeHooks{}); err != nil {
+		return fmt.Errorf("prune native scratch: %w", err)
 	}
 	return validateProfileTree(store.Home())
 }
@@ -397,6 +400,14 @@ func (store *Store) NormalizeNativeHome() error {
 		return err
 	}
 	return normalizeNativeProfileTree(store.Home(), nativeTreeHooks{})
+}
+
+// RepairHome normalizes native-generated entries and then validates the home, so a native run's own metadata or scratch cannot make a usable profile look unsafe; it requires the exclusive profile lock.
+func (store *Store) RepairHome() error {
+	if err := store.NormalizeNativeHome(); err != nil {
+		return err
+	}
+	return store.ValidateHome()
 }
 
 // Invalidate forgets the active identity and removes home entries without following symlinks; pending/execution recovery journals remain untouched.
