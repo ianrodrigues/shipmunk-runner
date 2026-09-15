@@ -22,6 +22,8 @@ type RunnerOptions struct {
 	ProfilesDir     string
 	RepositoryImage string
 	SessionMode     string
+	DiscardAttempt  bool
+	Confirmed       bool
 }
 
 // ProfileOptions contains the validated command-line configuration for a
@@ -57,6 +59,8 @@ func parseRunnerOptions(args []string, output io.Writer) (parsedRunnerOptions, e
 	flags.String("profiles-dir", "", "protected profile directory")
 	flags.String("repository-image", "", "repository command image")
 	flags.String("session-mode", "fresh", "fresh or resume")
+	flags.Bool("discard-attempt", false, "discard the local attempt journal instead of running")
+	flags.Bool("yes", false, "skip the discard-attempt confirmation prompt")
 	version := flags.Bool("version", false, "print version")
 	if err := flags.Parse(args); err != nil {
 		return parsedRunnerOptions{}, err
@@ -74,6 +78,8 @@ func parseRunnerOptions(args []string, output io.Writer) (parsedRunnerOptions, e
 		ProfilesDir:     flags.Lookup("profiles-dir").Value.String(),
 		RepositoryImage: flags.Lookup("repository-image").Value.String(),
 		SessionMode:     flags.Lookup("session-mode").Value.String(),
+		DiscardAttempt:  flags.Lookup("discard-attempt").Value.String() == "true",
+		Confirmed:       flags.Lookup("yes").Value.String() == "true",
 	}
 	return parsedRunnerOptions{options: options, version: *version}, nil
 }
@@ -115,6 +121,9 @@ func validateRunnerOptions(options *RunnerOptions) error {
 	}
 	if options.SessionMode != "fresh" && options.SessionMode != "resume" {
 		return errors.New("Unsupported Codex session mode.")
+	}
+	if options.DiscardAttempt && options.Once {
+		return errors.New("--discard-attempt and --once are mutually exclusive.")
 	}
 	return nil
 }

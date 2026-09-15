@@ -42,6 +42,8 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 		contains []string
 	}{
 		{[]string{"run", root, "--once"}, "shipmunk-runner", []string{"--driver=codex", "--once", "--token-file=" + filepath.Join(root, "execution.token"), "--image=sha256:" + strings.Repeat("b", 64), "--repository-image=sha256:" + strings.Repeat("b", 64)}},
+		{[]string{"run", root, "--discard-attempt"}, "shipmunk-runner", []string{"--discard-attempt", "--token-file=" + filepath.Join(root, "execution.token")}},
+		{[]string{"run", root, "--discard-attempt", "--yes"}, "shipmunk-runner", []string{"--discard-attempt", "--yes"}},
 		{[]string{"connect", root}, "shipmunk-profile", []string{"--operation=login", "--token-file=" + filepath.Join(root, "profile.token"), "--image=sha256:" + strings.Repeat("b", 64)}},
 		{[]string{"connect", root, "probe"}, "shipmunk-profile", []string{"--operation=probe"}},
 	} {
@@ -65,7 +67,10 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 			t.Fatalf("operation id = %q", operation)
 		}
 	}
-	for _, args := range [][]string{{"run", root, "--other"}, {"connect", root, "disconnect"}, {"connect", root, "probe", "extra"}} {
+	for _, args := range [][]string{
+		{"run", root, "--other"}, {"connect", root, "disconnect"}, {"connect", root, "probe", "extra"},
+		{"run", root, "--once", "--yes"}, {"run", root, "--discard-attempt", "--other"}, {"run", root, "--discard-attempt", "--yes", "extra"},
+	} {
 		if code := runInstalledSetup(args, &bytes.Buffer{}, &bytes.Buffer{}); code != 2 {
 			t.Fatalf("unsafe args %v = %d", args, code)
 		}
