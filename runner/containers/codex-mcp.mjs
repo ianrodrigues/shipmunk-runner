@@ -178,15 +178,23 @@ async function commandBridge(text) {
 async function reviewBridge(op, args) {
     const value = await exchangeBridge({ op, ...args });
     if (
-        !object(value, ['id', 'ok', 'output', 'truncated']) ||
+        !object(value, ['id', 'ok', 'output', 'truncated', 'snapshot_sha']) ||
         typeof value.ok !== 'boolean' ||
         typeof value.output !== 'string' ||
-        typeof value.truncated !== 'boolean'
+        typeof value.truncated !== 'boolean' ||
+        (value.snapshot_sha !== undefined && typeof value.snapshot_sha !== 'string')
     ) {
         throw new Error('Invalid response.');
     }
+    // snapshot_sha (review_list/review_read only) is the real 40-character
+    // SHA of the snapshot the response came from; it must reach the model in
+    // the text content, not just the outer mediator struct, or the model has
+    // no way to cite an evidence snapshot that actually exists.
+    const text = value.snapshot_sha
+        ? `snapshot_sha: ${value.snapshot_sha}\n${value.output}`
+        : value.output;
     return {
-        content: [{ type: 'text', text: value.output }],
+        content: [{ type: 'text', text }],
         isError: !value.ok,
     };
 }

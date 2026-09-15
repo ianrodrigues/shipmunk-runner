@@ -195,13 +195,22 @@ echo probe-ok`
 	if strings.Contains(outputs[0], "substituted.txt") {
 		t.Fatalf("listing used a path instead of the pinned descriptor: %s", outputs[0])
 	}
+	// snapshot_sha must reach the model in the text content itself, not just
+	// the mediator's own struct: this is what codex-mcp.mjs's reviewBridge
+	// forwards as the actual MCP tool result.
+	if !strings.HasPrefix(outputs[0], "snapshot_sha: "+sampleHeadSHA+"\n") {
+		t.Fatalf("review_list workspace response missing real head snapshot_sha: %s", outputs[0])
+	}
 
 	if errored[1] || !strings.Contains(outputs[1], "app.go") {
 		t.Fatalf("review_list src failed: %s", outputs[1])
 	}
 
-	if errored[2] || strings.TrimSpace(outputs[2]) != "base contents" {
+	if errored[2] || strings.TrimSpace(strings.TrimPrefix(outputs[2], "snapshot_sha: "+sampleBaselineSHA+"\n")) != "base contents" {
 		t.Fatalf("review_read baseline/changed.txt unexpected: %s", outputs[2])
+	}
+	if !strings.HasPrefix(outputs[2], "snapshot_sha: "+sampleBaselineSHA+"\n") {
+		t.Fatalf("review_read baseline response missing real baseline snapshot_sha: %s", outputs[2])
 	}
 
 	if errored[3] || !strings.Contains(outputs[3], "changed.txt:1: head contents") {
@@ -242,8 +251,11 @@ echo probe-ok`
 	// directly in the fixture, not via /profile): it must return that planted
 	// content, never the real profile canary, proving the tool surface has no
 	// channel to /profile regardless of what the path string looks like.
-	if errored[10] || strings.TrimSpace(outputs[10]) != "not a credential" {
+	if errored[10] || strings.TrimSpace(strings.TrimPrefix(outputs[10], "snapshot_sha: "+sampleHeadSHA+"\n")) != "not a credential" {
 		t.Fatalf("profile-shaped path in workspace returned unexpected content: error=%t output=%s", errored[10], outputs[10])
+	}
+	if !strings.HasPrefix(outputs[10], "snapshot_sha: "+sampleHeadSHA+"\n") {
+		t.Fatalf("review_read workspace response missing real head snapshot_sha: %s", outputs[10])
 	}
 
 	for index, output := range outputs {

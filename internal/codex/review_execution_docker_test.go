@@ -34,13 +34,17 @@ func TestDockerReviewExecutionProducesACharterCompliantResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	tag := fmt.Sprintf("shipmunk-codex-review-fixture-%d:local", time.Now().UnixNano())
-	build := exec.Command("docker", "build", "--pull=false", "--build-arg", "CODEX_FIXTURE_BASE="+baseImage,
+	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelBuild()
+	build := exec.CommandContext(buildCtx, "docker", "build", "--pull=false", "--build-arg", "CODEX_FIXTURE_BASE="+baseImage,
 		"--tag", tag, "--file", filepath.Join(repoRoot, "runner/tests/fixtures/codex-review/Dockerfile"), repoRoot)
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build synthetic review image: %v\n%s", err, output)
 	}
 	t.Cleanup(func() {
-		if output, err := exec.Command("docker", "rmi", "-f", tag).CombinedOutput(); err != nil {
+		rmCtx, cancelRM := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelRM()
+		if output, err := exec.CommandContext(rmCtx, "docker", "rmi", "-f", tag).CombinedOutput(); err != nil {
 			t.Errorf("remove synthetic review image: %v\n%s", err, output)
 		}
 	})
@@ -93,17 +97,21 @@ func TestDockerReviewExecutionProducesACharterCompliantResult(t *testing.T) {
 		},
 	}
 
+	// Registered before Execute: several of its error paths return after
+	// transport.Start has already created a container, and t.Fatal below
+	// must not skip past cleanup for those.
+	t.Cleanup(func() {
+		if err := executor.Cleanup(context.Background(), claim); err != nil {
+			t.Error(err)
+		}
+	})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	execution, err := executor.Execute(ctx, claim, nil, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := executor.Cleanup(context.Background(), claim); err != nil {
-			t.Error(err)
-		}
-	})
 
 	if execution.Result["outcome"] != "no_findings" || execution.Result["charter_version"] != ReviewCharterVersion || execution.Result["verification_state"] != "none" {
 		t.Fatalf("unexpected review result: %#v", execution.Result)
