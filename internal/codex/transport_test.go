@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -360,6 +361,41 @@ func TestDockerTransportCreatesSeparatedBoundaries(t *testing.T) {
 		if strings.Contains(line, "--name "+testTransportName+"-repo") && strings.Contains(line, transport.cfg.ProfileHome) {
 			t.Fatal("repository container received the credential home")
 		}
+	}
+}
+
+func TestDockerTransportKeepsNativeScratchOffTheProfileHome(t *testing.T) {
+	d := new(recordedDocker)
+	transport := transportFixture(t, d)
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	calls := append([][]string(nil), d.calls...)
+	d.mu.Unlock()
+	scratch := fmt.Sprintf("--tmpfs /profile/.codex/tmp:rw,nosuid,nodev,size=16m,mode=0700,uid=%d,gid=%d", os.Geteuid(), os.Getegid())
+	native := ""
+	repository := ""
+	for _, call := range calls {
+		line := strings.Join(call, " ")
+		switch {
+		case strings.HasPrefix(line, "create --name "+testTransportName+" "):
+			native = line
+		case strings.HasPrefix(line, "create --name "+testTransportName+"-repo "):
+			repository = line
+		}
+	}
+	if native == "" || repository == "" {
+		t.Fatalf("Codex boundaries were not created: %v", calls)
+	}
+	if !strings.Contains(native, scratch) {
+		t.Fatalf("native container did not mask the native scratch directory: %s", native)
+	}
+	if strings.Index(native, scratch) > strings.Index(native, "--entrypoint") {
+		t.Fatalf("native scratch tmpfs followed the image argument: %s", native)
+	}
+	if strings.Contains(repository, "/profile") {
+		t.Fatalf("repository container received a profile path: %s", repository)
 	}
 }
 

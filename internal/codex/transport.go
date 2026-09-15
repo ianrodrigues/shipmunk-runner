@@ -269,7 +269,8 @@ func (t *DockerTransport) Start(ctx context.Context) (err error) {
 	}
 	common := []string{"--label", "shipmunk.codex=true", "--label", "shipmunk.codex-owner=" + t.cfg.Name, "--read-only", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", "--ulimit", "nofile=1024:1024", "--log-driver", "none", "--stop-timeout", "2"}
 	native := append([]string{"create", "--name", t.cfg.Name}, common...)
-	native = append(native, "--pids-limit", "128", "--network", "bridge", "--workdir", "/empty", "--mount", "type=bind,src="+t.cfg.ProfileHome+",dst=/profile", "--mount", "type=bind,src="+t.bridge+",dst=/bridge", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--entrypoint", "/usr/bin/env", nativeID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
+	// The pinned CLI writes arg0 helper symlinks under its own tmp; this tmpfs keeps them off the retained profile home.
+	native = append(native, "--pids-limit", "128", "--network", "bridge", "--workdir", "/empty", "--mount", "type=bind,src="+t.cfg.ProfileHome+",dst=/profile", "--mount", "type=bind,src="+t.bridge+",dst=/bridge", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--tmpfs", fmt.Sprintf("/profile/.codex/tmp:rw,nosuid,nodev,size=16m,mode=0700,uid=%d,gid=%d", uid, gid), "--entrypoint", "/usr/bin/env", nativeID, "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sleep", "1800")
 	if _, err = t.run(ctx, nil, native...); err != nil {
 		return errors.New("cannot create native container")
 	}

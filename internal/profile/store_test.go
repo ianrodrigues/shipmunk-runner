@@ -437,6 +437,78 @@ func TestNativeNormalizationRejectsUnsafeEntriesBeforeChangingAnyModes(t *testin
 	}
 }
 
+func TestNativeNormalizationPrunesNativeScratchAndProtectsTheRest(t *testing.T) {
+	store, root := openTestStore(t)
+	home := createTestHome(t, store)
+	scratch := filepath.Join(home, ".codex", "tmp")
+	nested := filepath.Join(scratch, "arg0", "codex-arg0test")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(nested, "codex-linux-sandbox")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, ".lock"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	configuration := filepath.Join(home, ".codex", "config.toml")
+	if err := os.WriteFile(configuration, []byte("native"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithExclusive(func(locked *Store) error { return locked.NormalizeNativeHome() }); err != nil {
+		t.Fatal(err)
+	}
+	children, err := os.ReadDir(scratch)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("native scratch was not pruned: %v, %v", children, err)
+	}
+	if mode := fileMode(t, scratch); mode != 0700 {
+		t.Fatalf("pruned scratch directory mode %#o, want 0700", mode)
+	}
+	if mode := fileMode(t, configuration); mode != 0600 {
+		t.Fatalf("normalized configuration mode %#o, want 0600", mode)
+	}
+	if contents, err := os.ReadFile(outside); err != nil || string(contents) != "outside" {
+		t.Fatalf("pruning followed a scratch symlink: %q, %v", contents, err)
+	}
+	if err := store.ValidateHome(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeNormalizationRejectsSymlinkOutsideNativeScratch(t *testing.T) {
+	store, root := openTestStore(t)
+	home := createTestHome(t, store)
+	scratch := filepath.Join(home, ".codex", "tmp")
+	if err := os.MkdirAll(scratch, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(scratch, "pruned")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	retained := filepath.Join(home, ".codex", "retained")
+	if err := os.Symlink(outside, retained); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithExclusive(func(locked *Store) error { return locked.NormalizeNativeHome() }); err == nil {
+		t.Fatal("normalization accepted a symlink outside the native scratch directory")
+	}
+	if _, err := os.Lstat(retained); err != nil {
+		t.Fatalf("normalization removed an entry outside the native scratch directory: %v", err)
+	}
+	if contents, err := os.ReadFile(outside); err != nil || string(contents) != "outside" {
+		t.Fatalf("normalization changed the symlink target: %q, %v", contents, err)
+	}
+}
+
 func TestNativeNormalizationRejectsDirectoryReplacedByOutsideSymlink(t *testing.T) {
 	store, root := openTestStore(t)
 	home := createTestHome(t, store)
