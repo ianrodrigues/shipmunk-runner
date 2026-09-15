@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -93,6 +94,23 @@ func TestDockerReviewExecutionProducesACharterCompliantResult(t *testing.T) {
 			"supervisor":       map[string]any{"credential_reference": "credential:test"},
 		},
 	}
+
+	// Cleanups run last in, first out, so this one inspects the home after the containers are gone.
+	// A rootful daemon that creates the tmpfs mount point itself leaves it owned by root, which this unprivileged process could no longer remove.
+	t.Cleanup(func() {
+		for _, relative := range []string{".codex", filepath.Join(".codex", "tmp")} {
+			path := filepath.Join(profileHome, relative)
+			info, err := os.Lstat(path)
+			if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+				t.Errorf("native scratch path %s = %v (%v), want a 0700 directory", relative, info, err)
+				continue
+			}
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || stat.Uid != uint32(os.Geteuid()) {
+				t.Errorf("native scratch path %s is not owned by the runner", relative)
+			}
+		}
+	})
 
 	// Registered before Execute: several of its error paths return after
 	// transport.Start has already created a container, and t.Fatal below
