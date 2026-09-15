@@ -99,7 +99,8 @@ function driver_claim(array $overrides = []): Claim
             'profile_id' => '01nnnnnnnnnnnnnnnnnnnnnnnn',
             'repository_id' => 12,
             'head_sha' => str_repeat('a', 40),
-            'base_sha' => str_repeat('b', 40),
+            'target_sha' => str_repeat('9', 40),
+            'diff_base_sha' => str_repeat('b', 40),
             'supervisor' => ['credential_reference' => 'credential:assigned'],
             'effective_config' => [
                 'model' => 'fixture-model',
@@ -195,7 +196,7 @@ $tests['implementation still collects and binds its verified patch'] = function 
     $transport->stdout = str_replace('no_findings', 'changes_proposed', $transport->stdout);
     $transport->diff = "diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after\n";
     $execution = (new CodexDriver)->start(
-        driver_claim(['kind' => 'implement', 'base_sha' => str_repeat('a', 40)]),
+        driver_claim(['kind' => 'implement', 'diff_base_sha' => str_repeat('a', 40)]),
         $transport,
         static function (): void {},
     );
@@ -555,8 +556,8 @@ foreach ([
     };
 }
 foreach ([
-    ['kind' => 'review', 'base_sha' => str_repeat('a', 40)],
-    ['kind' => 'implement', 'base_sha' => str_repeat('b', 40)],
+    ['kind' => 'review', 'diff_base_sha' => str_repeat('a', 40)],
+    ['kind' => 'implement', 'diff_base_sha' => str_repeat('b', 40)],
 ] as $index => $override) {
     $tests['patch output cannot misrepresent its source baseline '.$index] = function () use ($override): void {
         $transport = new SimulatedAgentTransport;

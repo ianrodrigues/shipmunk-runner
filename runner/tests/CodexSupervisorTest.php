@@ -256,7 +256,8 @@ function codex_supervisor_scenario(
         'agent' => 'codex',
         'runtime_version' => NativeProfile::VERSIONS['codex'],
         'kind' => 'implementation',
-        'base_sha' => $sha,
+        'target_sha' => $sha,
+        'diff_base_sha' => $sha,
         'head_sha' => $sha,
         'task_context' => $cancel ? 'SCENARIO:cancel' : 'SCENARIO:success',
         'effective_config' => [

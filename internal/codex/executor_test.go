@@ -80,7 +80,7 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 }
 
 func executionManifest() map[string]any {
-	return map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("10")}}
+	return map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "repository_id": 1, "target_sha": strings.Repeat("9", 40), "diff_base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("10")}}
 }
 
 type executorWatchdogLease struct {
@@ -192,7 +192,7 @@ func TestExecutorRunsPinnedChecksAndNormalizesResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "repository_id": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("2")}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
+	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "repository_id": 1, "target_sha": strings.Repeat("9", 40), "diff_base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "profile_id": "01k4w000000000000000000003", "task_context": "Review carefully.", "effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused.", "max_turns": json.Number("2")}, "supervisor": map[string]any{"credential_reference": "credential:test"}}}
 	workspace, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

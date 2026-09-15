@@ -2,8 +2,7 @@
   "contract": "run-input",
   "document": {
     "kind": "review",
-    "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "diff_base_sha": "9999999999999999999999999999999999999999",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "profile_id": "01k4w000000000000000000003",
     "runtime_version": "fixture-1",
@@ -24,17 +23,20 @@
       "model": "fixture-model",
       "max_turns": 10,
       "network": "disabled",
-      "review_path_rules": [["**"]],
+      "review_path_rules": [
+        [
+          "**"
+        ]
+      ],
       "pull_request_reviews": true,
       "mentions": true,
       "comment_limit": 20,
-      "instructions": "",
-      "dashboard_version": 0,
-      "trusted_revision": null,
-      "repository_configuration_sha256": null,
-      "instructions_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "effective_configuration_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      "api_key": "synthetic-secret"
+      "instructions": "Review carefully.",
+      "dashboard_version": 1,
+      "trusted_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "repository_configuration_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "instructions_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "effective_configuration_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     "actor_github_id": 123,
     "target_ref": "refs/heads/main",

@@ -207,7 +207,7 @@ $root = source_directory();
 
 try {
     [$preparer, $claim, $client] = source_preparer($root, [$archives['short'], $archives['long']], [
-        'base_sha' => $fixture['base_sha'],
+        'diff_base_sha' => $fixture['base_sha'],
         'head_sha' => $fixture['head_sha'],
     ]);
     $checkpoints = 0;

@@ -41,7 +41,8 @@ func TestPrepareGitSourceArchivesAndTrustedInstructions(t *testing.T) {
 			artifactReferenceMap("01k4w000000000000000000004", archives["long"]),
 		},
 		"instruction_artifacts": []any{artifactReferenceMap("01k4w000000000000000000005", client.artifacts["01k4w000000000000000000005"])},
-		"base_sha":              "f2e2ca336a3c496a4643919b8ecccc367bda857b",
+		"target_sha":            strings.Repeat("b", 40),
+		"diff_base_sha":         "f2e2ca336a3c496a4643919b8ecccc367bda857b",
 		"head_sha":              "637e6ee9813bac7ee840f57417193897d930776a",
 	})
 	path, err := manager.Prepare(context.Background(), claim, client)
