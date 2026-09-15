@@ -3,8 +3,7 @@
   "properties": {
     "summary": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 16384
+      "description": "Your assessment of the change. At most 16384 characters and never empty."
     },
     "outcome": {
       "type": "string",
@@ -17,13 +16,18 @@
       ]
     },
     "charter_version": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 8,
-      "enum": ["1"]
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "1"
+      ],
+      "description": "\"1\" when outcome is findings or no_findings. Null for every other outcome."
     },
     "findings": {
       "type": "array",
+      "maxItems": 100,
       "items": {
         "type": "object",
         "properties": {
@@ -59,88 +63,60 @@
           },
           "scenario": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "description": "At most 2000 characters and never empty."
           },
           "consequence": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "description": "At most 2000 characters and never empty."
           },
           "action": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "description": "At most 2000 characters and never empty."
           },
           "explanation": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 8192
+            "description": "At most 8192 characters and never empty."
           },
           "evidence": {
             "type": "array",
             "minItems": 1,
             "maxItems": 5,
             "items": {
-              "type": "object",
-              "properties": {
-                "snapshot": {
-                  "type": "string",
-                  "minLength": 40,
-                  "maxLength": 40
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1024
-                },
-                "line_start": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 9007199254740991
-                },
-                "line_end": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "snapshot",
-                "path",
-                "line_start",
-                "line_end"
-              ],
-              "additionalProperties": false
+              "$ref": "#/$defs/evidence"
             }
           },
           "anchor": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1024
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/repository_path"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "side": {
+                    "type": "string",
+                    "enum": [
+                      "LEFT",
+                      "RIGHT"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "side"
+                ],
+                "additionalProperties": false
               },
-              "line": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 9007199254740991
-              },
-              "side": {
-                "type": "string",
-                "enum": [
-                  "LEFT",
-                  "RIGHT"
-                ]
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "path",
-              "line",
-              "side"
             ],
-            "additionalProperties": false
+            "description": "Presentation only. Null when no single line is worth highlighting."
           }
         },
         "required": [
@@ -151,143 +127,142 @@
           "consequence",
           "action",
           "explanation",
-          "evidence"
+          "evidence",
+          "anchor"
         ],
         "additionalProperties": false
       },
-      "maxItems": 100
+      "description": "Empty for every outcome except findings."
     },
     "questions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "topic": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "question": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "why_material": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "evidence": {
-            "type": "array",
-            "maxItems": 5,
-            "items": {
-              "type": "object",
-              "properties": {
-                "snapshot": {
-                  "type": "string",
-                  "minLength": 40,
-                  "maxLength": 40
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1024
-                },
-                "line_start": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 9007199254740991
-                },
-                "line_end": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "snapshot",
-                "path",
-                "line_start",
-                "line_end"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "topic",
-          "question",
-          "why_material"
-        ],
-        "additionalProperties": false
-      },
-      "maxItems": 20
-    },
-    "coverage": {
-      "type": "object",
-      "properties": {
-        "files": {
+      "anyOf": [
+        {
           "type": "array",
+          "maxItems": 20,
           "items": {
             "type": "object",
             "properties": {
-              "path": {
+              "topic": {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 1024
+                "description": "At most 200 characters and never empty."
               },
-              "status": {
+              "question": {
                 "type": "string",
-                "enum": [
-                  "reviewed",
-                  "unreviewed"
-                ]
+                "description": "At most 2000 characters and never empty."
               },
-              "reason": {
+              "why_material": {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 500
+                "description": "At most 2000 characters and never empty."
+              },
+              "evidence": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "maxItems": 5,
+                    "items": {
+                      "$ref": "#/$defs/evidence"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Null when the question cites nothing."
               }
             },
             "required": [
-              "path",
-              "status"
+              "topic",
+              "question",
+              "why_material",
+              "evidence"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 300
+          }
         },
-        "context_gaps": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "maxItems": 20
+        {
+          "type": "null"
         }
-      },
-      "required": [
-        "files",
-        "context_gaps"
       ],
-      "additionalProperties": false
+      "description": "Null for every outcome except findings and no_findings."
+    },
+    "coverage": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "files": {
+              "type": "array",
+              "maxItems": 300,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/repository_path"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "reviewed",
+                      "unreviewed"
+                    ]
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Why the file is unreviewed, at most 500 characters. Null when status is reviewed."
+                  }
+                },
+                "required": [
+                  "path",
+                  "status",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Every planned changed file, and nothing else."
+            },
+            "context_gaps": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "description": "At most 500 characters and never empty."
+              }
+            }
+          },
+          "required": [
+            "files",
+            "context_gaps"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Null for every outcome except findings, no_findings and incomplete."
     },
     "verification_state": {
-      "type": "string",
+      "type": [
+        "string",
+        "null"
+      ],
       "enum": [
         "none"
-      ]
+      ],
+      "description": "\"none\" when outcome is findings or no_findings. Null for every other outcome."
     },
     "tests": {
       "type": "array",
+      "maxItems": 100,
       "items": {
         "type": "object",
         "properties": {
           "command": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2048
+            "description": "At most 2048 characters and never empty."
           },
           "status": {
             "type": "string",
@@ -300,8 +275,7 @@
           },
           "summary": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096
+            "description": "At most 4096 characters and never empty."
           }
         },
         "required": [
@@ -310,15 +284,53 @@
           "summary"
         ],
         "additionalProperties": false
-      },
-      "maxItems": 100
+      }
     }
   },
   "required": [
     "summary",
     "outcome",
+    "charter_version",
     "findings",
+    "questions",
+    "coverage",
+    "verification_state",
     "tests"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "repository_path": {
+      "type": "string",
+      "description": "Repository-relative path, at most 1024 characters. No leading slash, no \"..\" segment and no backslash."
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "type": "string",
+          "description": "The 40-character lowercase hexadecimal SHA of the snapshot you read."
+        },
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "line_start": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "First cited line."
+        },
+        "line_end": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Last cited line, at or after line_start."
+        }
+      },
+      "required": [
+        "snapshot",
+        "path",
+        "line_start",
+        "line_end"
+      ],
+      "additionalProperties": false
+    }
+  }
 }

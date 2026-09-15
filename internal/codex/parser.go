@@ -268,16 +268,7 @@ func nativeFailure(value map[string]any) error {
 	}
 	message, _ := value["message"].(string)
 	message = strings.TrimSpace(message)
-	if strings.HasPrefix(message, "{") {
-		decoded, err := protocol.Decode([]byte(message), MaxLineBytes)
-		body, bodyOK := decoded.(map[string]any)
-		if err != nil || !bodyOK || len(body) != 1 {
-			return ErrNativeFailure
-		}
-		nested, nestedOK := body["error"].(map[string]any)
-		if !nestedOK {
-			return ErrNativeFailure
-		}
+	if nested, ok := backendErrorEnvelope(message); ok {
 		if reason, ok := failureCode(nested["code"]); ok {
 			return &ClassifiedFailure{Reason: reason}
 		}
@@ -295,6 +286,28 @@ func nativeFailure(value map[string]any) error {
 		return ErrNativeFailure
 	}
 	return &ClassifiedFailure{Reason: reason}
+}
+
+// backendErrorEnvelope locates the one strict {"error":{...}} object the pinned
+// CLI copies out of a backend rejection. The CLI can render that body behind a
+// prefix or ahead of appended details, so the envelope is searched for instead
+// of assumed to span the message, and is still decoded strictly.
+func backendErrorEnvelope(message string) (map[string]any, bool) {
+	start := strings.IndexByte(message, '{')
+	if start < 0 {
+		return nil, false
+	}
+	var envelope json.RawMessage
+	if json.NewDecoder(strings.NewReader(message[start:])).Decode(&envelope) != nil {
+		return nil, false
+	}
+	decoded, err := protocol.Decode(envelope, MaxLineBytes)
+	body, bodyOK := decoded.(map[string]any)
+	if err != nil || !bodyOK || len(body) != 1 {
+		return nil, false
+	}
+	nested, nestedOK := body["error"].(map[string]any)
+	return nested, nestedOK
 }
 
 func failureCode(value any) (FailureReason, bool) {
@@ -378,6 +391,27 @@ func parseUsage(value any) (*Usage, error) {
 	return &Usage{InputTokens: input, CachedInputTokens: cached, OutputTokens: output}, nil
 }
 
+// dropNullMembers turns the strict output schema's nullable stand-ins back into
+// the absent fields contracts/v1/result.schema.json expects, because strict
+// structured outputs cannot omit a property. A null array element stays, since
+// an element is a value the model chose to emit, not an omitted field.
+func dropNullMembers(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, member := range typed {
+			if member == nil {
+				delete(typed, key)
+				continue
+			}
+			dropNullMembers(member)
+		}
+	case []any:
+		for _, member := range typed {
+			dropNullMembers(member)
+		}
+	}
+}
+
 // parseResult's allowed-keys-by-outcome mirrors result.schema.json's allOf
 // conditionals. findings and no_findings require charter_version, coverage,
 // and verification_state, plus optional questions. incomplete permits
@@ -391,6 +425,7 @@ func parseResult(raw []byte) (Result, error) {
 	if !ok {
 		return Result{}, ErrInvalidResult
 	}
+	dropNullMembers(object)
 	allowed := map[string]bool{"summary": true, "outcome": true, "findings": true, "tests": true}
 	summary, summaryOK := boundedString(object["summary"], 16_384)
 	outcome, outcomeOK := boundedString(object["outcome"], 64)

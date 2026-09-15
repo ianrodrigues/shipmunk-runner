@@ -57,8 +57,11 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 	}{
 		"approval":   {`{"type":"error","code":"approval_required","message":"private"}` + "\n", "needs_input", "approval_required", false},
 		"rate limit": {`{"type":"turn.failed","error":{"code":"rate_limit_exceeded","message":"private"}}` + "\n", "incomplete", "rate_limited", false},
-		"unknown":    {`{"type":"error","code":"future_code","message":"private"}` + "\n", "", "", true},
-		"malformed":  {`{"type":"error","code":"approval_required"}`, "", "", true},
+		// The shape a live backend schema rejection arrives in: no code field, the
+		// raw provider error body copied into the message.
+		"schema rejection": {`{"type":"turn.failed","error":{"message":"{\"error\":{\"message\":\"private\",\"type\":\"invalid_request_error\",\"param\":\"text.format.schema\",\"code\":\"invalid_json_schema\"}}"}}` + "\n", "incomplete", "invalid_output_schema", false},
+		"unknown":          {`{"type":"error","code":"future_code","message":"private"}` + "\n", "", "", true},
+		"malformed":        {`{"type":"error","code":"approval_required"}`, "", "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			executor, transport, _, claim := setupFailureExecutor(t, nil)
