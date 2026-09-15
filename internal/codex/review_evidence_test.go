@@ -246,7 +246,7 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	developer := developerInstructionsArg(t, argv)
-	for _, want := range []string{ReviewCharterVersion, sampleBaselineSHA, sampleHeadSHA, "a.go", "review_list"} {
+	for _, want := range []string{ReviewCharterVersion, sampleBaselineSHA, sampleHeadSHA, "a.go", "review_list", "hypothesis", "author_intent"} {
 		if !strings.Contains(developer, want) {
 			t.Fatalf("review prompt missing %q:\n%s", want, developer)
 		}
@@ -257,7 +257,7 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	developer = developerInstructionsArg(t, argv)
-	for _, absent := range []string{sampleBaselineSHA, sampleHeadSHA, "review_list", "charter_version"} {
+	for _, absent := range []string{sampleBaselineSHA, sampleHeadSHA, "review_list", "charter_version", "author_intent"} {
 		if strings.Contains(developer, absent) {
 			t.Fatalf("implement prompt unexpectedly contains %q:\n%s", absent, developer)
 		}
