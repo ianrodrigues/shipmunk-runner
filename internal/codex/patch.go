@@ -68,11 +68,11 @@ func collectSnapshots(beforeRoot, afterRoot string, beforeHandle *os.File) (*Pat
 	if err != nil {
 		return nil, fmt.Errorf("changed snapshot: %w", err)
 	}
-	generated, err := generatePatch(before, after)
+	generated, err := generatePatch(before, after, true)
 	if err != nil {
 		return nil, err
 	}
-	return collectSnapshotPatch(before, after, generated)
+	return collectSnapshotPatch(before, after, generated, true)
 }
 
 // CollectPatch verifies independently collected patch bytes against protected
@@ -91,10 +91,15 @@ func CollectPatch(beforeRoot, afterRoot string, patch []byte) (*Patch, error) {
 		return nil, fmt.Errorf("changed snapshot: %w", err)
 	}
 
-	return collectSnapshotPatch(before, after, patch)
+	return collectSnapshotPatch(before, after, patch, true)
 }
 
-func collectSnapshotPatch(before, after map[string]fileState, patch []byte) (*Patch, error) {
+// collectSnapshotPatch verifies patch against the independently computed
+// before/after snapshots. detectRenames must match whatever setting produced
+// patch: it is only used to regenerate a comparison diff for the byte-equal
+// check, never to reinterpret the changed-file list, which is derived purely
+// from snapshot hashes and is unaffected by rename detection either way.
+func collectSnapshotPatch(before, after map[string]fileState, patch []byte, detectRenames bool) (*Patch, error) {
 	paths := make([]string, 0, len(before)+len(after))
 	seen := make(map[string]bool)
 	for path := range before {
@@ -132,7 +137,7 @@ func collectSnapshotPatch(before, after map[string]fileState, patch []byte) (*Pa
 	if len(patch) == 0 {
 		return nil, nil
 	}
-	generated, err := generatePatch(before, after)
+	generated, err := generatePatch(before, after, detectRenames)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +257,14 @@ func snapshotRoot(rootHandle *os.Root, beforeOpen func(string)) (map[string]file
 	return states, nil
 }
 
-func generatePatch(before, after map[string]fileState) (patch []byte, returnedErr error) {
+// generatePatch runs `git diff` between two materialized snapshots.
+// detectRenames controls Git's default rename detection: implement/fix patch
+// artifacts keep it enabled (unchanged, compact rename hunks); review's
+// per-path diff lookup needs it disabled, because a combined rename header
+// mixes the old and new paths ("diff --git a/old b/new") and can never match
+// either path's own exact-string header key, silently hiding the hunk from
+// whichever path is looked up.
+func generatePatch(before, after map[string]fileState, detectRenames bool) (patch []byte, returnedErr error) {
 	temporary, err := os.MkdirTemp("", "shipmunk-patch-")
 	if err != nil {
 		return nil, errors.New("cannot create trusted patch workspace")
@@ -312,7 +324,15 @@ func generatePatch(before, after map[string]fileState) (patch []byte, returnedEr
 	output := &boundedWriter{remaining: MaxPatchBytes + 1}
 	// core.quotePath=false keeps each file header a single literal "diff --git
 	// a/<path> b/<path>" line, which review_diff matches without re-parsing.
-	if err := runGit(ctx, temporary, work, output, "-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."); err != nil {
+	// A literal '"' in a path is still C-quoted and escaped regardless of
+	// core.quotePath; safeRepositoryPath rejects such paths at snapshot load
+	// instead.
+	diffArgs := []string{"-c", "core.autocrlf=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--binary"}
+	if !detectRenames {
+		diffArgs = append(diffArgs, "--no-renames")
+	}
+	diffArgs = append(diffArgs, "HEAD", "--", ".")
+	if err := runGit(ctx, temporary, work, output, diffArgs...); err != nil {
 		return nil, err
 	}
 	if output.buffer.Len() > MaxPatchBytes {
@@ -367,7 +387,12 @@ func runGit(ctx context.Context, home, work string, stdout *boundedWriter, argum
 }
 
 func safeRepositoryPath(path string) bool {
-	if path == "" || len(path) > MaxPathBytes || !utf8.ValidString(path) || filepath.IsAbs(path) || strings.ContainsAny(path, "\\\x00\r\n") {
+	// '"' is rejected alongside '\\': Git always C-quotes and backslash-escapes
+	// a literal quote in a "diff --git a/<path> b/<path>" header regardless of
+	// core.quotePath, so a path containing one can never be matched back to
+	// its exact-string header key and would otherwise become silently
+	// unreadable through review_diff rather than failing the snapshot load.
+	if path == "" || len(path) > MaxPathBytes || !utf8.ValidString(path) || filepath.IsAbs(path) || strings.ContainsAny(path, "\\\"\x00\r\n") {
 		return false
 	}
 	for _, part := range strings.Split(filepath.ToSlash(path), "/") {

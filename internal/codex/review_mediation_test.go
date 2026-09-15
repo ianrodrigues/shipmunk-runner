@@ -154,6 +154,15 @@ func TestReviewMediatorRejectsUnsafeSnapshotContents(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"quoted name", func(t *testing.T, root string) {
+			// A literal '"' survives on a Linux filesystem but Git always
+			// C-quotes and escapes it in a diff header regardless of
+			// core.quotePath, so a path containing one can never match its
+			// own exact-string header key; the snapshot load must fail
+			// explicitly instead of silently making that file unreadable
+			// through review_diff.
+			writeFile(t, root, `q"uote.txt`, "x\n", 0644)
+		}},
 	} {
 		t.Run(test.name+" in head", func(t *testing.T) {
 			mediator := reviewMediatorFixture(t, 1, func(_, head string) { test.setup(t, head) })
@@ -364,6 +373,43 @@ func TestReviewMediatorDiffResistsPlantedHeaderForgery(t *testing.T) {
 	planted := handleReviewJSON(t, mediator, `{"fence":7,"id":2,"op":"review_diff","path":"AAA.txt"}`)
 	if !planted.OK || !strings.Contains(planted.Output, "+diff --git a/auth.go b/auth.go") {
 		t.Fatalf("AAA.txt's own diff should still show its planted content as an added line: %+v", planted)
+	}
+}
+
+// TestReviewMediatorDiffSuppressesRenameCollapsing is finding A's regression:
+// Git's default rename detection collapses a rename-plus-modify into one
+// "diff --git a/old b/new" header naming both paths, which matches neither
+// path's own exact-string header key. review_diff must still show the new
+// path's real hunk and the old path's real deletion, proving --no-renames is
+// actually applied to review's diff generation.
+func TestReviewMediatorDiffSuppressesRenameCollapsing(t *testing.T) {
+	mediator := reviewMediatorFixture(t, 3, func(baseline, head string) {
+		writeFile(t, baseline, "payload.txt", "MALICIOUS CONTENT HERE\n", 0644)
+		writeFile(t, head, "renamed_payload.txt", "MALICIOUS CONTENT HERE\nextra line\n", 0644)
+	})
+
+	list := handleReviewJSON(t, mediator, `{"fence":7,"id":1,"op":"review_diff","path":""}`)
+	if !list.OK || !strings.Contains(list.Output, "deleted\tpayload.txt") || !strings.Contains(list.Output, "added\trenamed_payload.txt") {
+		t.Fatalf("changed-file list did not show the rename as delete+add: %+v", list)
+	}
+
+	added := handleReviewJSON(t, mediator, `{"fence":7,"id":2,"op":"review_diff","path":"renamed_payload.txt"}`)
+	if !added.OK {
+		t.Fatalf("diff for the new path failed: %+v", added)
+	}
+	if !strings.HasPrefix(added.Output, "diff --git a/renamed_payload.txt b/renamed_payload.txt") {
+		t.Fatalf("new path's diff was collapsed into a rename header instead of a real add: %s", added.Output)
+	}
+	if !strings.Contains(added.Output, "+MALICIOUS CONTENT HERE") || !strings.Contains(added.Output, "+extra line") {
+		t.Fatalf("new path's diff is missing its real content: %s", added.Output)
+	}
+
+	deleted := handleReviewJSON(t, mediator, `{"fence":7,"id":3,"op":"review_diff","path":"payload.txt"}`)
+	if !deleted.OK {
+		t.Fatalf("diff for the old path failed: %+v", deleted)
+	}
+	if !strings.HasPrefix(deleted.Output, "diff --git a/payload.txt b/payload.txt") || !strings.Contains(deleted.Output, "-MALICIOUS CONTENT HERE") {
+		t.Fatalf("old path's diff did not show its real deletion: %s", deleted.Output)
 	}
 }
 
