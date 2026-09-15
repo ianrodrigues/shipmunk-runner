@@ -270,6 +270,29 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 	}
 }
 
+// task_context (including any <author_intent> block) is passed to the model as stdin, never
+// interpolated into the developer instructions argv element; this proves that boundary holds.
+func TestExecutionCommandKeepsTaskContextOutOfDeveloperInstructions(t *testing.T) {
+	const marker = "AUTHOR-CONTROLLED-DIRECTIVE"
+	taskContext := `<author_intent trust="untrusted">` + marker + `</author_intent>`
+	claim := protocol.Claim{Manifest: map[string]any{
+		"task_context":     taskContext,
+		"effective_config": map[string]any{"model": "gpt-5", "instructions": "Stay focused."},
+	}}
+	evidence := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: []string{"a.go"}}
+
+	argv, stdin, err := executionCommand(claim, nil, "", true, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdin != taskContext {
+		t.Fatalf("task context changed:\ngot  %q\nwant %q", stdin, taskContext)
+	}
+	if developer := developerInstructionsArg(t, argv); strings.Contains(developer, marker) {
+		t.Fatalf("task context leaked into developer instructions: %q", developer)
+	}
+}
+
 func TestExecutionCommandRejectsMismatchedReviewEvidence(t *testing.T) {
 	claim := protocol.Claim{Manifest: map[string]any{
 		"task_context":     "Review carefully.",
