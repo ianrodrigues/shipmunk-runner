@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ type executorTransport struct {
 	calls           [][]string
 	stopped         bool
 	startErr        error
+	executionErr    error
 	executionResult *CommandResult
 }
 
@@ -36,6 +38,9 @@ func (t *executorTransport) RunNative(_ context.Context, argv []string, _ []byte
 	case strings.Contains(joined, "--ephemeral"):
 		return CommandResult{Stdout: "{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"auth\",\"type\":\"agent_message\",\"text\":\"SHIPMUNK_AUTH_OK\"}}\n{\"type\":\"turn.completed\"}\n"}, nil
 	default:
+		if t.executionErr != nil {
+			return CommandResult{ExitCode: -1}, t.executionErr
+		}
 		if t.executionResult != nil {
 			return *t.executionResult, nil
 		}
@@ -92,6 +97,25 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 				t.Fatalf("unsafe or incomplete summary: %q", summary)
 			}
 		})
+	}
+}
+
+// A mediator that cannot answer once the budget is spent ends the attempt, so the attempt is reported rather than raised as a runner fault.
+func TestExecutorReportsAnUnansweredBudgetAsAFailedAttempt(t *testing.T) {
+	executor, transport, _, claim := setupFailureExecutor(t, nil)
+	claim.Manifest = executionManifest()
+	transport.executionErr = fmt.Errorf("review request could not be answered: %w", ErrBudgetExhausted)
+	execution, err := executor.Execute(context.Background(), claim, nil, setupFailureWorkspace(t))
+	if err != nil || execution.Result["outcome"] != "incomplete" {
+		t.Fatalf("exhausted budget was raised instead of reported: %#v err=%v", execution, err)
+	}
+	summary, _ := execution.Result["summary"].(string)
+	if !strings.Contains(summary, "Reason: review_budget_exhausted.") || !strings.Contains(summary, "Native exit code: unavailable.") {
+		t.Fatalf("unexpected summary: %q", summary)
+	}
+	resultJSON, marshalErr := json.Marshal(execution.Result)
+	if marshalErr != nil || protocol.Validate("result", resultJSON) != nil {
+		t.Fatalf("classified budget failure violated the v1 contract: %s (%v)", resultJSON, marshalErr)
 	}
 }
 
@@ -197,7 +221,7 @@ func setupFailureExecutor(t *testing.T, startErr error) (*Executor, *executorTra
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(2 * time.Minute), Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "effective_config": map[string]any{"max_turns": json.Number("2")}}}
+	claim := protocol.Claim{RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 7, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(2 * time.Minute), Manifest: map[string]any{"agent": "codex", "runtime_version": profile.CodexVersion, "kind": "review", "source_artifacts": sourceReferences(2), "diff_base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "effective_config": map[string]any{"max_turns": json.Number("2")}}}
 	return executor, transport, lease, claim
 }
 

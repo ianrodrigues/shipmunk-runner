@@ -107,7 +107,22 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 		return supervisor.Execution{}, err
 	}
 	baseSHA, headSHA, _ := reviewSHAs(claim)
-	transport, err := e.cfg.NewTransport(TransportConfig{Name: "shipmunk-codex-" + claim.AttemptID + "-" + fmt.Sprint(claim.Fence), ProfileHome: e.cfg.ProfileHome, Source: sources.head.Name(), sourceHandle: sources.head, Baseline: sources.baselinePath(), baselineHandle: sources.baseline, BaselineSHA: baseSHA, HeadSHA: headSHA, NativeImage: e.cfg.NativeImage, RepositoryImage: e.cfg.RepositoryImage, DockerExecutable: e.cfg.DockerExecutable, MaxCommands: maxCommands, CommandTimeout: e.cfg.CommandTimeout})
+	// executionInputs already ties claim.Manifest["kind"] == "review" to exactly
+	// two sources, so sources.baselinePath() != "" here. normalizeExecution
+	// derives isReview the same way: one source of truth, not two.
+	review := claim.Manifest["kind"] == "review"
+	var evidence *reviewEvidence
+	changedFiles := 0
+	if review {
+		// The evidence is built before the boundary starts because the review request budget scales with the change set.
+		evidence, err = buildReviewEvidence(claim, sources)
+		if err != nil {
+			sources.close()
+			return supervisor.Execution{}, err
+		}
+		changedFiles = len(evidence.changedFiles)
+	}
+	transport, err := e.cfg.NewTransport(TransportConfig{Name: "shipmunk-codex-" + claim.AttemptID + "-" + fmt.Sprint(claim.Fence), ProfileHome: e.cfg.ProfileHome, Source: sources.head.Name(), sourceHandle: sources.head, Baseline: sources.baselinePath(), baselineHandle: sources.baseline, BaselineSHA: baseSHA, HeadSHA: headSHA, NativeImage: e.cfg.NativeImage, RepositoryImage: e.cfg.RepositoryImage, DockerExecutable: e.cfg.DockerExecutable, MaxCommands: maxCommands, ChangedFiles: changedFiles, CommandTimeout: e.cfg.CommandTimeout})
 	if err != nil {
 		sources.close()
 		return supervisor.Execution{}, err
@@ -153,23 +168,16 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	if err != nil {
 		return supervisor.Execution{}, errors.New("Codex session selection failed")
 	}
-	// executionInputs already ties claim.Manifest["kind"] == "review" to exactly
-	// two sources, so sources.baselinePath() != "" here. normalizeExecution
-	// derives isReview the same way: one source of truth, not two.
-	review := claim.Manifest["kind"] == "review"
-	var evidence *reviewEvidence
-	if review {
-		evidence, err = buildReviewEvidence(claim, sources)
-		if err != nil {
-			return supervisor.Execution{}, err
-		}
-	}
 	argv, stdin, err := executionCommand(claim, session, trusted, review, evidence)
 	if err != nil {
 		return supervisor.Execution{}, err
 	}
 	result, err := transport.RunNative(ctx, argv, []byte(stdin))
 	if err != nil {
+		// A spent budget is this attempt's own limit, not a runner fault, so it is reported rather than raised; the native process outcome is unknown here.
+		if errors.Is(err, ErrBudgetExhausted) {
+			return failureExecution(claim, FailureBudgetExhausted, -1), nil
+		}
 		return supervisor.Execution{}, err
 	}
 	stream, parseErr := Parse([]byte(result.Stdout), []byte(result.Stderr))
@@ -222,6 +230,7 @@ func failureExecution(claim protocol.Claim, reason FailureReason, exitCode int) 
 		FailureInvalidResult:       "Native backend returned a structured result the result contract rejects.",
 		FailureMalformedOutput:     "Native runtime produced output the runner cannot read. Update the runner before retrying.",
 		FailureMissingResult:       "Native runtime finished without a structured result.",
+		FailureBudgetExhausted:     "Native runtime spent its whole request budget without finishing.",
 	}
 	summary := summaries[reason] + " Stage: execution. Reason: " + string(reason) + ". Native exit code: "
 	if exitCode < 0 || exitCode > 255 {
