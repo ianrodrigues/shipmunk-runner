@@ -1,19 +1,25 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
 const (
-	MaxOutputBytes = 2 * 1024 * 1024
-	MaxLineBytes   = 64 * 1024
+	// A single command_execution.aggregated_output or mcp_tool_call.result.content
+	// entry can legally hold a whole review_read window or command log; both
+	// budgets are sized to that, not to the handful of fields the parser reads.
+	MaxOutputBytes = 16 * 1024 * 1024
+	MaxLineBytes   = 1024 * 1024
 	MaxEvents      = 10_000
 
 	// Mirror internal/protocol/contracts/v1/result.schema.json exactly.
@@ -179,12 +185,8 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 		if line == "" || len(line) > MaxLineBytes || state == "complete" {
 			return Stream{}, ErrMalformedOutput
 		}
-		value, err := protocol.Decode([]byte(line), MaxLineBytes)
+		event, err := decodeStreamEvent([]byte(line))
 		if err != nil {
-			return Stream{}, ErrMalformedOutput
-		}
-		event, ok := value.(map[string]any)
-		if !ok {
 			return Stream{}, ErrMalformedOutput
 		}
 		typeName, ok := boundedString(event["type"], 64)
@@ -210,8 +212,11 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 				return Stream{}, ErrMalformedOutput
 			}
 			id, idOK := boundedString(item["id"], 128)
+			// The CLI source can add an item type (collab_tool_call today) ahead
+			// of any parser update; an unrecognized kind is still recorded as an
+			// event, with its payload otherwise ignored below.
 			kind, kindOK := boundedString(item["type"], 128)
-			if !idOK || !kindOK || !knownItemType(kind) {
+			if !idOK || !kindOK {
 				return Stream{}, ErrMalformedOutput
 			}
 			// Codex may report a completed startup error after allocating a
@@ -278,6 +283,88 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	return stream, nil
 }
 
+// decodeStreamEvent decodes one exec stream line the way encoding/json's
+// default decoder does on a duplicate key: last value wins. codex-rs's
+// #[serde(flatten)] can legally emit an item object with a field (id) repeated
+// at the same level (ThreadItemDetails, exec_events.rs L97-102), and serde
+// resolves that the same way. Every other document this package decodes,
+// including the final structured result, still goes through protocol.Decode,
+// which keeps rejecting a duplicate key.
+func decodeStreamEvent(line []byte) (map[string]any, error) {
+	if !utf8.Valid(line) {
+		return nil, fmt.Errorf("codex stream line is not valid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.UseNumber()
+	value, err := decodeLenientValue(decoder, 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, fmt.Errorf("codex stream line has trailing JSON")
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("codex stream line is not an object")
+	}
+	return object, nil
+}
+
+func decodeLenientValue(decoder *json.Decoder, depth int) (any, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return token, nil
+	}
+	switch delimiter {
+	case '{':
+		if depth >= protocol.MaxJSONDepth-1 {
+			return nil, fmt.Errorf("codex stream line exceeded its nesting limit")
+		}
+		object := make(map[string]any)
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return nil, err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("object key is not a string")
+			}
+			value, err := decodeLenientValue(decoder, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			object[name] = value
+		}
+		if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
+			return nil, fmt.Errorf("unterminated object")
+		}
+		return object, nil
+	case '[':
+		if depth >= protocol.MaxJSONDepth-1 {
+			return nil, fmt.Errorf("codex stream line exceeded its nesting limit")
+		}
+		array := make([]any, 0)
+		for decoder.More() {
+			value, err := decodeLenientValue(decoder, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			array = append(array, value)
+		}
+		if end, err := decoder.Token(); err != nil || end != json.Delim(']') {
+			return nil, fmt.Errorf("unterminated array")
+		}
+		return array, nil
+	default:
+		return nil, fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+}
+
 func nativeFailure(value map[string]any) error {
 	if reason, ok := failureCode(value["code"]); ok {
 		return &ClassifiedFailure{Reason: reason}
@@ -288,20 +375,35 @@ func nativeFailure(value map[string]any) error {
 		if reason, ok := failureCode(nested["code"]); ok {
 			return &ClassifiedFailure{Reason: reason}
 		}
-		return ErrNativeFailure
 	}
-	var reason FailureReason
-	switch strings.ToLower(message) {
-	case "authentication expired", "not logged in", "unauthorized":
-		reason = FailureAuthExpired
-	case "rate limit exceeded", "usage limit reached":
-		reason = FailureRateLimited
-	case "approval required":
-		reason = FailureApprovalRequired
+	if reason, ok := messageFailureReason(message); ok {
+		return &ClassifiedFailure{Reason: reason}
+	}
+	return ErrNativeFailure
+}
+
+// messageFailureReason is best-effort. TurnError and ErrorItem carry no
+// machine-readable code, and protocol/src/error.rs's extract_error_message
+// unwraps the backend's own JSON envelope into a bare string before the CLI
+// ever writes it to the stream, so the only thing left to classify against is
+// prose the CLI may wrap in a prefix or trailing detail. Matching is therefore
+// a case-insensitive substring, not equality.
+func messageFailureReason(message string) (FailureReason, bool) {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "authentication expired"), strings.Contains(lower, "not logged in"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "refresh token expired"):
+		return FailureAuthExpired, true
+	case strings.Contains(lower, "rate limit"), strings.Contains(lower, "usage limit"):
+		return FailureRateLimited, true
+	case strings.Contains(lower, "approval required"):
+		return FailureApprovalRequired, true
+	case strings.Contains(lower, "model_not_found"), strings.Contains(lower, "model not found"):
+		return FailureModelUnavailable, true
+	case strings.Contains(lower, "invalid_json_schema"), strings.Contains(lower, "invalid json schema"), strings.Contains(lower, "invalid output schema"):
+		return FailureInvalidOutputSchema, true
 	default:
-		return ErrNativeFailure
+		return "", false
 	}
-	return &ClassifiedFailure{Reason: reason}
 }
 
 // backendErrorEnvelope locates the one error object the pinned CLI copies out of
@@ -338,6 +440,12 @@ func relayedErrorEnvelope(body map[string]any) bool {
 	return true
 }
 
+// failureCode matches an explicit machine-readable code field. codex-rs's
+// TurnError and ErrorItem carry only message today, so this path is not known
+// to fire against the pinned CLI; it stays as defense in depth for a future
+// build that adds one, and messageFailureReason below is the path that
+// actually classifies current output, including the unverified
+// invalid_json_schema literal.
 func failureCode(value any) (FailureReason, bool) {
 	code, ok := value.(string)
 	if !ok {
@@ -356,15 +464,6 @@ func failureCode(value any) (FailureReason, bool) {
 		return FailureInvalidOutputSchema, true
 	default:
 		return "", false
-	}
-}
-
-func knownItemType(kind string) bool {
-	switch kind {
-	case "agent_message", "reasoning", "command_execution", "file_change", "mcp_tool_call", "web_search", "todo_list", "error":
-		return true
-	default:
-		return false
 	}
 }
 
@@ -390,12 +489,6 @@ func parseUsage(value any) (*Usage, error) {
 	if !ok {
 		return nil, ErrMalformedOutput
 	}
-	allowed := map[string]bool{"input_tokens": true, "cached_input_tokens": true, "output_tokens": true, "reasoning_output_tokens": true, "cache_write_input_tokens": true}
-	for key := range object {
-		if !allowed[key] {
-			return nil, ErrMalformedOutput
-		}
-	}
 	input, ok := nullableNonnegativeInteger(object["input_tokens"])
 	if !ok {
 		return nil, ErrMalformedOutput
@@ -405,23 +498,28 @@ func parseUsage(value any) (*Usage, error) {
 		return nil, ErrMalformedOutput
 	}
 	var cached *int64
+	// codex itself clamps cached_input_tokens to input_tokens (protocol.rs), but
+	// that clamp is provider-side; a provider can still report cached > input, and
+	// the contract carries no field that would reject it, so it is not rejected here.
 	if raw, exists := object["cached_input_tokens"]; exists {
 		cached, ok = nullableNonnegativeInteger(raw)
-		if !ok || (input != nil && cached != nil && *cached > *input) {
+		if !ok {
 			return nil, ErrMalformedOutput
 		}
 	}
+	// reasoning_output_tokens and cache_write_input_tokens are validated when
+	// present but carry no contract field, so both are dropped after validation.
 	if raw, exists := object["reasoning_output_tokens"]; exists {
 		if _, ok := nonnegativeInteger(raw); !ok {
 			return nil, ErrMalformedOutput
 		}
 	}
-	// Codex 0.154 reports cache writes; the contract carries no field for them, so the value is validated and dropped.
 	if raw, exists := object["cache_write_input_tokens"]; exists {
 		if _, ok := nonnegativeInteger(raw); !ok {
 			return nil, ErrMalformedOutput
 		}
 	}
+	// Any other key is future usage accounting the pinned CLI does not emit yet; it is ignored rather than rejected.
 	return &Usage{InputTokens: input, CachedInputTokens: cached, OutputTokens: output}, nil
 }
 
