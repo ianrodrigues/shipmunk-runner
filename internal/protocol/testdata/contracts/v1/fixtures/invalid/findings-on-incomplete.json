@@ -1,0 +1,43 @@
+{
+  "contract": "result",
+  "document": {
+    "protocol_version": "1.0",
+    "run_id": "01k4w000000000000000000001",
+    "attempt_id": "01k4w000000000000000000002",
+    "fence": 1,
+    "summary": "The review was interrupted before it could finish.",
+    "outcome": "incomplete",
+    "findings": [
+      {
+        "category": "correctness",
+        "severity": "high",
+        "relation": "introduced",
+        "scenario": "An empty rule set reaches the matcher and is treated as allowing every path.",
+        "consequence": "Inline comments are published outside the frozen review scope.",
+        "action": "Refuse an empty rule set before matching.",
+        "explanation": "The new early return turns an empty rule set into an unconditional allow.",
+        "evidence": [
+          {
+            "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "path": "app/Support/ReviewPathRules.php",
+            "line_start": 30,
+            "line_end": 41
+          }
+        ]
+      }
+    ],
+    "coverage": {
+      "files": [
+        {
+          "path": "app/Support/ReviewPathRules.php",
+          "status": "unreviewed",
+          "reason": "The review stopped before this file was read."
+        }
+      ],
+      "context_gaps": []
+    },
+    "patch_artifact": null,
+    "tests": [],
+    "usage": null
+  }
+}

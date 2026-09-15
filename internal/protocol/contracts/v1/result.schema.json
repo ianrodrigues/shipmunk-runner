@@ -441,6 +441,25 @@
           "coverage": false
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "incomplete",
+              "needs_input"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "findings": {
+            "maxItems": 0
+          }
+        }
+      }
     }
   ],
   "$defs": {
