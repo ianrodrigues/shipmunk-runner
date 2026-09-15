@@ -189,7 +189,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	var finalMessage string
 	// The pinned CLI reports warnings, notices and retried backend errors as error items or events, then still completes the turn.
 	// An error is therefore terminal only when no result follows.
-	var reportedFailure error
+	var reportedFailure *ClassifiedFailure
 	for i := 0; i < lineCount; i++ {
 		var line []byte
 		if index := bytes.IndexByte(body, '\n'); index >= 0 {
@@ -238,7 +238,9 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			// thread but before a turn starts. No other pre-turn item is valid.
 			if state == "thread" && typeName == "item.completed" && kind == "error" {
 				stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
-				reportedFailure = progressFailure(item)
+				if failure := progressFailure(item); failure != nil {
+					reportedFailure = failure
+				}
 				continue
 			}
 			if state != "turn" {
@@ -251,7 +253,9 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			items[id] = itemState{kind: kind, complete: typeName == "item.completed"}
 			stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
 			if kind == "error" {
-				reportedFailure = progressFailure(item)
+				if failure := progressFailure(item); failure != nil {
+					reportedFailure = failure
+				}
 			}
 			if kind == "agent_message" && typeName == "item.completed" {
 				message, ok := boundedString(item["text"], MaxResultBytes)
@@ -271,7 +275,9 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			stream.Usage, state = usage, "complete"
 		case "error":
 			stream.Events = append(stream.Events, Event{Type: typeName, ItemType: "native"})
-			reportedFailure = progressFailure(event)
+			if failure := progressFailure(event); failure != nil {
+				reportedFailure = failure
+			}
 		case "turn.failed":
 			failure, ok := event["error"].(map[string]any)
 			if !ok {
@@ -351,10 +357,16 @@ func nativeFailure(value map[string]any) error {
 // match. That prose is ordinary diagnostic text the model or CLI can compose
 // freely (a warning, a deprecation notice), and can legitimately contain the
 // same words a fatal-message search looks for ("rate limit", "unauthorized").
-// If the stream later ends without a structured result, ErrMissingResult
-// already reports that outcome; this function must not misclassify an
-// unrelated progress message as the reason for a truncated stream instead.
-func progressFailure(value map[string]any) error {
+// nil means nothing classified: against the pinned CLI, ErrorItem and
+// TurnError carry no code at all, so this is the common case, and the caller
+// must not record it as "the" reported failure. If it did, and the stream
+// then ended without a structured result, Parse would return the resulting
+// bare ErrNativeFailure, which matches none of the executor's errors.Is
+// branches and would be reported as a runner fault rather than a published
+// missing_result outcome, exactly what PR #49 fixed. Treating an
+// unclassified progress error as no report at all keeps that truncation on
+// the ErrMissingResult path instead.
+func progressFailure(value map[string]any) *ClassifiedFailure {
 	if reason, ok := failureCode(value["code"]); ok {
 		return &ClassifiedFailure{Reason: reason}
 	}
@@ -364,7 +376,7 @@ func progressFailure(value map[string]any) error {
 			return &ClassifiedFailure{Reason: reason}
 		}
 	}
-	return ErrNativeFailure
+	return nil
 }
 
 // messageFailureReason is best-effort. TurnError and ErrorItem carry no

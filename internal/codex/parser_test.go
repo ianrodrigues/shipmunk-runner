@@ -151,27 +151,28 @@ func TestParseRejectsMalformedAndIncompleteStreams(t *testing.T) {
 		stderr string
 		want   error
 	}{
-		"empty":                 {want: ErrMissingResult},
-		"truncated":             {stdout: strings.TrimSuffix(valid, "\n"), want: ErrMalformedOutput},
-		"empty record":          {stdout: "\n", want: ErrMalformedOutput},
-		"invalid JSON":          {stdout: "{bad}\n", want: ErrMalformedOutput},
-		"scalar":                {stdout: "42\n", want: ErrMalformedOutput},
-		"duplicate key":         {stdout: `{"type":"thread.started","type":"turn.started"}` + "\n", want: ErrMalformedOutput},
-		"escaped duplicate key": {stdout: `{"type":"thread.started","t\u0079pe":"turn.started"}` + "\n", want: ErrMalformedOutput},
-		"trailing JSON":         {stdout: `{"type":"thread.started"}{}` + "\n", want: ErrMalformedOutput},
-		"turn before thread":    {stdout: `{"type":"turn.started"}` + "\n" + valid, want: ErrMalformedOutput},
-		"duplicate terminal":    {stdout: valid + lines[len(lines)-2] + "\n", want: ErrMalformedOutput},
-		"after terminal":        {stdout: valid + `{"type":"turn.started"}` + "\n", want: ErrMalformedOutput},
-		"missing terminal":      {stdout: strings.Join(lines[:5], "\n") + "\n", want: ErrMissingResult},
-		"missing message":       {stdout: strings.Join(append(lines[:2], lines[5]), "\n") + "\n", want: ErrMissingResult},
-		"unfinished item":       {stdout: strings.Replace(valid, `"item.completed","item":{"id":"tool-1"`, `"item.updated","item":{"id":"tool-1"`, 1), want: ErrMalformedOutput},
-		"update without start":  {stdout: strings.Replace(valid, `"item.started"`, `"item.updated"`, 1), want: ErrMalformedOutput},
-		"duplicate completed":   {stdout: strings.Replace(valid, lines[3]+"\n", lines[3]+"\n"+lines[3]+"\n", 1), want: ErrMalformedOutput},
-		"changed item type":     {stdout: strings.Replace(valid, lines[3], strings.Replace(lines[3], "command_execution", "file_change", 1), 1), want: ErrMalformedOutput},
-		"unknown event":         {stdout: strings.Replace(valid, "turn.started", "turn.future", 1), want: ErrMalformedOutput},
-		"invalid usage":         {stdout: strings.Replace(valid, `"input_tokens":10`, `"input_tokens":-1`, 1), want: ErrMalformedOutput},
-		"native failure":        {stdout: `{"type":"error","message":"private"}` + "\n", want: ErrNativeFailure},
-		"output bound":          {stdout: valid, stderr: strings.Repeat("x", MaxOutputBytes-len(valid)+1), want: ErrMalformedOutput},
+		"empty":                       {want: ErrMissingResult},
+		"truncated":                   {stdout: strings.TrimSuffix(valid, "\n"), want: ErrMalformedOutput},
+		"empty record":                {stdout: "\n", want: ErrMalformedOutput},
+		"invalid JSON":                {stdout: "{bad}\n", want: ErrMalformedOutput},
+		"scalar":                      {stdout: "42\n", want: ErrMalformedOutput},
+		"duplicate key":               {stdout: `{"type":"thread.started","type":"turn.started"}` + "\n", want: ErrMalformedOutput},
+		"escaped duplicate key":       {stdout: `{"type":"thread.started","t\u0079pe":"turn.started"}` + "\n", want: ErrMalformedOutput},
+		"trailing JSON":               {stdout: `{"type":"thread.started"}{}` + "\n", want: ErrMalformedOutput},
+		"turn before thread":          {stdout: `{"type":"turn.started"}` + "\n" + valid, want: ErrMalformedOutput},
+		"duplicate terminal":          {stdout: valid + lines[len(lines)-2] + "\n", want: ErrMalformedOutput},
+		"after terminal":              {stdout: valid + `{"type":"turn.started"}` + "\n", want: ErrMalformedOutput},
+		"missing terminal":            {stdout: strings.Join(lines[:5], "\n") + "\n", want: ErrMissingResult},
+		"missing message":             {stdout: strings.Join(append(lines[:2], lines[5]), "\n") + "\n", want: ErrMissingResult},
+		"unfinished item":             {stdout: strings.Replace(valid, `"item.completed","item":{"id":"tool-1"`, `"item.updated","item":{"id":"tool-1"`, 1), want: ErrMalformedOutput},
+		"update without start":        {stdout: strings.Replace(valid, `"item.started"`, `"item.updated"`, 1), want: ErrMalformedOutput},
+		"duplicate completed":         {stdout: strings.Replace(valid, lines[3]+"\n", lines[3]+"\n"+lines[3]+"\n", 1), want: ErrMalformedOutput},
+		"changed item type":           {stdout: strings.Replace(valid, lines[3], strings.Replace(lines[3], "command_execution", "file_change", 1), 1), want: ErrMalformedOutput},
+		"unknown event":               {stdout: strings.Replace(valid, "turn.started", "turn.future", 1), want: ErrMalformedOutput},
+		"invalid usage":               {stdout: strings.Replace(valid, `"input_tokens":10`, `"input_tokens":-1`, 1), want: ErrMalformedOutput},
+		"classified turn failure":     {stdout: `{"type":"turn.failed","error":{"code":"approval_required","message":"private"}}` + "\n", want: ErrNativeFailure},
+		"unclassified progress error": {stdout: `{"type":"error","message":"private"}` + "\n", want: ErrMissingResult},
+		"output bound":                {stdout: valid, stderr: strings.Repeat("x", MaxOutputBytes-len(valid)+1), want: ErrMalformedOutput},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -281,18 +282,39 @@ func TestParseClassifiesTheLastReportedErrorWhenNoResultFollows(t *testing.T) {
 // "unauthorized"): ordinary diagnostic prose composed by the CLI or the
 // model, not a classification signal. If the stream then ends without a
 // result, the last reported message must not be misread as the reason.
+// A non-fatal progress error's free-form message can legitimately contain the
+// same words a fatal turn.failed message match looks for ("rate limit",
+// "unauthorized"), so it is never classified from prose. Whether the stream
+// still ends with a result matters too: an unclassified progress error
+// against the pinned CLI (which never sends a code on ErrorItem/TurnError) is
+// the common case, so if the stream is then truncated with no result, that
+// unclassified report must not surface as a bare, unclassified
+// ErrNativeFailure — the executor's errors.Is chain has no branch for it and
+// would fall through to a runner fault instead of a published missing_result
+// outcome, exactly what PR #49 fixed. It must fall through to ErrMissingResult
+// the same as if no error had been reported at all.
 func TestParseDoesNotClassifyAProgressErrorByMessageSubstring(t *testing.T) {
-	stream := `{"type":"thread.started","thread_id":"thread-1"}` + "\n" +
-		`{"type":"turn.started"}` + "\n" +
-		`{"type":"error","message":"a background job approaching the account rate limit was paused"}` + "\n"
-	_, err := Parse([]byte(stream), nil)
-	var failure *ClassifiedFailure
-	if errors.As(err, &failure) {
-		t.Fatalf("progress message prose was misclassified: %#v", failure)
-	}
-	if !errors.Is(err, ErrNativeFailure) {
-		t.Fatalf("err = %v, want ErrNativeFailure", err)
-	}
+	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n" + `{"type":"turn.started"}` + "\n"
+	warning := `{"type":"error","message":"a background job approaching the account rate limit was paused"}` + "\n"
+
+	t.Run("warning then a completed turn", func(t *testing.T) {
+		stream := strings.Replace(validStream(validResult), `{"type":"item.started"`, warning+`{"type":"item.started"`, 1)
+		parsed, err := Parse([]byte(stream), nil)
+		if err != nil || parsed.Result.Outcome != "no_findings" {
+			t.Fatalf("result = %#v, err = %v", parsed.Result, err)
+		}
+	})
+
+	t.Run("warning then truncation", func(t *testing.T) {
+		_, err := Parse([]byte(prefix+warning), nil)
+		var failure *ClassifiedFailure
+		if errors.As(err, &failure) {
+			t.Fatalf("progress message prose was misclassified: %#v", failure)
+		}
+		if !errors.Is(err, ErrMissingResult) {
+			t.Fatalf("err = %v, want ErrMissingResult, not an unclassified ErrNativeFailure the executor cannot route", err)
+		}
+	})
 }
 
 func TestParseEnforcesLineAndEventLimits(t *testing.T) {
@@ -306,9 +328,15 @@ func TestParseEnforcesLineAndEventLimits(t *testing.T) {
 
 func TestParseClassifiesOnlyCompletedPreTurnErrorItemAsNativeFailure(t *testing.T) {
 	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n"
-	startupError := `{"type":"item.completed","item":{"id":"startup","type":"error","message":"private provider diagnostic"}}` + "\n"
-	if _, err := Parse([]byte(prefix+startupError), nil); !errors.Is(err, ErrNativeFailure) {
-		t.Fatalf("completed startup error = %v, want native failure", err)
+	// A code is required to observe classification directly here: against the
+	// pinned CLI a pre-turn error item never carries one (see progressFailure),
+	// so a message-only startup error with nothing following it is
+	// ErrMissingResult instead, exercised by TestParseDoesNotClassifyAProgressErrorByMessageSubstring.
+	startupError := `{"type":"item.completed","item":{"id":"startup","type":"error","code":"approval_required","message":"private provider diagnostic"}}` + "\n"
+	_, err := Parse([]byte(prefix+startupError), nil)
+	var failure *ClassifiedFailure
+	if !errors.As(err, &failure) || failure.Reason != FailureApprovalRequired {
+		t.Fatalf("completed startup error = %v, want a classified approval_required failure", err)
 	}
 
 	for name, item := range map[string]string{
@@ -349,6 +377,10 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 		})
 	}
 
+	// A top-level error event is a progress report (see progressFailure), so an
+	// unclassified one leaves the stream with no reported failure at all; ending
+	// without a result then falls through to ErrMissingResult, not a bare,
+	// unclassified ErrNativeFailure the executor's errors.Is chain has no branch for.
 	for name, event := range map[string]string{
 		"unknown code":    `{"type":"error","code":"future_code","message":"private"}` + "\n",
 		"unknown message": `{"type":"error","message":"private provider diagnostic"}` + "\n",
@@ -357,7 +389,7 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(event), nil)
 			var failure *ClassifiedFailure
-			if !errors.Is(err, ErrNativeFailure) || errors.As(err, &failure) {
+			if !errors.Is(err, ErrMissingResult) || errors.As(err, &failure) {
 				t.Fatalf("unclassified diagnostic became publishable: %#v (%v)", failure, err)
 			}
 		})
