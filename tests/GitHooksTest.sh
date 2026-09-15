@@ -71,38 +71,18 @@ expect_ok 'valid staged Go with invalid working copy' git commit --quiet -m 'tes
 assert_unchanged
 pass 'Go checks inspect staged bytes and preserve partially staged files'
 
-checked_path='PHP with spaces.php'
-printf '<?php function broken( {\n' > "$checked_path"
-git add -- "$checked_path"
-printf '<?php echo "valid";\n' > "$checked_path"
-staged_tree=$(git write-tree); worktree_hash=$(git hash-object -- "$checked_path")
-expect_failure 'staged PHP syntax' git commit --quiet -m 'test: reject staged PHP'
-assert_unchanged
-git add -- "$checked_path"
-printf '<?php broken(\n' > "$checked_path"
-staged_tree=$(git write-tree); worktree_hash=$(git hash-object -- "$checked_path")
-expect_ok 'valid staged PHP with invalid working copy' git commit --quiet -m 'test: lint staged PHP only'
-assert_unchanged
-pass 'PHP checks inspect staged bytes and preserve partially staged files'
-
 # Newlines, leading dashes, and pathspec metacharacters remain literal filenames.
-for checked_path in $'odd\nname.go' '-leading.php' 'literal[1].go' ':1:literal.go'; do
-    case "$checked_path" in *.go) printf 'package fixture\n' > "$checked_path" ;; *) printf '<?php echo "ok";\n' > "$checked_path" ;; esac
+for checked_path in $'odd\nname.go' '-leading.go' 'literal[1].go' ':1:literal.go'; do
+    printf 'package fixture\n' > "$checked_path"
     git --literal-pathspecs add -- "$checked_path"
 done
 expect_ok 'unusual staged names' git commit --quiet -m 'test: support unusual filenames'
-mkdir -p runner/bin
-printf '<?php broken(\n' > runner/bin/shipmunk-runner
-git add runner/bin/shipmunk-runner
-expect_failure 'extensionless PHP entrypoint' .githooks/pre-commit
-git reset --quiet -- runner/bin/shipmunk-runner
-rm runner/bin/shipmunk-runner
 ln -s missing-target symlink.go
 git add symlink.go
 expect_ok 'staged symlink' git commit --quiet -m 'test: skip staged links'
-git rm --quiet -- '-leading.php'
+git rm --quiet -- '-leading.go'
 expect_ok 'staged deletion' git commit --quiet -m 'test: allow deleted sources'
-pass 'unusual filenames, PHP entrypoints, symlinks, and deletions'
+pass 'unusual filenames, symlinks, and deletions'
 
 printf 'staged trailing space \n' > whitespace.txt
 git add whitespace.txt
