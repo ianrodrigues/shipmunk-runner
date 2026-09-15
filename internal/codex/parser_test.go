@@ -235,12 +235,22 @@ func TestParseRecordsAnUnknownItemTypeInsteadOfRejectingTheStream(t *testing.T) 
 // id repeated at the same level (the item's own id plus the inner action's
 // id); serde resolves that last value wins, and this parser now decodes exec
 // stream lines the same way instead of rejecting the whole line.
+// The last of the two duplicate id values wins, the same as encoding/json's
+// own default decoder and serde: the outer item's real id is the one the CLI
+// writes first, so a web_search event reports the inner action's id
+// ("call-1"), not the item's own id ("item-1"). Event.ItemID is bookkeeping
+// metadata only, not a lookup key into anything outside this stream, and both
+// the item.started and item.completed record of the same conceptual item
+// resolve the same way, so lifecycle tracking inside Parse stays consistent.
 func TestParseAcceptsAStreamEventWithADuplicateKeyLikeWebSearch(t *testing.T) {
 	reported := `{"type":"item.completed","item":{"id":"item-1","type":"web_search","query":"redis eviction policy","id":"call-1","action":"search"}}` + "\n"
 	stream := strings.Replace(validStream(validResult), `{"type":"item.started"`, reported+`{"type":"item.started"`, 1)
 	parsed, err := Parse([]byte(stream), nil)
 	if err != nil || parsed.Result.Outcome != "no_findings" {
 		t.Fatalf("result = %#v, err = %v", parsed.Result, err)
+	}
+	if parsed.Events[0] != (Event{Type: "item.completed", ItemID: "call-1", ItemType: "web_search"}) {
+		t.Fatalf("unexpected resolved event: %#v", parsed.Events[0])
 	}
 }
 
@@ -251,7 +261,8 @@ func TestParseClassifiesTheLastReportedErrorWhenNoResultFollows(t *testing.T) {
 		stdout string
 		reason FailureReason
 	}{
-		"truncated after a warning": {prefix + warning + `{"type":"error","message":"usage limit reached"}` + "\n", FailureRateLimited},
+		// A progress-level error only classifies through an explicit code, never message prose (see the false-positive test below).
+		"truncated after a coded warning": {prefix + warning + `{"type":"error","code":"usage_limit_reached","message":"usage limit reached"}` + "\n", FailureRateLimited},
 		"failed turn after a warning": {prefix + warning +
 			`{"type":"turn.failed","error":{"code":"approval_required","message":"private"}}` + "\n", FailureApprovalRequired},
 	} {
@@ -262,6 +273,25 @@ func TestParseClassifiesTheLastReportedErrorWhenNoResultFollows(t *testing.T) {
 				t.Fatalf("failure = %#v (%v), want %q", failure, err, test.reason)
 			}
 		})
+	}
+}
+
+// A non-fatal progress error's free-form message can legitimately contain the
+// same words a fatal turn.failed message match looks for ("rate limit",
+// "unauthorized"): ordinary diagnostic prose composed by the CLI or the
+// model, not a classification signal. If the stream then ends without a
+// result, the last reported message must not be misread as the reason.
+func TestParseDoesNotClassifyAProgressErrorByMessageSubstring(t *testing.T) {
+	stream := `{"type":"thread.started","thread_id":"thread-1"}` + "\n" +
+		`{"type":"turn.started"}` + "\n" +
+		`{"type":"error","message":"a background job approaching the account rate limit was paused"}` + "\n"
+	_, err := Parse([]byte(stream), nil)
+	var failure *ClassifiedFailure
+	if errors.As(err, &failure) {
+		t.Fatalf("progress message prose was misclassified: %#v", failure)
+	}
+	if !errors.Is(err, ErrNativeFailure) {
+		t.Fatalf("err = %v, want ErrNativeFailure", err)
 	}
 }
 
@@ -299,11 +329,14 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 		event  string
 		reason FailureReason
 	}{
-		"approval code":      {`{"type":"error","code":"approval_required","message":"private"}` + "\n", FailureApprovalRequired},
-		"rate limit message": {`{"type":"error","message":"usage limit reached"}` + "\n", FailureRateLimited},
-		"nested model code":  {`{"type":"error","message":"{\"error\":{\"code\":\"model_not_found\",\"message\":\"private\"}}"}` + "\n", FailureModelUnavailable},
+		"approval code":     {`{"type":"error","code":"approval_required","message":"private"}` + "\n", FailureApprovalRequired},
+		"nested model code": {`{"type":"error","message":"{\"error\":{\"code\":\"model_not_found\",\"message\":\"private\"}}"}` + "\n", FailureModelUnavailable},
+		// turn.failed is the only path that falls back to a message substring
+		// match (messageFailureReason): a progress-level error or event never
+		// does, see TestParseDoesNotClassifyAProgressErrorByMessageSubstring.
+		"rate limit message": {`{"type":"turn.failed","error":{"message":"usage limit reached"}}` + "\n", FailureRateLimited},
 		// The bare provider message the pinned CLI actually writes (protocol/src/error.rs unwraps the envelope first), wrapped in the CLI's own status prefix and matched case-insensitively as a substring, not equality.
-		"bare wrapped message": {`{"type":"error","message":"unexpected status 401 Unauthorized: Authentication Expired for this account"}` + "\n", FailureAuthExpired},
+		"bare wrapped message": {`{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Authentication Expired for this account"}}` + "\n", FailureAuthExpired},
 		// The provider relays its own rejection body, whose error object sits beside type and status.
 		"relayed schema rejection": {`{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\",\"message\":\"private schema diagnostic\",\"param\":\"text.format.schema\"},\"status\":400}"}}` + "\n", FailureInvalidOutputSchema},
 	} {

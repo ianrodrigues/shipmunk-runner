@@ -16,8 +16,12 @@ const (
 // strictKeywords is the keyword set OpenAI's structured-outputs documentation
 // names as supported. The backend rejects the whole schema on anything else, so
 // the shipped file may not reintroduce minLength, maxLength or a conditional.
+// const is deliberately excluded: the guide's prose references const values in
+// passing, but the Supported schemas list itself does not name const as a
+// keyword, and the shipped schema does not use it, so it stays outside the
+// strict subset until that is confirmed against a live rejection or acceptance.
 var strictKeywords = map[string]bool{
-	"type": true, "enum": true, "description": true, "const": true,
+	"type": true, "enum": true, "description": true,
 	"properties": true, "required": true, "additionalProperties": true,
 	"items": true, "anyOf": true, "$ref": true,
 	"pattern": true, "format": true,

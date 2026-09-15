@@ -25,6 +25,20 @@ const (
 
 // Decode strictly decodes one JSON value, rejecting invalid UTF-8, duplicate keys, and trailing bytes.
 func Decode(raw []byte, maxBytes int) (any, error) {
+	return decode(raw, maxBytes, false)
+}
+
+// DecodeAllowingDuplicateKeys decodes exactly like Decode (UTF-8, surrogate
+// pairs, byte limit, nesting depth, trailing bytes) except that a duplicate
+// object key resolves last-value-wins instead of failing, matching how
+// encoding/json's own default decoder and Rust's serde resolve one. A caller
+// takes on the duplicate-key risk knowingly; every other document should keep
+// using Decode.
+func DecodeAllowingDuplicateKeys(raw []byte, maxBytes int) (any, error) {
+	return decode(raw, maxBytes, true)
+}
+
+func decode(raw []byte, maxBytes int, allowDuplicateKeys bool) (any, error) {
 	if maxBytes < 0 || len(raw) > maxBytes {
 		return nil, fmt.Errorf("protocol document exceeded its byte limit")
 	}
@@ -37,7 +51,7 @@ func Decode(raw []byte, maxBytes int) (any, error) {
 
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	value, err := decodeValue(decoder, 0)
+	value, err := decodeValue(decoder, 0, allowDuplicateKeys)
 	if err != nil {
 		return nil, fmt.Errorf("invalid protocol JSON")
 	}
@@ -50,7 +64,7 @@ func Decode(raw []byte, maxBytes int) (any, error) {
 	return value, nil
 }
 
-func decodeValue(decoder *json.Decoder, depth int) (any, error) {
+func decodeValue(decoder *json.Decoder, depth int, allowDuplicateKeys bool) (any, error) {
 	token, err := decoder.Token()
 	if err != nil {
 		return nil, err
@@ -73,10 +87,10 @@ func decodeValue(decoder *json.Decoder, depth int) (any, error) {
 				if !ok {
 					return nil, fmt.Errorf("object key is not a string")
 				}
-				if _, exists := object[name]; exists {
+				if _, exists := object[name]; exists && !allowDuplicateKeys {
 					return nil, fmt.Errorf("protocol object contains a duplicate key")
 				}
-				value, err := decodeValue(decoder, depth+1)
+				value, err := decodeValue(decoder, depth+1, allowDuplicateKeys)
 				if err != nil {
 					return nil, err
 				}
@@ -92,7 +106,7 @@ func decodeValue(decoder *json.Decoder, depth int) (any, error) {
 			}
 			array := make([]any, 0)
 			for decoder.More() {
-				value, err := decodeValue(decoder, depth+1)
+				value, err := decodeValue(decoder, depth+1, allowDuplicateKeys)
 				if err != nil {
 					return nil, err
 				}
