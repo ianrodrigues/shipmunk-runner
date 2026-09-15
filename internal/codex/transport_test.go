@@ -399,6 +399,30 @@ func TestDockerTransportKeepsNativeScratchOffTheProfileHome(t *testing.T) {
 	}
 }
 
+func TestDockerTransportSizesTheReviewBudgetByChangeSet(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"profile", "source", "baseline"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport, err := newDockerTransport(TransportConfig{
+		Name: testTransportName, ProfileHome: filepath.Join(root, "profile"), Source: filepath.Join(root, "source"),
+		Baseline: filepath.Join(root, "baseline"), BaselineSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40),
+		NativeImage: "native:pinned", RepositoryImage: "repo:pinned", MaxCommands: 2, ChangedFiles: 5,
+	}, new(recordedDocker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = transport.Stop(context.Background()) })
+	if transport.reviewMediator == nil || transport.reviewMediator.remaining != reviewRequestBudget(5) {
+		t.Fatalf("review budget = %#v, want %d", transport.reviewMediator, reviewRequestBudget(5))
+	}
+	if transport.mediator != nil {
+		t.Fatal("a review run received the repository mediator")
+	}
+}
+
 func TestDockerTransportServicesStrictFencedBridge(t *testing.T) {
 	d := new(recordedDocker)
 	transport := transportFixture(t, d)

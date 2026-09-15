@@ -74,8 +74,22 @@ func TestReviewMediatorBindsFenceSequenceAndBudget(t *testing.T) {
 	if _, err := mediator.Handle(context.Background(), []byte(`{"fence":7,"id":2,"op":"review_list","snapshot":"workspace","path":"","offset":0}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mediator.Handle(context.Background(), []byte(`{"fence":7,"id":3,"op":"review_list","snapshot":"workspace","path":"","offset":0}`)); !strings.Contains(errorText(err), "budget") {
-		t.Fatalf("budget was not enforced: %v", err)
+	// An exhausted budget answers the model instead of ending the attempt, and the sequence keeps advancing.
+	exhausted := handleReviewJSON(t, mediator, `{"fence":7,"id":3,"op":"review_list","snapshot":"workspace","path":"","offset":0}`)
+	if exhausted.OK || exhausted.ID != 3 || !strings.Contains(exhausted.Output, "budget exhausted") {
+		t.Fatalf("unexpected exhaustion response: %+v", exhausted)
+	}
+	if next := handleReviewJSON(t, mediator, `{"fence":7,"id":4,"op":"review_read","snapshot":"workspace","path":"file.txt","start_line":1,"line_count":1}`); next.OK {
+		t.Fatalf("a request after exhaustion was served: %+v", next)
+	}
+}
+
+// A five-file review used 20 requests live, so the budget scales with the change set instead of reusing max_turns.
+func TestReviewRequestBudgetScalesWithTheChangeSet(t *testing.T) {
+	for changed, want := range map[int]int{-1: 24, 0: 24, 1: 32, 5: 64, 17: 160, 200: 160} {
+		if budget := reviewRequestBudget(changed); budget != want {
+			t.Fatalf("budget for %d changed files = %d, want %d", changed, budget, want)
+		}
 	}
 }
 

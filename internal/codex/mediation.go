@@ -76,11 +76,18 @@ func (m *Mediator) Handle(ctx context.Context, raw []byte) ([]byte, error) {
 	if m.sealed {
 		return nil, errors.New("repository snapshot is sealed")
 	}
-	if m.remaining == 0 {
-		return nil, errors.New("repository command budget is exhausted")
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	// An exhausted budget is an answer the model can act on, not a reason to kill work that is already done.
+	if m.remaining == 0 {
+		m.last = request.ID
+		exhausted := commandResponse{Fence: request.Fence, ID: request.ID, Stderr: "repository command budget exhausted; finish with the work already done", ExitCode: 1}
+		encoded, err := json.Marshal(exhausted)
+		if err != nil || len(encoded) > MaxCommandResponseBytes {
+			return nil, ErrBudgetExhausted
+		}
+		return encoded, nil
 	}
 
 	// Spend the sequence before execution. An uncertain command must never be retried.

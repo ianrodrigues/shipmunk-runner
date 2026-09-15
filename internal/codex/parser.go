@@ -50,6 +50,8 @@ const (
 	FailureInvalidOutputSchema FailureReason = "invalid_output_schema"
 	// FailureInvalidResult is the executor's own classification of a structured result the contract rejects; no provider code maps to it.
 	FailureInvalidResult FailureReason = "invalid_result"
+	// FailureBudgetExhausted is the executor's own classification of an attempt the mediator could not answer once its request budget was spent.
+	FailureBudgetExhausted FailureReason = "review_budget_exhausted"
 	// FailureMalformedOutput and FailureMissingResult classify a stream the parser rejects; no provider code maps to them.
 	FailureMalformedOutput FailureReason = "malformed_output"
 	FailureMissingResult   FailureReason = "missing_result"

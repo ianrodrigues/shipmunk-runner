@@ -38,8 +38,10 @@ type TransportConfig struct {
 	BaselineSHA, HeadSHA                                              string
 	DockerExecutable                                                  string
 	MaxCommands                                                       int
-	CommandTimeout                                                    time.Duration
-	sourceHandle, baselineHandle                                      *os.File
+	// ChangedFiles sizes a review's request budget; it is zero for implement and fix runs.
+	ChangedFiles                 int
+	CommandTimeout               time.Duration
+	sourceHandle, baselineHandle *os.File
 }
 
 type transportResult struct {
@@ -209,7 +211,7 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 	}
 	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence, profileHandle: handles[0], sourceHandle: handles[1], baselineHandle: handles[2]}
 	if cfg.Baseline != "" {
-		reviewMediator, err := NewReviewMediator(fence, cfg.MaxCommands, cfg.Source, handles[1], cfg.Baseline, handles[2], cfg.HeadSHA, cfg.BaselineSHA)
+		reviewMediator, err := NewReviewMediator(fence, reviewRequestBudget(cfg.ChangedFiles), cfg.Source, handles[1], cfg.Baseline, handles[2], cfg.HeadSHA, cfg.BaselineSHA)
 		if err != nil {
 			closeHandles()
 			_ = os.RemoveAll(bridge)

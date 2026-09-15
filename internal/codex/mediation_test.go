@@ -55,8 +55,13 @@ func TestMediatorBindsFenceSequenceAndBudget(t *testing.T) {
 	if _, err := mediator.Handle(context.Background(), []byte(`{"fence":7,"id":2,"command":"true"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mediator.Handle(context.Background(), []byte(`{"fence":7,"id":3,"command":"true"}`)); !strings.Contains(errorText(err), "budget") {
-		t.Fatalf("unexpected error: %v", err)
+	// An exhausted budget answers the model instead of ending the attempt.
+	exhausted, err := mediator.Handle(context.Background(), []byte(`{"fence":7,"id":3,"command":"true"}`))
+	if err != nil {
+		t.Fatalf("exhausted budget ended the attempt: %v", err)
+	}
+	if json.Unmarshal(exhausted, &decoded) != nil || decoded.ID != 3 || decoded.ExitCode != 1 || !strings.Contains(decoded.Stderr, "budget exhausted") {
+		t.Fatalf("unexpected exhaustion response: %s", exhausted)
 	}
 	if len(executor.commands) != 2 {
 		t.Fatalf("executed %d commands", len(executor.commands))

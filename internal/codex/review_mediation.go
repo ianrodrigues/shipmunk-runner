@@ -26,7 +26,28 @@ const (
 	MaxReviewLineCount     = 400
 	// MaxReviewScanBytes caps review_search's total bytes per request, skipping any single file over the limit.
 	MaxReviewScanBytes = 16 * 1024 * 1024
+	// A review's request budget is BaseReviewRequests plus ReviewRequestsPerFile for every changed file, capped at MaxReviewRequests.
+	BaseReviewRequests    = 24
+	ReviewRequestsPerFile = 8
+	MaxReviewRequests     = 160
 )
+
+// ErrBudgetExhausted marks a spent budget that still ends the attempt, so the executor reports a classified failed attempt instead of an executor error.
+var ErrBudgetExhausted = errors.New("request budget is exhausted")
+
+func reviewRequestBudget(changedFiles int) int {
+	if changedFiles < 0 {
+		changedFiles = 0
+	}
+	if changedFiles > MaxReviewRequests {
+		return MaxReviewRequests
+	}
+	budget := BaseReviewRequests + ReviewRequestsPerFile*changedFiles
+	if budget > MaxReviewRequests {
+		return MaxReviewRequests
+	}
+	return budget
+}
 
 // ReviewMediator serves bounded, read-only operations over two snapshots loaded once into memory; a request path never reaches the filesystem again.
 type ReviewMediator struct {
@@ -102,11 +123,17 @@ func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error)
 	if m.sealed {
 		return nil, errors.New("review snapshot is sealed")
 	}
-	if m.remaining == 0 {
-		return nil, errors.New("review request budget is exhausted")
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	// An exhausted budget is an answer the model can act on, not a reason to kill a review that already holds evidence.
+	if m.remaining == 0 {
+		m.last = request.ID
+		encoded, err := encodeReviewResponse(m.fence, request.ID, false, "review request budget exhausted; finish with the evidence already read", false, "")
+		if err != nil {
+			return nil, ErrBudgetExhausted
+		}
+		return encoded, nil
 	}
 	// Spend the sequence before execution, matching the shell mediator.
 	m.last = request.ID
