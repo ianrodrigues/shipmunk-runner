@@ -5,15 +5,15 @@
     "run_id": "01k4w000000000000000000001",
     "attempt_id": "01k4w000000000000000000002",
     "fence": 1,
-    "summary": "No actionable findings.",
-    "outcome": "findings",
+    "summary": "Review assessment.",
+    "outcome": "no_findings",
     "charter_version": "1",
     "findings": [],
     "coverage": {
       "files": [
         {
           "path": "app/Support/ReviewPathRules.php",
-          "status": "reviewed"
+          "status": "unreviewed"
         }
       ],
       "context_gaps": []

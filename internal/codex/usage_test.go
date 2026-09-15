@@ -14,12 +14,13 @@ func TestNormalizedNativeUsagePassesTheResultContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	review := &reviewEvidence{baselineSHA: sampleBaselineSHA, headSHA: sampleHeadSHA, changedFiles: []string{findingPath}}
 	execution, err := normalizeExecution(context.Background(), protocol.Claim{
 		RunID:     "01k4w000000000000000000001",
 		AttemptID: "01k4w000000000000000000002",
 		Fence:     1,
 		Manifest:  map[string]any{"kind": "review"},
-	}, stream, nil)
+	}, stream, nil, review)
 	if err != nil {
 		t.Fatal(err)
 	}

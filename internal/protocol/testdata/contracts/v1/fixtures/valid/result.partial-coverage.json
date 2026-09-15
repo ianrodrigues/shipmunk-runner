@@ -1,0 +1,53 @@
+{
+  "protocol_version": "1.0",
+  "run_id": "01k4w000000000000000000001",
+  "attempt_id": "01k4w000000000000000000002",
+  "fence": 1,
+  "summary": "One reachable defect was found. One changed file was not reviewed and one context gap remains, so this review is not a clean result for the whole change.",
+  "outcome": "findings",
+  "charter_version": "1",
+  "findings": [
+    {
+      "category": "contract",
+      "severity": "medium",
+      "relation": "modified",
+      "scenario": "The publisher now accepts a side value the frozen comparison never produces for a binary file.",
+      "consequence": "A finding on a binary file is accepted here and then refused at publication, turning the run into an attention state instead of a review.",
+      "action": "Refuse the side at acceptance so the contract violation surfaces where it can be explained.",
+      "explanation": "Acceptance and publication disagree about which sides a binary file can carry.",
+      "evidence": [
+        {
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "path": "app/Services/GitHub/ReviewFindings.php",
+          "line_start": 60,
+          "line_end": 64
+        }
+      ],
+      "anchor": {
+        "path": "app/Services/GitHub/ReviewFindings.php",
+        "line": 62,
+        "side": "RIGHT"
+      }
+    }
+  ],
+  "coverage": {
+    "files": [
+      {
+        "path": "app/Services/GitHub/ReviewFindings.php",
+        "status": "reviewed"
+      },
+      {
+        "path": "app/Support/ReviewPathRules.php",
+        "status": "unreviewed",
+        "reason": "The snapshot for this path could not be read before the review budget ran out."
+      }
+    ],
+    "context_gaps": [
+      "The operator path-rule policy this matcher implements lives outside the reviewed repository and was not available."
+    ]
+  },
+  "verification_state": "none",
+  "patch_artifact": null,
+  "tests": [],
+  "usage": null
+}

@@ -28,7 +28,10 @@ func TestPinnedContractFixtures(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		contract := strings.TrimSuffix(filepath.Base(fixture), ".json")
+		// A positive fixture beyond the canonical one is named
+		// "<contract>.<case>.json" (e.g. result.mixed-anchoring.json); the
+		// contract is always the first dot-separated segment of the basename.
+		contract := strings.SplitN(filepath.Base(fixture), ".", 2)[0]
 		if err := ValidateFixture(contract, contracts, raw); err != nil {
 			t.Errorf("%s: %v", fixture, err)
 		}
