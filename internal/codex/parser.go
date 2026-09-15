@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"path"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
@@ -21,6 +19,11 @@ const (
 	MaxOutputBytes = 16 * 1024 * 1024
 	MaxLineBytes   = 1024 * 1024
 	MaxEvents      = 10_000
+	// MaxResultBytes bounds only the final structured agent_message text.
+	// It stays at the original 64 KiB: growing MaxLineBytes for a large
+	// tool-call payload must not also grow what a structured result is
+	// allowed to weigh.
+	MaxResultBytes = 64 * 1024
 
 	// Mirror internal/protocol/contracts/v1/result.schema.json exactly.
 	MaxFindings             = 100
@@ -169,8 +172,14 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 		return Stream{}, ErrMalformedOutput
 	}
 
-	lines := strings.Split(string(stdout[:len(stdout)-1]), "\n")
-	if len(lines) > MaxEvents {
+	// Scanned as slices of the original stdout buffer rather than converted to
+	// a string and re-split: with the output budget in the tens of megabytes,
+	// an extra full-buffer copy (and another per line) is worth avoiding. The
+	// line count mirrors strings.Split's: N separators make N+1 records, the
+	// last of which is empty when stdout ends with a run of newlines.
+	body := stdout[:len(stdout)-1]
+	lineCount := bytes.Count(body, []byte{'\n'}) + 1
+	if lineCount > MaxEvents {
 		return Stream{}, ErrMalformedOutput
 	}
 
@@ -181,11 +190,17 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	// The pinned CLI reports warnings, notices and retried backend errors as error items or events, then still completes the turn.
 	// An error is therefore terminal only when no result follows.
 	var reportedFailure error
-	for _, line := range lines {
-		if line == "" || len(line) > MaxLineBytes || state == "complete" {
+	for i := 0; i < lineCount; i++ {
+		var line []byte
+		if index := bytes.IndexByte(body, '\n'); index >= 0 {
+			line, body = body[:index], body[index+1:]
+		} else {
+			line, body = body, nil
+		}
+		if len(line) == 0 || len(line) > MaxLineBytes || state == "complete" {
 			return Stream{}, ErrMalformedOutput
 		}
-		event, err := decodeStreamEvent([]byte(line))
+		event, err := decodeStreamEvent(line, MaxLineBytes)
 		if err != nil {
 			return Stream{}, ErrMalformedOutput
 		}
@@ -223,7 +238,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			// thread but before a turn starts. No other pre-turn item is valid.
 			if state == "thread" && typeName == "item.completed" && kind == "error" {
 				stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
-				reportedFailure = nativeFailure(item)
+				reportedFailure = progressFailure(item)
 				continue
 			}
 			if state != "turn" {
@@ -236,10 +251,10 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			items[id] = itemState{kind: kind, complete: typeName == "item.completed"}
 			stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
 			if kind == "error" {
-				reportedFailure = nativeFailure(item)
+				reportedFailure = progressFailure(item)
 			}
 			if kind == "agent_message" && typeName == "item.completed" {
-				message, ok := boundedString(item["text"], MaxLineBytes)
+				message, ok := boundedString(item["text"], MaxResultBytes)
 				if !ok {
 					return Stream{}, ErrInvalidResult
 				}
@@ -256,7 +271,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 			stream.Usage, state = usage, "complete"
 		case "error":
 			stream.Events = append(stream.Events, Event{Type: typeName, ItemType: "native"})
-			reportedFailure = nativeFailure(event)
+			reportedFailure = progressFailure(event)
 		case "turn.failed":
 			failure, ok := event["error"].(map[string]any)
 			if !ok {
@@ -289,19 +304,16 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 // at the same level (ThreadItemDetails, exec_events.rs L97-102), and serde
 // resolves that the same way. Every other document this package decodes,
 // including the final structured result, still goes through protocol.Decode,
-// which keeps rejecting a duplicate key.
-func decodeStreamEvent(line []byte) (map[string]any, error) {
-	if !utf8.Valid(line) {
-		return nil, fmt.Errorf("codex stream line is not valid UTF-8")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	decoder.UseNumber()
-	value, err := decodeLenientValue(decoder, 0)
+// which keeps rejecting a duplicate key. One consequence: a web_search item
+// writes its own item id first and its inner action's id second, so
+// Event.ItemID for that item type ends up reporting the action id, not the
+// item id. Event.ItemID is sanitized bookkeeping metadata only, never used to
+// look anything up outside this stream, so this is a naming quirk, not a
+// correctness gap.
+func decodeStreamEvent(line []byte, maxBytes int) (map[string]any, error) {
+	value, err := protocol.DecodeAllowingDuplicateKeys(line, maxBytes)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, fmt.Errorf("codex stream line has trailing JSON")
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -310,61 +322,9 @@ func decodeStreamEvent(line []byte) (map[string]any, error) {
 	return object, nil
 }
 
-func decodeLenientValue(decoder *json.Decoder, depth int) (any, error) {
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	delimiter, ok := token.(json.Delim)
-	if !ok {
-		return token, nil
-	}
-	switch delimiter {
-	case '{':
-		if depth >= protocol.MaxJSONDepth-1 {
-			return nil, fmt.Errorf("codex stream line exceeded its nesting limit")
-		}
-		object := make(map[string]any)
-		for decoder.More() {
-			key, err := decoder.Token()
-			if err != nil {
-				return nil, err
-			}
-			name, ok := key.(string)
-			if !ok {
-				return nil, fmt.Errorf("object key is not a string")
-			}
-			value, err := decodeLenientValue(decoder, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			object[name] = value
-		}
-		if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
-			return nil, fmt.Errorf("unterminated object")
-		}
-		return object, nil
-	case '[':
-		if depth >= protocol.MaxJSONDepth-1 {
-			return nil, fmt.Errorf("codex stream line exceeded its nesting limit")
-		}
-		array := make([]any, 0)
-		for decoder.More() {
-			value, err := decodeLenientValue(decoder, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			array = append(array, value)
-		}
-		if end, err := decoder.Token(); err != nil || end != json.Delim(']') {
-			return nil, fmt.Errorf("unterminated array")
-		}
-		return array, nil
-	default:
-		return nil, fmt.Errorf("unexpected JSON delimiter %q", delimiter)
-	}
-}
-
+// nativeFailure classifies the one terminal failure a stream can end on: the
+// error object of a turn.failed event. Free-form message substring matching
+// is scoped to this path deliberately (see messageFailureReason).
 func nativeFailure(value map[string]any) error {
 	if reason, ok := failureCode(value["code"]); ok {
 		return &ClassifiedFailure{Reason: reason}
@@ -382,6 +342,31 @@ func nativeFailure(value map[string]any) error {
 	return ErrNativeFailure
 }
 
+// progressFailure classifies a non-fatal error item or event: a completed
+// pre-turn error item, an in-turn error item, or a top-level error event.
+// These are reported while the turn keeps running (ConfigWarning, Warning,
+// DeprecationNotice, ModelRerouted, a retried transient backend error), so
+// only an explicit machine-readable code classifies them here; unlike
+// nativeFailure, this never falls back to messageFailureReason's substring
+// match. That prose is ordinary diagnostic text the model or CLI can compose
+// freely (a warning, a deprecation notice), and can legitimately contain the
+// same words a fatal-message search looks for ("rate limit", "unauthorized").
+// If the stream later ends without a structured result, ErrMissingResult
+// already reports that outcome; this function must not misclassify an
+// unrelated progress message as the reason for a truncated stream instead.
+func progressFailure(value map[string]any) error {
+	if reason, ok := failureCode(value["code"]); ok {
+		return &ClassifiedFailure{Reason: reason}
+	}
+	message, _ := value["message"].(string)
+	if nested, ok := backendErrorEnvelope(strings.TrimSpace(message)); ok {
+		if reason, ok := failureCode(nested["code"]); ok {
+			return &ClassifiedFailure{Reason: reason}
+		}
+	}
+	return ErrNativeFailure
+}
+
 // messageFailureReason is best-effort. TurnError and ErrorItem carry no
 // machine-readable code, and protocol/src/error.rs's extract_error_message
 // unwraps the backend's own JSON envelope into a bare string before the CLI
@@ -391,19 +376,28 @@ func nativeFailure(value map[string]any) error {
 func messageFailureReason(message string) (FailureReason, bool) {
 	lower := strings.ToLower(message)
 	switch {
-	case strings.Contains(lower, "authentication expired"), strings.Contains(lower, "not logged in"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "refresh token expired"):
+	case containsAny(lower, "authentication expired", "not logged in", "unauthorized", "refresh token expired"):
 		return FailureAuthExpired, true
-	case strings.Contains(lower, "rate limit"), strings.Contains(lower, "usage limit"):
+	case containsAny(lower, "rate limit", "usage limit"):
 		return FailureRateLimited, true
-	case strings.Contains(lower, "approval required"):
+	case containsAny(lower, "approval required"):
 		return FailureApprovalRequired, true
-	case strings.Contains(lower, "model_not_found"), strings.Contains(lower, "model not found"):
+	case containsAny(lower, "model_not_found", "model not found"):
 		return FailureModelUnavailable, true
-	case strings.Contains(lower, "invalid_json_schema"), strings.Contains(lower, "invalid json schema"), strings.Contains(lower, "invalid output schema"):
+	case containsAny(lower, "invalid_json_schema", "invalid json schema", "invalid output schema"):
 		return FailureInvalidOutputSchema, true
 	default:
 		return "", false
 	}
+}
+
+func containsAny(text string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(text, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // backendErrorEnvelope locates the one error object the pinned CLI copies out of
@@ -443,9 +437,9 @@ func relayedErrorEnvelope(body map[string]any) bool {
 // failureCode matches an explicit machine-readable code field. codex-rs's
 // TurnError and ErrorItem carry only message today, so this path is not known
 // to fire against the pinned CLI; it stays as defense in depth for a future
-// build that adds one, and messageFailureReason below is the path that
-// actually classifies current output, including the unverified
-// invalid_json_schema literal.
+// build that adds one. messageFailureReason (above, used only from
+// nativeFailure) is the path that actually classifies a turn.failed message
+// today, including the unverified invalid_json_schema literal.
 func failureCode(value any) (FailureReason, bool) {
 	code, ok := value.(string)
 	if !ok {
@@ -549,7 +543,7 @@ func dropNullMembers(value any) {
 // and verification_state, plus optional questions. incomplete permits
 // coverage alone, and every other outcome permits none of the four.
 func parseResult(raw []byte) (Result, error) {
-	value, err := protocol.Decode(raw, MaxLineBytes)
+	value, err := protocol.Decode(raw, MaxResultBytes)
 	if err != nil {
 		return Result{}, ErrInvalidResult
 	}

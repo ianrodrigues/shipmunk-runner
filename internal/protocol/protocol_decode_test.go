@@ -31,6 +31,45 @@ func TestDecodeRejectsMalformedSurrogateEscapes(t *testing.T) {
 	}
 }
 
+// DecodeAllowingDuplicateKeys exists for a caller (internal/codex's exec
+// stream parser) that knowingly accepts a legal duplicate key with last-value-
+// wins semantics; it must still reuse every other check Decode makes, not
+// silently drop UTF-16 surrogate validation along with duplicate-key rejection.
+func TestDecodeAllowingDuplicateKeysKeepsEveryOtherCheck(t *testing.T) {
+	value, err := DecodeAllowingDuplicateKeys([]byte(`{"id":"item-1","id":"call-1"}`), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := object(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data["id"] != "call-1" {
+		t.Fatalf("duplicate key did not resolve last-value-wins: %#v", data["id"])
+	}
+
+	for name, raw := range map[string]string{
+		"unpaired surrogate": `{"text":"\ud800"}`,
+		"trailing bytes":     `{"a":1}{"b":2}`,
+		"over byte limit":    `{"a":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			limit := len(raw)
+			if name == "over byte limit" {
+				limit = 1
+			}
+			if _, err := DecodeAllowingDuplicateKeys([]byte(raw), limit); err == nil {
+				t.Fatalf("%s: accepted what Decode would reject", name)
+			}
+		})
+	}
+
+	overDepth := strings.Repeat("[", MaxJSONDepth) + "0" + strings.Repeat("]", MaxJSONDepth)
+	if _, err := DecodeAllowingDuplicateKeys([]byte(overDepth), len(overDepth)); err == nil {
+		t.Fatal("accepted input one container deeper than the nesting limit")
+	}
+}
+
 func TestDecodeEnforcesPHPCompatibleDepthAndByteLimits(t *testing.T) {
 	withinDepth := strings.Repeat("[", MaxJSONDepth-1) + "0" + strings.Repeat("]", MaxJSONDepth-1)
 	if _, err := Decode([]byte(withinDepth), len(withinDepth)); err != nil {
