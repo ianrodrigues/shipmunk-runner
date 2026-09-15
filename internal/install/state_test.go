@@ -400,59 +400,23 @@ func TestGuardRejectsChangedIdentityAndRecoveryJournals(t *testing.T) {
 	}
 }
 
-func TestGuardRejectsLegacyPHPInstallation(t *testing.T) {
+func TestGuardRejectsUnknownInstallationShape(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	legacy := `{"image_id":"sha256:` + strings.Repeat("a", 64) + `","base_url":"https://shipmunk.example","runner_id":"` + runnerID + `","profile_id":"` + profileID + `","expires_at":"2099-01-01T00:00:00+00:00"}`
-	mustWrite(t, filepath.Join(root, "config.json"), []byte(legacy))
+	unknown := `{"image_id":"sha256:` + strings.Repeat("a", 64) + `","base_url":"https://shipmunk.example","runner_id":"` + runnerID + `","profile_id":"` + profileID + `","expires_at":"2099-01-01T00:00:00+00:00"}`
+	mustWrite(t, filepath.Join(root, "config.json"), []byte(unknown))
 
 	if err := (Guard{Root: root, Identity: identity}).Preflight(); err == nil {
-		t.Fatal("legacy PHP installation was accepted without a launcher migration")
+		t.Fatal("unknown installation shape was accepted")
 	}
 }
 
-func TestGuardMigratesExactSevenFieldGoConfiguration(t *testing.T) {
+func TestOperationalConfigurationRejectsSevenFieldSchema(t *testing.T) {
 	root := installation(t)
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	current := string(configuration(root, identity, "v0.1.0-alpha.5"))
-	legacyGo := strings.Replace(current, `,"image_id":"sha256:`+strings.Repeat("b", 64)+`"`, "", 1)
-	mustWrite(t, filepath.Join(root, "config.json"), []byte(legacyGo))
-
-	guard := Guard{Root: root, Identity: identity}
-	if err := guard.Preflight(); err != nil {
-		t.Fatalf("alpha.5 Go configuration blocked renewal: %v", err)
-	}
-	renames := 0
-	failing := Guard{Root: root, Identity: identity, Rename: func(old, new string) error {
-		renames++
-		if renames == 4 {
-			return errors.New("injected migration failure")
-		}
-		return os.Rename(old, new)
-	}}
-	if err := failing.ActivateLaunchers(configuration(root, identity, "v0.1.0-alpha.6"), []byte("profile"), []byte("execution"), map[string][]byte{"run": []byte("run"), "connect": []byte("connect")}); err == nil {
-		t.Fatal("injected migration failure was ignored")
-	}
-	if raw := string(mustRead(t, filepath.Join(root, "config.json"))); raw != legacyGo {
-		t.Fatal("failed migration did not preserve alpha.5 configuration")
-	}
-	if err := guard.ActivateLaunchers(configuration(root, identity, "v0.1.0-alpha.6"), []byte("profile"), []byte("execution"), map[string][]byte{"run": []byte("run"), "connect": []byte("connect")}); err != nil {
-		t.Fatalf("alpha.5 Go configuration was not migrated: %v", err)
-	}
-	if _, err := guard.Configuration(); err != nil {
-		t.Fatalf("migrated configuration is not operational: %v", err)
-	}
-	if err := guard.Preflight(); err != nil {
-		t.Fatalf("eight-field renewal configuration was not reusable: %v", err)
-	}
-}
-
-func TestOperationalConfigurationRejectsSevenFieldGoSchema(t *testing.T) {
-	root := installation(t)
-	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	current := string(configuration(root, identity, "v0.1.0-alpha.5"))
-	legacyGo := strings.Replace(current, `,"image_id":"sha256:`+strings.Repeat("b", 64)+`"`, "", 1)
-	mustWrite(t, filepath.Join(root, "config.json"), []byte(legacyGo))
+	current := string(configuration(root, identity, "v1.2.3"))
+	sevenField := strings.Replace(current, `,"image_id":"sha256:`+strings.Repeat("b", 64)+`"`, "", 1)
+	mustWrite(t, filepath.Join(root, "config.json"), []byte(sevenField))
 
 	if _, err := LoadConfiguration(root); err == nil {
 		t.Fatal("operational load accepted configuration without an immutable image")
@@ -460,31 +424,8 @@ func TestOperationalConfigurationRejectsSevenFieldGoSchema(t *testing.T) {
 	if _, err := (Guard{Root: root, Identity: identity}).Configuration(); err == nil {
 		t.Fatal("operational guard accepted configuration without an immutable image")
 	}
-}
-
-func TestGuardRejectsSevenFieldMigrationOutsideAlphaFiveOrWithLaunchers(t *testing.T) {
-	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	for _, test := range []struct {
-		name, version string
-		launcher      bool
-	}{
-		{"other version", "v0.1.0-alpha.4", false},
-		{"existing launcher", "v0.1.0-alpha.5", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := installation(t)
-			current := string(configuration(root, identity, test.version))
-			seven := strings.Replace(current, `,"image_id":"sha256:`+strings.Repeat("b", 64)+`"`, "", 1)
-			mustWrite(t, filepath.Join(root, "config.json"), []byte(seven))
-			if test.launcher {
-				if err := os.WriteFile(filepath.Join(root, "run"), []byte("#!/bin/sh\n"), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := (Guard{Root: root, Identity: identity}).Preflight(); err == nil {
-				t.Fatal("unsupported migration was accepted")
-			}
-		})
+	if err := (Guard{Root: root, Identity: identity}).Preflight(); err == nil {
+		t.Fatal("preflight accepted a seven-field configuration for renewal")
 	}
 }
 
