@@ -49,9 +49,10 @@ type HTTPClient struct {
 	client  *http.Client
 }
 
-// NewHTTPClient requires HTTPS outside loopback development and never follows
-// redirects. Every exchange, including artifact bodies, has the PHP-compatible
-// five-second total timeout. A nil transport uses http.DefaultTransport.
+// NewHTTPClient requires HTTPS outside loopback development, never follows
+// redirects, and gives every exchange (including artifact bodies) the
+// PHP-compatible five-second total timeout. A nil transport uses
+// http.DefaultTransport.
 func NewHTTPClient(baseURL, token string, transport http.RoundTripper) (*HTTPClient, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {

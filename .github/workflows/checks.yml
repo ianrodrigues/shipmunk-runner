@@ -30,10 +30,9 @@ jobs:
           trap 'rm -rf "$runner_temp"' EXIT
           TMPDIR="$runner_temp" make check
 
-  # Builds the release archive and the smoke test's fixtures with the Go
-  # toolchain, then hands them to install-smoke as opaque artifacts so that
-  # job can install and drive the release without PHP or Go on its own PATH,
-  # matching a real designated execution host.
+  # Builds the release archive and installsmoke's fixtures with Go, then hands
+  # them to install-smoke as opaque artifacts, matching a host with neither
+  # PHP nor Go on PATH.
   install-smoke-build:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64]
@@ -65,10 +64,9 @@ jobs:
           if-no-files-found: error
 
   # Installs the built release inside a container with neither PHP nor Go on
-  # its PATH. Only linux-amd64 is wired here, matching this self-hosted
-  # runner's native architecture; SHIPMUNK_INSTALL_SMOKE_ARCH is a real
-  # parameter (see internal/installsmoke) so a linux-arm64 job can be added
-  # once a matching runner or registered emulation is available.
+  # PATH. Only linux-amd64 is wired, matching this runner's native
+  # architecture; SHIPMUNK_INSTALL_SMOKE_ARCH (see internal/installsmoke) lets
+  # a linux-arm64 job be added once a matching runner exists.
   install-smoke:
     needs: install-smoke-build
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -78,10 +76,10 @@ jobs:
       matrix:
         arch: [amd64]
     steps:
-      # Downloaded outside the repo workspace: this job never checks the
-      # repository out, and the self-hosted runner keeps its workspace
-      # between jobs, so a workspace-relative path here previously landed
-      # in the same directory the release build job packages into.
+      # Downloaded outside the repo workspace, since this job never checks the
+      # repository out and the self-hosted runner keeps its workspace between
+      # jobs; a workspace-relative path here previously collided with the
+      # release build job's own output directory.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: install-smoke-fixtures

@@ -572,11 +572,10 @@ func (guard Guard) validateExistingIdentity() error {
 	return guard.validateReleaseOrder(configuration.ReleaseVersion, configuration.ReleasePath)
 }
 
-// Downgrades are refused by design (no rollback or PHP-state migration); a
-// malformed installed version also fails closed. At equal precedence, build
-// metadata is ignored (semver 2.0.0), so the incoming archive digest must
-// match the installed one, or a differently built same-version archive could
-// silently replace the installed release.
+// Downgrades are refused by design; a malformed installed version fails
+// closed the same way. Build metadata is ignored at equal precedence (semver
+// 2.0.0), so the incoming digest must match the installed one, or a
+// differently built same-version archive could silently replace it.
 func (guard Guard) validateReleaseOrder(installed, installedReleasePath string) error {
 	if guard.IncomingReleaseVersion == "" {
 		return nil
@@ -663,8 +662,8 @@ func (guard Guard) Configuration() (Configuration, error) {
 	return configuration, err
 }
 
-// decodeConfiguration accepts only the eight-field shape.
-// It rejects every other shape and never migrates old data.
+// decodeConfiguration accepts only the eight-field shape and rejects every
+// other shape without migrating old data.
 func decodeConfiguration(raw []byte) (installedConfiguration, error) {
 	if len(raw) == 0 || len(raw) > maxConfigBytes {
 		return installedConfiguration{}, errors.New("runner configuration is invalid")

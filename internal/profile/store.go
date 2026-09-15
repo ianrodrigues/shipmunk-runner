@@ -1,5 +1,6 @@
 // Package profile stores native subscription credentials in a protected
-// per-profile directory.
+// per-profile directory. It only implements policy for trusted native
+// profile clients, not containers or control-plane operations.
 package profile
 
 import (
