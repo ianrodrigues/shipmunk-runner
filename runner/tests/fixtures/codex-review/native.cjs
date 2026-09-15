@@ -1,6 +1,7 @@
 #!/usr/local/bin/node
-// Synthetic Codex CLI for the review boundary. Never loads account credentials
-// or contacts a provider; it only proves the real Docker/MCP path end to end.
+// Synthetic Codex CLI for the review boundary. The fixture never loads account
+// credentials or contacts a provider. The fixture only proves the real
+// Docker/MCP path end to end.
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const assert = require('node:assert/strict');

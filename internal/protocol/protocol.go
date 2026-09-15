@@ -1,8 +1,8 @@
 // Package protocol implements the versioned runner control-plane boundary.
 //
-// It intentionally uses json.Number and a duplicate-key-aware decoder. The
-// control plane treats numeric identifiers as integers, and decoding through
-// float64 would silently change valid identities above 2^53.
+// Package protocol intentionally uses json.Number and a duplicate-key-aware
+// decoder. The control plane treats numeric identifiers as integers.
+// Decoding through float64 would silently change valid identities above 2^53.
 package protocol
 
 import (

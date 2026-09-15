@@ -14,8 +14,8 @@ var (
 )
 
 // Claim holds a validated, fenced response to a successful claim request.
-// Its exported fields and Manifest map remain mutable; callers must treat the
-// validated identity and manifest as immutable throughout the attempt.
+// Claim's exported fields and Manifest map remain mutable. Callers must treat
+// the validated identity and manifest as immutable throughout the attempt.
 type Claim struct {
 	RunID          string
 	AttemptID      string
@@ -44,7 +44,7 @@ func ParseClaim(raw []byte, now time.Time) (Claim, error) {
 }
 
 // ClaimFromManifest validates a detached JSON copy of the supplied manifest.
-// It cannot bypass the complete schema checks used by ParseClaim.
+// ClaimFromManifest cannot bypass the complete schema checks used by ParseClaim.
 func ClaimFromManifest(manifest map[string]any, now time.Time) (Claim, error) {
 	raw, err := json.Marshal(manifest)
 	if err != nil {

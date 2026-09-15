@@ -53,9 +53,9 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 		result["patch_artifact"] = nil
 		result["tests"] = []any{}
 		result["usage"] = nil
-		// incomplete forbids charter_version/questions/verification_state and
-		// only optionally carries coverage; a native result overwritten here
-		// may still carry the fields its original (pre-failure) outcome required.
+		// incomplete forbids charter_version, questions, and verification_state,
+		// and only optionally carries coverage. A native result overwritten here
+		// may still carry the fields its original, pre-failure outcome required.
 		delete(result, "charter_version")
 		delete(result, "coverage")
 		delete(result, "verification_state")
@@ -125,8 +125,9 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 // validatePreUploadResult validates the normalized result before publication.
 // A changes_proposed envelope may legitimately carry a null patch reference
 // because the control plane assigns the artifact ID only after upload. Validate
-// a detached copy using a contract-valid provisional reference; runClaim will
-// validate the final result again after replacing it with the real upload ID.
+// a detached copy using a contract-valid provisional reference. runClaim
+// validates the final result again after replacing the reference with the
+// real upload ID.
 func validatePreUploadResult(result map[string]any, artifacts []Artifact) error {
 	validationResult := result
 	if result["outcome"] == "changes_proposed" && result["patch_artifact"] == nil {

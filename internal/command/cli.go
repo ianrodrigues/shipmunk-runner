@@ -11,12 +11,12 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 )
 
-// Version is replaced with the exact release tag by release builds. Local and
+// Release builds replace Version with the exact release tag. Local and
 // otherwise unversioned binaries deliberately identify themselves as development.
 var Version = "development"
 
-// RunRunner supports isolated fixture execution; native profile-backed drivers
-// remain unavailable until their separate lifecycle migration is complete.
+// RunRunner supports isolated fixture execution. Native profile-backed drivers
+// stay unavailable until their separate lifecycle migration finishes.
 func RunRunner(args []string, stdout, stderr io.Writer) int {
 	parsed, err := parseRunnerOptions(args, stdout)
 	if errors.Is(err, flagHelpRequested) {
@@ -82,8 +82,8 @@ func RunProfile(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
-// RunWatchdog exposes the same version contract as the operator commands and
-// otherwise delegates to the watchdog's private protocol entrypoint.
+// RunWatchdog exposes the same version contract as the operator commands.
+// RunWatchdog delegates everything else to the watchdog's private protocol entrypoint.
 func RunWatchdog(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version") {
 		fmt.Fprintln(stdout, "shipmunk-watchdog "+Version)

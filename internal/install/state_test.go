@@ -135,8 +135,6 @@ func TestPreflightRefusesOlderReleaseAndAllowsSameOrNewer(t *testing.T) {
 		{"newer prerelease allowed", "v0.1.0-alpha.9", "v0.1.0-alpha.10", installedArchiveDigest, false},
 		{"release supersedes prerelease", "v0.1.0-alpha.10", "v0.1.0", installedArchiveDigest, false},
 		{"prerelease after release refused", "v0.1.0", "v0.1.0-alpha.10", installedArchiveDigest, true},
-		// Build metadata never affects precedence (semver 2.0.0), so these
-		// are still equal-version renewals: the digest check still applies.
 		{"same version with build metadata and same digest allowed", "v1.2.3", "v1.2.3+build.5", installedArchiveDigest, false},
 		{"same version with build metadata but different digest refused", "v1.2.3", "v1.2.3+build.5", differentDigest, true},
 	} {

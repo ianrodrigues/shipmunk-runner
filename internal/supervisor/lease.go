@@ -147,14 +147,14 @@ func (g *leaseGuard) createStarted() error {
 	if g.watchdog == nil || g.state.SandboxID == nil {
 		return errors.New("sandbox reservation and watchdog are required before creation")
 	}
-	// Mark before sending: a failed/lost ACK is ambiguous about whether the
-	// watchdog accepted the phase transition, so the caller must finish-empty.
+	// Mark before sending. A failed or lost ACK cannot show whether the
+	// watchdog accepted the phase transition. The caller must then finish-empty.
 	g.creationPending = true
 	if err := g.watchdog.CreateStarted(); err != nil {
 		return err
 	}
 	// The ACK can arrive just as the lease/deadline is revoked. Never begin a
-	// Docker side effect unless execution authority is still live after it.
+	// Docker side effect unless execution authority is still live after the ACK arrives.
 	return g.ctx.Err()
 }
 

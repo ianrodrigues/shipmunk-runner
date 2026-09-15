@@ -48,8 +48,8 @@ func (workspace *Workspace) Path(claim protocol.Claim) string {
 	return filepath.Join(workspace.root, claim.AttemptID+"-"+strconv.FormatInt(claim.Fence, 10))
 }
 
-// EnsureWritable creates the root if needed and verifies that a private probe
-// file can be created and removed before the supervisor claims work.
+// EnsureWritable creates the root if needed. EnsureWritable then verifies that
+// a private probe file can be created and removed before the supervisor claims work.
 func (workspace *Workspace) EnsureWritable() error {
 	workspace.mu.Lock()
 	defer workspace.mu.Unlock()
@@ -214,7 +214,7 @@ func validAttemptDirectoryName(name string) bool {
 }
 
 // Remove removes only a direct child named for a valid attempt and positive
-// fence. It refuses symlinks anywhere in the tree rather than following them.
+// fence. Remove refuses symlinks anywhere in the tree rather than following them.
 func (workspace *Workspace) Remove(path string) error {
 	workspace.mu.Lock()
 	defer workspace.mu.Unlock()
@@ -285,7 +285,7 @@ func (workspace *Workspace) removeLocked(path string) error {
 }
 
 // Sanitize returns a recursively filtered copy without supervisor-only
-// credentials or callback fields. It does not mutate the input manifest.
+// credentials or callback fields. Sanitize does not mutate the input manifest.
 func Sanitize(manifest map[string]any) map[string]any {
 	return filterMap(manifest)
 }

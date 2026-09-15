@@ -27,14 +27,14 @@ type Process struct {
 	agentInput []byte
 }
 
-// ID is the deterministic Docker name persisted by the coordinator.
+// ID is the deterministic Docker name the coordinator persists.
 func (process *Process) ID() string {
 	return process.name
 }
 
 // ContainerID returns Docker's immutable full container ID. The coordinator
-// should persist it after Create succeeds; Reconcile can safely confirm an
-// absent immutable ID even if the deterministic name is later reused.
+// should persist ContainerID after Create succeeds. Reconcile can then safely
+// confirm an absent immutable ID, even if the deterministic name is later reused.
 func (process *Process) ContainerID() string {
 	return process.id
 }
@@ -67,8 +67,8 @@ func (process *Process) Start(ctx context.Context) error {
 }
 
 // Wait waits for the container command to finish and returns its exit code and
-// bounded combined output. Context cancellation does not remove the sandbox;
-// the caller must stop and remove it before disarming the watchdog.
+// bounded combined output. Context cancellation does not remove the sandbox.
+// The caller must stop and remove the sandbox before disarming the watchdog.
 func (process *Process) Wait(ctx context.Context) (int, []byte, error) {
 	if _, err := process.inspectOwned(ctx); err != nil {
 		return 0, nil, fmt.Errorf("verify sandbox before wait: %w", err)

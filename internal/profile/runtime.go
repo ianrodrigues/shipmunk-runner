@@ -53,8 +53,8 @@ type CreatePhase interface {
 	CreateFinished(string) error
 }
 
-// Runtime manages a credential-only native profile container. Lifecycle and
-// protected storage remain owned by the caller.
+// Runtime manages a credential-only native profile container. The caller owns
+// lifecycle and protected storage.
 type Runtime interface {
 	Start(context.Context, string, string, Checkpoint, CreatePhase) error
 	Run(context.Context, string, string, string, Checkpoint) (CommandResult, error)
@@ -101,7 +101,7 @@ type runtimeConfig struct {
 }
 
 // NewDockerRuntime creates a native runtime that resolves the configured image
-// tag to a content-addressed local image before each container is created.
+// tag to a content-addressed local image before creating each container.
 func NewDockerRuntime(image string) (Runtime, error) {
 	return newDockerRuntime(runtimeConfig{
 		image:              image,
