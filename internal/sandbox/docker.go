@@ -36,7 +36,7 @@ var (
 	codexNamePattern     = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
 )
 
-// Config controls the Docker sandbox and independent watchdog executable.
+// Config controls the Docker sandbox and independent watchdog executable; child processes receive only ClientEnvironment's allowlist, not the full environment.
 type Config struct {
 	Image              string
 	DockerExecutable   string

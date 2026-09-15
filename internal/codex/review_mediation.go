@@ -108,6 +108,7 @@ func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// Spend the sequence before execution, matching the shell mediator.
 	m.last = request.ID
 	m.remaining--
 
