@@ -404,6 +404,9 @@ func (store *Store) NormalizeNativeHome() error {
 
 // RepairHome normalizes native-generated entries and then validates the home, so a native run's own metadata or scratch cannot make a usable profile look unsafe; it requires the exclusive profile lock.
 func (store *Store) RepairHome() error {
+	if err := store.assertLocked(); err != nil {
+		return err
+	}
 	if err := store.NormalizeNativeHome(); err != nil {
 		return err
 	}
