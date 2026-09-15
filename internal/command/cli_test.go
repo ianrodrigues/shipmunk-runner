@@ -509,26 +509,36 @@ func TestRunSetupBlocksRenewalBeforeInstallingRelease(t *testing.T) {
 	original := setupRuntime
 	t.Cleanup(func() { setupRuntime = original })
 
-	for name, block := range map[string]func(*testing.T, string){
-		"changed identity": func(t *testing.T, runnerRoot string) {
+	for name, test := range map[string]struct {
+		block            func(*testing.T, string)
+		wantAlsoInStderr []string
+	}{
+		"changed identity": {block: func(t *testing.T, runnerRoot string) {
 			raw := `{"base_url":"https://other.example","runner_id":"` + testRunnerID + `","profile_id":"` + testProfileID + `"}`
 			if err := os.WriteFile(filepath.Join(runnerRoot, "config.json"), []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"unresolved attempt": func(t *testing.T, runnerRoot string) {
+		}},
+		"unresolved attempt": {block: func(t *testing.T, runnerRoot string) {
 			if err := os.WriteFile(filepath.Join(runnerRoot, "state", "active-attempt.json"), []byte("{}"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"older release than installed": func(t *testing.T, runnerRoot string) {
-			releasePath := filepath.Join(filepath.Dir(filepath.Dir(runnerRoot)), "releases", strings.Repeat("a", 64))
-			raw := `{"base_url":"https://runner.example","runner_id":"` + testRunnerID + `","profile_id":"` + testProfileID + `","expires_at":"2099-01-01T00:00:00Z","release_path":"` + releasePath + `","release_version":"v1.2.4","platform":"linux-amd64","image_id":"sha256:` + strings.Repeat("b", 64) + `"}`
-			if err := os.WriteFile(filepath.Join(runnerRoot, "config.json"), []byte(raw), 0o600); err != nil {
-				t.Fatal(err)
-			}
+		}},
+		"older release than installed": {
+			block: func(t *testing.T, runnerRoot string) {
+				releasePath := filepath.Join(filepath.Dir(filepath.Dir(runnerRoot)), "releases", strings.Repeat("a", 64))
+				raw := `{"base_url":"https://runner.example","runner_id":"` + testRunnerID + `","profile_id":"` + testProfileID + `","expires_at":"2099-01-01T00:00:00Z","release_path":"` + releasePath + `","release_version":"v1.2.4","platform":"linux-amd64","image_id":"sha256:` + strings.Repeat("b", 64) + `"}`
+				if err := os.WriteFile(filepath.Join(runnerRoot, "config.json"), []byte(raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			// setupReleaseFixture always builds manifest version v1.2.3; the
+			// refusal must name both the incoming and the installed version.
+			wantAlsoInStderr: []string{"v1.2.3", "v1.2.4"},
 		},
 	} {
+		block := test.block
+		wantAlsoInStderr := test.wantAlsoInStderr
 		t.Run(name, func(t *testing.T) {
 			home, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
@@ -552,6 +562,11 @@ func TestRunSetupBlocksRenewalBeforeInstallingRelease(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if code := RunSetup(setupCommandArgs(bundle, manifest, archive), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "renewal is blocked") {
 				t.Fatalf("blocked renewal = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+			}
+			for _, want := range wantAlsoInStderr {
+				if !strings.Contains(stderr.String(), want) {
+					t.Fatalf("blocked renewal stderr %q does not name %q", stderr.String(), want)
+				}
 			}
 			if _, err := os.Lstat(filepath.Join(home, ".shipmunk", "releases")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("blocked renewal mutated the release store")

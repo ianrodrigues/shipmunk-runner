@@ -272,7 +272,7 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	root := filepath.Join(home, ".shipmunk", "runners", bundle.RunnerID)
 	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: bundle.BaseURL, RunnerID: bundle.RunnerID, ProfileID: bundle.ProfileID}, IncomingReleaseVersion: manifest.Version}
 	if err := guard.Preflight(); err != nil {
-		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
+		printRenewalRefusal(stderr, err)
 		return 1
 	}
 	root, releases, err := prepareSetupDirectories(home, bundle.RunnerID, setupRuntime.effectiveUID())
@@ -281,7 +281,7 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := guard.Validate(); err != nil {
-		fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
+		printRenewalRefusal(stderr, err)
 		return 1
 	}
 	archive, err := readPublicSetupFile(options.ReleaseArchive, int(platform.Archive.Size))
@@ -331,6 +331,18 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Installed the verified runner release. Setup did not start queued work.\n\nCommands for this runner:\n  Login/retry: %s\n  Probe:       %s probe\n  Poll once:   %s --once\n  Run:         %s\n", filepath.Join(root, "connect"), filepath.Join(root, "connect"), filepath.Join(root, "run"), filepath.Join(root, "run"))
 	return 0
+}
+
+// printRenewalRefusal surfaces a release-order refusal's sanitized message,
+// naming both versions, and falls back to the generic identity/recovery
+// refusal for every other Preflight or Validate failure.
+func printRenewalRefusal(stderr io.Writer, err error) {
+	var releaseOrderErr *install.ReleaseOrderError
+	if errors.As(err, &releaseOrderErr) {
+		fmt.Fprintln(stderr, "Runner renewal is blocked: "+releaseOrderErr.Error()+".")
+		return
+	}
+	fmt.Fprintln(stderr, "Runner renewal is blocked by changed identity or unresolved recovery state.")
 }
 
 func checkSetupServer(baseURL string) error {

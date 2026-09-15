@@ -603,9 +603,20 @@ func (guard Guard) validateReleaseOrder(installed string) error {
 		return errors.New("installed runner release version is unsafe")
 	}
 	if cmp < 0 {
-		return fmt.Errorf("runner release %s is older than the installed release %s", guard.IncomingReleaseVersion, installed)
+		return &ReleaseOrderError{Incoming: guard.IncomingReleaseVersion, Installed: installed}
 	}
 	return nil
+}
+
+// ReleaseOrderError reports that an incoming release is older than the one
+// already installed. Both versions have already passed releaseVersionPattern,
+// so its message is safe to surface to the operator verbatim.
+type ReleaseOrderError struct {
+	Incoming, Installed string
+}
+
+func (err *ReleaseOrderError) Error() string {
+	return fmt.Sprintf("runner release %s is older than the installed release %s", err.Incoming, err.Installed)
 }
 
 type installedConfiguration struct {
