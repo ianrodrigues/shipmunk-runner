@@ -21,12 +21,11 @@ case "$subject" in
             echo 'commit-msg: leave the second line blank before the body.' >&2
             exit 1
         fi
+        if ! grep -q '^Signed-off-by: ' "$message"; then
+            echo 'commit-msg: missing Signed-off-by trailer; run git commit -s (warning only, will become required after the first external contribution).' >&2
+        fi
         ;;
 esac
-
-if ! grep -q '^Signed-off-by: ' "$message"; then
-    echo 'commit-msg: missing Signed-off-by trailer; run git commit -s (warning only, will become required after the first external contribution).' >&2
-fi
 
 # Linked worktrees share optional local checks outside the tracked hook files.
 common_dir=$(git rev-parse --git-common-dir)

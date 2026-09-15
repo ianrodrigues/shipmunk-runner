@@ -120,6 +120,9 @@ sign_off_warning=$(.githooks/commit-msg "$message" 2>&1 >/dev/null)
 printf 'fix: accept a sign-off\n\nbody\n\nSigned-off-by: Hook Fixture <hooks@example.test>\n' > "$message"
 signed_off_output=$(.githooks/commit-msg "$message" 2>&1 >/dev/null)
 [[ -z "$signed_off_output" ]] || fail 'commit-msg warned despite a present Signed-off-by trailer'
+printf 'fixup! generated message without a sign-off\n' > "$message"
+fixup_output=$(.githooks/commit-msg "$message" 2>&1 >/dev/null)
+[[ -z "$fixup_output" ]] || fail 'commit-msg warned about a sign-off on an autosquash message'
 pass 'missing Signed-off-by trailer warns without rejecting the commit'
 
 # No tests, Git process, or network is required to interpret pre-push records.
