@@ -495,6 +495,9 @@ func TestNativeScratchMountPointIsReplacedRatherThanRefused(t *testing.T) {
 	if err := os.Link(outside, filepath.Join(scratch, "linked")); err != nil {
 		t.Skipf("hard link unavailable: %v", err)
 	}
+	if err := store.RepairHome(); err == nil {
+		t.Fatal("RepairHome changed the home without the profile lock")
+	}
 	if err := store.WithExclusive(func(locked *Store) error { return locked.RepairHome() }); err != nil {
 		t.Fatal(err)
 	}
