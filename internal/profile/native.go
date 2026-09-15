@@ -72,8 +72,7 @@ func PinnedVersion(agent string) (string, bool) {
 	}
 }
 
-// Command returns the fixed executable invocation for a supported native
-// operation. The returned slice is safe to pass directly to exec.Command.
+// Command returns the fixed executable invocation for a supported native operation, safe to pass directly to exec.Command.
 func Command(agent, operation string) ([]string, bool) {
 	switch {
 	case agent == AgentCodex && operation == "version":

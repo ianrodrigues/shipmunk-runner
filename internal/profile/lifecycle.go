@@ -73,7 +73,8 @@ func NewLifecycle(controlPlane ControlPlane, runtime Runtime, watchdog Watchdog)
 	}
 }
 
-// Operate performs login, probe, or disconnect under the profile's OS lock, reducing native and transport detail to a health reason before persisting or sending it to the application.
+// Operate performs login, probe, or disconnect under the profile's OS lock.
+// It reduces native and transport detail to a single health reason before returning it.
 func (lifecycle *Lifecycle) Operate(ctx context.Context, store *Store, profileID, operation, operationID string) (Health, error) {
 	if store == nil {
 		return Health{}, errors.New("profile lifecycle dependencies are incomplete")

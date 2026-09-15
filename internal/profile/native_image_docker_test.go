@@ -14,7 +14,6 @@ import (
 	"time"
 )
 
-// nativeImageTestImage returns the pinned native image.
 // The internal/codex Docker tests use the same image, so this helper reuses their env vars.
 func nativeImageTestImage(t *testing.T) string {
 	t.Helper()
@@ -103,7 +102,6 @@ JSON.parse(fs.readFileSync('/usr/local/lib/shipmunk/codex-result.schema.json', '
 	})
 }
 
-// Dockerfile.dockerignore alone keeps checkout secrets out of the native image.
 // The probe exports the filtered build context with --output type=local, avoiding a full image build. See docs/runtime/RT-02.md.
 func TestNativeImageDockerfileContextExcludesCheckoutSecrets(t *testing.T) {
 	if os.Getenv("SHIPMUNK_CODEX_DOCKER_TEST") != "1" {
