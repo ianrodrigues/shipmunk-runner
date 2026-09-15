@@ -425,7 +425,9 @@ func sameNativeSnapshot(entry nativeProfileEntry, info os.FileInfo) bool {
 // nativeScratchRelative names the native runtime's own temporary tree, which the runner owns and never retains.
 const nativeScratchRelative = ".codex/tmp"
 
-// The pinned CLI leaves arg0 helper symlinks here and Docker may leave a foreign mount point, so the runner replaces the whole tree instead of inspecting it; every entry outside it stays strict.
+// The pinned CLI leaves arg0 helper symlinks here, and Docker may leave a foreign mount point.
+// The runner replaces the whole tree instead of inspecting it.
+// Every entry outside it stays strict.
 // A hard-linked file under the scratch is removed for the same reason, rather than refused.
 func pruneNativeScratch(home string, hooks nativeTreeHooks) error {
 	root, err := os.OpenRoot(home)

@@ -89,7 +89,8 @@ func validateExecutionProfile(store *profile.Store, claim protocol.Claim) error 
 		active["runtime_version"] != profile.CodexVersion || claim.Manifest["runtime_version"] != profile.CodexVersion {
 		return errors.New("Codex profile binding does not match the claim")
 	}
-	// A native run leaves 0644 metadata and its own scratch in the home, so this repairs them before the strict check refuses what it cannot repair.
+	// A native run leaves 0644 metadata and its own scratch in the home.
+	// RepairHome fixes both before the strict check runs, refusing only what it cannot repair.
 	if err := store.RepairHome(); err != nil {
 		return errors.New("Codex profile home is unsafe")
 	}

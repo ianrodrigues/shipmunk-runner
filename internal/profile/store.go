@@ -377,7 +377,8 @@ func equalJournalIdentity(left, right map[string]any) bool {
 	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
 }
 
-// ValidateHome replaces the native scratch tree, so the runner owns that mount point before any container starts, then verifies every remaining home entry uses the required protected mode.
+// ValidateHome replaces the native scratch tree, so the runner owns that mount point before any container starts.
+// It then verifies every remaining home entry uses the required protected mode.
 func (store *Store) ValidateHome() error {
 	if err := store.ensureOpen(); err != nil {
 		return err
@@ -402,7 +403,8 @@ func (store *Store) NormalizeNativeHome() error {
 	return normalizeNativeProfileTree(store.Home(), nativeTreeHooks{})
 }
 
-// RepairHome normalizes native-generated entries and then validates the home, so a native run's own metadata or scratch cannot make a usable profile look unsafe; it requires the exclusive profile lock.
+// RepairHome normalizes native-generated entries, then validates the home, so a native run's own metadata or scratch cannot make a usable profile look unsafe.
+// RepairHome requires the exclusive profile lock.
 func (store *Store) RepairHome() error {
 	if err := store.assertLocked(); err != nil {
 		return err
