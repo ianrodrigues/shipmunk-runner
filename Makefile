@@ -4,7 +4,7 @@ VERSION ?= development
 GO_VERSION_PACKAGE := github.com/ianrodrigues/shipmunk-runner/internal/command
 GO_RELEASE_LDFLAGS := -s -w -X $(GO_VERSION_PACKAGE).Version=$(VERSION)
 
-.PHONY: hooks hooks-check check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check install-smoke-check
+.PHONY: hooks hooks-check check lint package-check runner-check native-image-check go-check go-build go-parity-check go-runtime-check install-smoke-check install-smoke-host-check
 
 check: hooks-check lint package-check runner-check native-image-check go-check go-parity-check go-runtime-check
 
@@ -40,6 +40,10 @@ go-runtime-check: runner-check
 
 install-smoke-check:
 	SHIPMUNK_INSTALL_SMOKE_TEST=1 go test -race -count=1 -timeout=10m ./internal/installsmoke
+
+# Manual, opt-in darwin-only target; not part of `check`. See docs/releases.md.
+install-smoke-host-check:
+	SHIPMUNK_INSTALL_SMOKE_TEST=1 SHIPMUNK_INSTALL_SMOKE_HOST=1 go test -race -count=1 -timeout=10m -run TestHostNativeInstallsReleaseWithoutPHPOrGo -v ./internal/installsmoke
 
 go-parity-check:
 	@php -r 'exit(PHP_VERSION_ID >= 80500 ? 0 : 1);' || { echo 'The temporary PHP baseline requires PHP 8.5.' >&2; exit 1; }
