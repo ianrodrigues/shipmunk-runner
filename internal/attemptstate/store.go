@@ -30,8 +30,9 @@ var stateFields = map[string]struct{}{
 	"refused_stopped_count": {},
 }
 
-// maxRefusedStoppedCount bounds the consecutive-refusal counter; supervisor.reconcile
-// treats it as settled well before this ceiling, so any larger value is corrupt.
+// maxRefusedStoppedCount bounds RefusedStoppedCount, which only a 409 refusal
+// advances and no other outcome resets; supervisor.reconcile treats it as
+// settled well before this ceiling, so any larger value is corrupt.
 const maxRefusedStoppedCount = 1000
 
 var stateULIDPattern = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
@@ -47,9 +48,10 @@ type State struct {
 	LeaseExpiresAt time.Time
 	Deadline       time.Time
 	Workspace      string
-	// RefusedStoppedCount counts consecutive stopped acknowledgements the control
-	// plane refused with a fence mismatch or non-current attempt; a journal
-	// written before this field was added implies zero.
+	// RefusedStoppedCount counts stopped acknowledgements the control plane
+	// refused with a fence mismatch or non-current attempt; only that refusal
+	// advances it, and no other outcome (success or an unrelated failure)
+	// resets it.
 	RefusedStoppedCount int64
 }
 
@@ -350,17 +352,15 @@ func stateFromObject(object map[string]any) (State, error) {
 	if state.Workspace, ok = object["workspace"].(string); !ok {
 		return State{}, errors.New("attempt state workspace is invalid")
 	}
-	if value, exists := object["refused_stopped_count"]; exists && value != nil {
-		countNumber, ok := value.(json.Number)
-		if !ok {
-			return State{}, errors.New("attempt state refused_stopped_count is invalid")
-		}
-		count, err := countNumber.Int64()
-		if err != nil {
-			return State{}, errors.New("attempt state refused_stopped_count is invalid")
-		}
-		state.RefusedStoppedCount = count
+	countNumber, ok := object["refused_stopped_count"].(json.Number)
+	if !ok {
+		return State{}, errors.New("attempt state refused_stopped_count is invalid")
 	}
+	count, err := countNumber.Int64()
+	if err != nil {
+		return State{}, errors.New("attempt state refused_stopped_count is invalid")
+	}
+	state.RefusedStoppedCount = count
 	return state, nil
 }
 
