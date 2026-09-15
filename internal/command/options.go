@@ -125,6 +125,9 @@ func validateRunnerOptions(options *RunnerOptions) error {
 	if options.DiscardAttempt && options.Once {
 		return errors.New("--discard-attempt and --once are mutually exclusive.")
 	}
+	if options.Confirmed && !options.DiscardAttempt {
+		return errors.New("--yes requires --discard-attempt.")
+	}
 	return nil
 }
 

@@ -82,6 +82,7 @@ func TestDiscardAttemptRequiresConfirmationUnlessYes(t *testing.T) {
 			t.Cleanup(func() { setupRuntime = original })
 			setupRuntime.effectiveUID = os.Geteuid
 			setupRuntime.stdin = strings.NewReader(test.stdin)
+			setupRuntime.isTerminal = func(any) bool { return true }
 
 			options := discardAttemptOptions(t, root, server.URL)
 			options.Confirmed = test.confirmed
@@ -136,6 +137,9 @@ func TestDiscardAttemptDiscardsJournalEvenWhenAcknowledgementFails(t *testing.T)
 	if code := runDiscardAttempt(options, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+	if !strings.Contains(stdout.String(), "did not confirm the stopped acknowledgement") {
+		t.Fatalf("unreachable control plane did not report the unconfirmed acknowledgement: %q", stdout.String())
+	}
 	store, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -143,5 +147,74 @@ func TestDiscardAttemptDiscardsJournalEvenWhenAcknowledgementFails(t *testing.T)
 	defer func() { _ = store.Close() }()
 	if saved, err := store.Load(); err != nil || saved != nil {
 		t.Fatalf("journal retained after an unreachable control plane: %+v %v", saved, err)
+	}
+}
+
+func TestDiscardAttemptRequiresYesOutsideATerminal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("discard-attempt refuses root")
+	}
+	root := t.TempDir()
+	writeInterruptedAttempt(t, root)
+
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+	setupRuntime.effectiveUID = os.Geteuid
+	setupRuntime.stdin = strings.NewReader("y\n")
+	setupRuntime.isTerminal = func(any) bool { return false }
+
+	options := discardAttemptOptions(t, root, "https://runner.example")
+	var stdout, stderr bytes.Buffer
+	if code := runDiscardAttempt(options, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "--yes") {
+		t.Fatalf("non-terminal discard without --yes = %d, stderr=%q", code, stderr.String())
+	}
+
+	store, err := attemptstate.Open(filepath.Join(root, "state", "active-attempt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if saved, err := store.Load(); err != nil || saved == nil {
+		t.Fatalf("journal discarded without confirmation: %+v %v", saved, err)
+	}
+}
+
+func TestDiscardAttemptRejectsMismatchedWorkspace(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("discard-attempt refuses root")
+	}
+	root := t.TempDir()
+	writeInterruptedAttempt(t, root)
+	journalPath := filepath.Join(root, "state", "active-attempt.json")
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongRoot := filepath.Join(t.TempDir(), testOperation+"-1")
+	tampered := strings.Replace(string(raw), filepath.Join(root, "state", "workspaces", testOperation+"-1"), wrongRoot, 1)
+	if tampered == string(raw) {
+		t.Fatal("fixture workspace path was not found")
+	}
+	if err := os.WriteFile(journalPath, []byte(tampered), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := setupRuntime
+	t.Cleanup(func() { setupRuntime = original })
+	setupRuntime.effectiveUID = os.Geteuid
+
+	options := discardAttemptOptions(t, root, "https://runner.example")
+	options.Confirmed = true
+	var stdout, stderr bytes.Buffer
+	if code := runDiscardAttempt(options, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "identity") {
+		t.Fatalf("mismatched workspace discard = %d, stderr=%q", code, stderr.String())
+	}
+	store, err := attemptstate.Open(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if saved, err := store.Load(); err != nil || saved == nil {
+		t.Fatalf("journal discarded despite a workspace identity mismatch: %+v %v", saved, err)
 	}
 }

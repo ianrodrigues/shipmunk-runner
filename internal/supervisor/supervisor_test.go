@@ -546,7 +546,9 @@ func TestRecoveryConvergesAfterThreeConsecutiveStoppedRefusals(t *testing.T) {
 	c.claim, c.ackError = nil, conflict
 
 	for run := int64(1); run <= 2; run++ {
-		if _, err := s.RunOnce(context.Background()); !errors.Is(err, ErrCleanupUnconfirmed) {
+		_, err := s.RunOnce(context.Background())
+		var refused *RefusedStoppedError
+		if !errors.Is(err, ErrCleanupUnconfirmed) || !errors.As(err, &refused) || refused.Count != run || refused.Threshold != refusedStoppedSettleThreshold {
 			t.Fatalf("run %d: refusal was not retained: %v", run, err)
 		}
 		saved, err := state.Load()

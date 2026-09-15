@@ -65,6 +65,8 @@ func TestParseRunnerOptionsPreservesDefaultsAndCodexRequirements(t *testing.T) {
 		{"--base-url", "http://remote.example", "--token-file", "token", "--state-dir", "state", "--image", "image"},
 		{"--base-url", "https://runner.example", "--token-file", "token", "--state-dir", "state", "--image", "image", "--driver", "docker"},
 		{"--base-url", "https://runner.example#", "--token-file", "token", "--state-dir", "state", "--image", "image"},
+		{"--base-url", "https://runner.example", "--token-file", "token", "--state-dir", "state", "--image", "image", "--once", "--discard-attempt"},
+		{"--base-url", "https://runner.example", "--token-file", "token", "--state-dir", "state", "--image", "image", "--yes"},
 	} {
 		if _, err := ParseRunnerOptions(args); err == nil {
 			t.Errorf("accepted invalid runner options: %#v", args)
