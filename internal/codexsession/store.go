@@ -50,7 +50,8 @@ func BindingFromClaim(claim protocol.Claim) (string, error) {
 	bound := map[string]any{
 		"run_id":                claim.RunID,
 		"repository_id":         claim.Manifest["repository_id"],
-		"base_sha":              claim.Manifest["base_sha"],
+		"target_sha":            claim.Manifest["target_sha"],
+		"diff_base_sha":         claim.Manifest["diff_base_sha"],
 		"head_sha":              claim.Manifest["head_sha"],
 		"profile_id":            claim.Manifest["profile_id"],
 		"agent":                 claim.Manifest["agent"],

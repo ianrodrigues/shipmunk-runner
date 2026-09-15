@@ -333,7 +333,7 @@ func normalizeExecution(ctx context.Context, claim protocol.Claim, stream Stream
 	if claim.Manifest["kind"] == "review" || stream.Result.Outcome != "changes_proposed" {
 		return execution, nil
 	}
-	base, baseOK := claim.Manifest["base_sha"].(string)
+	base, baseOK := claim.Manifest["diff_base_sha"].(string)
 	head, _ := claim.Manifest["head_sha"].(string)
 	if !baseOK || base != head || !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(base) {
 		return supervisor.Execution{}, errors.New("Codex patch claim is invalid")

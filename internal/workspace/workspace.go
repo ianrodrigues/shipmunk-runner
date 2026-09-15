@@ -135,7 +135,7 @@ func (workspace *Workspace) Prepare(ctx context.Context, claim protocol.Claim, c
 		}
 		var revision any
 		if len(sourceRefs) == 2 && index == 0 {
-			revision = claim.Manifest["base_sha"]
+			revision = claim.Manifest["diff_base_sha"]
 		} else if index == len(sourceRefs)-1 {
 			revision = claim.Manifest["head_sha"]
 		}

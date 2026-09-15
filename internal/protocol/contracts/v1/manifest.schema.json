@@ -35,7 +35,13 @@
       "minimum": 1,
       "maximum": 9007199254740991
     },
-    "base_sha": {
+    "target_sha": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "diff_base_sha": {
       "type": "string",
       "minLength": 1,
       "maxLength": 40,
@@ -262,7 +268,8 @@
     "fence",
     "kind",
     "repository_id",
-    "base_sha",
+    "target_sha",
+    "diff_base_sha",
     "head_sha",
     "source_artifacts",
     "instruction_artifacts",

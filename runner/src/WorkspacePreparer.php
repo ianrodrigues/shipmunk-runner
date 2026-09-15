@@ -91,7 +91,7 @@ final readonly class WorkspacePreparer
             $revision = null;
 
             if (count($references) === 2 && $index === 0) {
-                $revision = $claim->manifest['base_sha'] ?? null;
+                $revision = $claim->manifest['diff_base_sha'] ?? null;
             } elseif ($index === count($references) - 1) {
                 $revision = $claim->manifest['head_sha'] ?? null;
             }

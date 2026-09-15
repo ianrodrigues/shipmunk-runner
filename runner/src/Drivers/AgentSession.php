@@ -29,7 +29,8 @@ final readonly class AgentSession
         return hash('sha256', json_encode([
             'run_id' => $claim->runId,
             'repository_id' => $manifest['repository_id'] ?? null,
-            'base_sha' => $manifest['base_sha'] ?? null,
+            'target_sha' => $manifest['target_sha'] ?? null,
+            'diff_base_sha' => $manifest['diff_base_sha'] ?? null,
             'head_sha' => $manifest['head_sha'] ?? null,
             'profile_id' => $manifest['profile_id'] ?? null,
             'credential_reference' => $manifest['supervisor']['credential_reference'] ?? null,

@@ -229,7 +229,7 @@ final class CodexDriver implements AgentDriver
             return $execution;
         }
 
-        $base = $claim->manifest['base_sha'] ?? null;
+        $base = $claim->manifest['diff_base_sha'] ?? null;
 
         if (
             ($claim->manifest['kind'] ?? null) === 'review'

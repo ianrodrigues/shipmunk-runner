@@ -1,6 +1,7 @@
 {
   "kind": "review",
-  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "diff_base_sha": "9999999999999999999999999999999999999999",
   "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "profile_id": "01k4w000000000000000000003",
   "runtime_version": "fixture-1",

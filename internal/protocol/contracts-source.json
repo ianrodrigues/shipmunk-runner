@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ianrodrigues/shipmunk-server",
-  "commit": "9edd2c2383718ec19843652faed0cac07da8c180",
+  "commit": "5242593a3c9b07f7c67474075f710756ee0f1a82",
   "files": {
     "contracts/v1/event-batch.schema.json": {
       "source": "contracts/v1/event-batch.schema.json",
@@ -8,7 +8,7 @@
     },
     "testdata/contracts/v1/fixtures/invalid/credential-in-config.json": {
       "source": "contracts/v1/fixtures/invalid/credential-in-config.json",
-      "sha256": "d06fa654bbf7df0f4766d1fb3cc0d89e6732119a74c210d6fb65642610b5914e"
+      "sha256": "445aef46ff85093fb8204224cf8f5e6f1effaac151282ba641e8f9856e0b3684"
     },
     "testdata/contracts/v1/fixtures/invalid/fetch-url.json": {
       "source": "contracts/v1/fixtures/invalid/fetch-url.json",
@@ -40,7 +40,7 @@
     },
     "testdata/contracts/v1/fixtures/invalid/secret-in-run-config.json": {
       "source": "contracts/v1/fixtures/invalid/secret-in-run-config.json",
-      "sha256": "90ad6c96cd7fbbb2d786b3b6e9a6287d641ac76672fb0accaa92e13bfa63303d"
+      "sha256": "e179c42a21f78a13e566722d8fd1aed24a2c66222a7691f7774b74e4513f5d3f"
     },
     "testdata/contracts/v1/fixtures/invalid/too-many-events.json": {
       "source": "contracts/v1/fixtures/invalid/too-many-events.json",
@@ -60,7 +60,7 @@
     },
     "testdata/contracts/v1/fixtures/valid/manifest.json": {
       "source": "contracts/v1/fixtures/valid/manifest.json",
-      "sha256": "625f042978c4aee293afb20f1351caf9af2415ab416633ef9af01409258efce4"
+      "sha256": "69843bf828f1c533972e98386320b65a3543c19616224e508217fdf2e3d85fa5"
     },
     "testdata/contracts/v1/fixtures/valid/patch-artifact.json": {
       "source": "contracts/v1/fixtures/valid/patch-artifact.json",
@@ -72,7 +72,7 @@
     },
     "testdata/contracts/v1/fixtures/valid/run-input.json": {
       "source": "contracts/v1/fixtures/valid/run-input.json",
-      "sha256": "753181d1a872299d8a0890756c3fa129640c8459aef8c004d179b5ed6d28feb4"
+      "sha256": "12d48e286832d5ed1d9a3b4d6727f99044592fbdd2676878d9c437f5578c4714"
     },
     "testdata/contracts/v1/fixtures/valid/worker-event.json": {
       "source": "contracts/v1/fixtures/valid/worker-event.json",
@@ -80,7 +80,7 @@
     },
     "contracts/v1/manifest.schema.json": {
       "source": "contracts/v1/manifest.schema.json",
-      "sha256": "54b908e5c7e79743ae209b9997fd69dc21989e999c3a48acc94bbc1bb0e43f76"
+      "sha256": "700689cb081991a2a91a6da533679029de6722695f0abd25120ed57eabfb28f3"
     },
     "contracts/v1/patch-artifact.schema.json": {
       "source": "contracts/v1/patch-artifact.schema.json",
@@ -92,11 +92,15 @@
     },
     "contracts/v1/run-input.schema.json": {
       "source": "contracts/v1/run-input.schema.json",
-      "sha256": "e4b77effcf012ae96486a52e1510223a3cb46812a6fe83cb35a24cb823c2901a"
+      "sha256": "3f4542a05764209757de1dd661f3e732a006cd6a02491dd220c76fae16b41bff"
     },
     "contracts/v1/worker-event.schema.json": {
       "source": "contracts/v1/worker-event.schema.json",
       "sha256": "6e2d4a7b34c15947226e0002f096b9a129cd05eb471dc3e551d223c7f7912c4f"
+    },
+    "testdata/contracts/v1/fixtures/invalid/retired-base-sha.json": {
+      "source": "contracts/v1/fixtures/invalid/retired-base-sha.json",
+      "sha256": "5cedfb34475dc82a0d81c87a875f8ca047ccc744906e416af0ef6b7e6d597abb"
     }
   }
 }

@@ -66,7 +66,8 @@ func TestBindingRejectsCrossContextResume(t *testing.T) {
 		"run":           func(c *protocol.Claim) { c.RunID = "01k4w000000000000000000009" },
 		"repository":    func(c *protocol.Claim) { c.Manifest["repository_id"] = 999 },
 		"profile":       func(c *protocol.Claim) { c.Manifest["profile_id"] = "01k4w000000000000000000009" },
-		"base":          func(c *protocol.Claim) { c.Manifest["base_sha"] = strings.Repeat("c", 40) },
+		"target":        func(c *protocol.Claim) { c.Manifest["target_sha"] = strings.Repeat("c", 40) },
+		"diff base":     func(c *protocol.Claim) { c.Manifest["diff_base_sha"] = strings.Repeat("e", 40) },
 		"head":          func(c *protocol.Claim) { c.Manifest["head_sha"] = strings.Repeat("d", 40) },
 		"configuration": func(c *protocol.Claim) { c.Manifest["effective_config"] = map[string]any{"model": "different"} },
 		"credential": func(c *protocol.Claim) {
@@ -345,7 +346,8 @@ func mustBinding(t *testing.T, claim protocol.Claim) string {
 func testClaim() protocol.Claim {
 	return protocol.Claim{RunID: testRun, Manifest: map[string]any{
 		"repository_id": 123,
-		"base_sha":      strings.Repeat("a", 40),
+		"target_sha":    strings.Repeat("a", 40),
+		"diff_base_sha": strings.Repeat("9", 40),
 		"head_sha":      strings.Repeat("b", 40),
 		"profile_id":    "01k4w000000000000000000003",
 		"agent":         "codex", "runtime_version": "codex-1",
