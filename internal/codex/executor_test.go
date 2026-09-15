@@ -65,7 +65,9 @@ func TestExecutorNormalizesOnlyClassifiedFailureStreams(t *testing.T) {
 		// A structured result outside the contract fails the attempt; only unusable output fails the runner.
 		"invalid result": {validStream(`{"summary":"private summary","outcome":"findings","charter_version":"1","findings":[` + findingJSON(findingPath, 5, 2) + `],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`), "incomplete", "invalid_result", false},
 		"unknown":        {`{"type":"error","code":"future_code","message":"private"}` + "\n", "", "", true},
-		"malformed":      {`{"type":"error","code":"approval_required"}`, "", "", true},
+		// Output the parser cannot read fails the attempt with a fixed summary; nothing from the stream is copied.
+		"malformed":      {`{"type":"error","code":"approval_required"}`, "incomplete", "malformed_output", false},
+		"missing result": {`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}` + "\n" + `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed"}` + "\n", "incomplete", "missing_result", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			executor, transport, _, claim := setupFailureExecutor(t, nil)
