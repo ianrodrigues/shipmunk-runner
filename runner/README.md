@@ -1,38 +1,28 @@
-# Shipmunk runner (PHP, obsolete)
+# Runner operation and isolation
 
-This directory documents the original PHP supervisor. It is obsolete and scheduled for removal now that the Go release described in the [top-level README](../README.md) is the supported install path: the installed `run`/`connect` launchers there invoke the same `shipmunk-runner`/`shipmunk-profile` flag surface shown below, backed by the Go binaries instead of PHP. The PHP implementation and its tests remain here only until that removal; the commands below apply to it specifically.
+This documents how the installed runner actually operates: the `shipmunk-runner`/`shipmunk-profile` flag surface the [top-level README](../README.md)'s `run`/`connect` launchers invoke from a protected installation, and the isolation guarantees behind it. See the [top-level README](../README.md) for installing and connecting a runner; this assumes an installed runner, or a local checkout for the offline checks below.
 
-The runner is a standalone PHP supervisor. It does not load Laravel, Composer's application autoloader, `.env`, `APP_KEY`, database credentials, GitHub credentials, or application configuration. Configure it only with explicit command options and a mode-0600 runner-token file:
+The runner does not load Laravel, Composer's application autoloader, `.env`, `APP_KEY`, database credentials, GitHub credentials, or application configuration. Configure it only with explicit command options and a mode-0600 runner-token file:
 
 ```sh
-php runner/bin/shipmunk-runner \
+./bin/shipmunk-runner \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/runner.token \
   --state-dir=/var/lib/shipmunk-runner \
   --image=shipmunk-runner:local
 ```
 
-The supervisor is privileged infrastructure because it controls the container runtime. Run it on a dedicated execution host. The runtime socket stays on that host and is never mounted into an agent container.
+The runner is privileged infrastructure because it controls the container runtime. Run it on a dedicated execution host. The runtime socket stays on that host and is never mounted into an agent container.
 
-Each attempt uses a new non-root, read-only-root container with all Linux capabilities dropped, `no-new-privileges`, bounded CPU, memory, PIDs, file descriptors, logs, time, and tmpfs-backed writable paths. Repository networking is `none`. The default fixture driver's inert entrypoint waits for an atomic ready marker while the supervisor copies the workspace and sanitized agent input, with lease checkpoints between each bounded setup operation. Repository code cannot start against partial or stale inputs. Codex execution requires explicit selection as described below; restricted repository egress and Claude execution are not implemented.
+Each attempt uses a new non-root, read-only-root container with all Linux capabilities dropped, `no-new-privileges`, bounded CPU, memory, PIDs, file descriptors, logs, time, and tmpfs-backed writable paths. Repository networking is `none`. The default fixture driver's inert entrypoint waits for an atomic ready marker while the runner copies the workspace and sanitized agent input, with lease checkpoints between each bounded setup operation. Repository code cannot start against partial or stale inputs. Codex execution requires explicit selection as described below; restricted repository egress and Claude execution are not implemented.
 
 Native credential homes must be separately scoped per active profile and mediated outside repository subprocesses. Mounting a credential home into the same container as repository code is not an isolation boundary and is not supported by this implementation. Agent input has the entire supervisor section and credential-bearing keys removed. Source archives and trusted instruction bundles are fetched only by ID through the authenticated control-plane client and hash-checked. Gzip/tar source extraction is bounded and rejects links, special files and traversal; instruction bundles remain separate validated JSON files.
 
-The supervisor persists claim state before artifact preparation and records a created sandbox before starting it. It heartbeats immediately after claim and on a timed 10-second cadence through preparation and execution against a 45-second lease. A forked host-side watchdog, requiring PHP's `pcntl` extension, independently tracks renewals with a monotonic timer. Parent death, heartbeat loss, or deadline expiry stops and removes the whole container process tree with TERM and KILL escalation while leaving durable state for restart acknowledgement. Durable state is cleared only after the container and workspace are confirmed absent and the server accepts a fenced `stopped` acknowledgement. Cleanup or acknowledgement failure retains that state, so restart reconciliation must retry it before asking for replacement work.
+The runner persists claim state before artifact preparation and records a created sandbox before starting it. It heartbeats immediately after claim and on a timed 10-second cadence through preparation and execution against a 45-second lease. An independent `shipmunk-watchdog` process, launched as its own binary rather than a forked child, tracks renewals with a monotonic timer. Parent death, heartbeat loss, or deadline expiry stops and removes the whole container process tree with TERM and KILL escalation while leaving durable state for restart acknowledgement. Durable state is cleared only after the container and workspace are confirmed absent and the server accepts a fenced `stopped` acknowledgement. Cleanup or acknowledgement failure retains that state, so restart reconciliation must retry it before asking for replacement work.
 
-Run `make runner-check`. The offline check requires a reachable Linux Docker engine and a deliberately preloaded `alpine:3.20` image; it fails with an actionable error instead of pulling or silently skipping when isolation cannot be exercised.
+Docker preflight, lifecycle commands and the independent watchdog share only the host's Docker client configuration (`HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`); provider and control-plane credential variables are excluded. This configuration belongs only to trusted host-side Docker clients and is never injected into repository or native containers, which explicitly clear every upper/lowercase proxy variable so Docker's client-config defaults cannot inject a credential-bearing proxy URL. Keep the selected Docker endpoint and context stable while an attempt or its recovery journal exists.
 
-## Guided setup
-
-This is the obsolete PHP guided setup. The dashboard now displays the Go bootstrap command described in the [top-level README](../README.md#install-and-connect); use that path for every installation. The PHP path below is obsolete and remains in this tree only until its scheduled removal, documented here for that removal work: register a runner in **Connections → Runners & Codex**, then run its displayed command with the downloaded setup file:
-
-```sh
-bash runner/bin/shipmunk-setup ~/Downloads/shipmunk-setup-RUNNER.json
-```
-
-Run from a checkout as the designated non-root account with PHP 8.5+, `pcntl`, `posix`, and a Linux Docker engine. `PHP_BIN=/path/to/php` selects a non-default PHP executable. The script validates the download and server address, checks Docker and `/up` without credentials, creates private files under `~/.shipmunk/runners`, builds the pinned runtime image, and offers native terminal login. It prints short `connect`, `connect probe`, `run --once` and `run` commands; it never starts queued work automatically. The native image uses a Dockerfile-specific context allowlist so application `.env` files and setup tokens are excluded. Builds explicitly enable BuildKit, which is required to enforce this allowlist; an unavailable BuildKit builder fails the build.
-
-The download uses the dashboard origin. For a separate runner host, append `--server-url=https://your-runner-reachable-server`; loopback HTTP is only for same-host development. Confirm the displayed address before proceeding. The setup file and its separately scoped tokens expire in one hour. Delete the original download after setup; renew using the same runner card and effective server URL. Renewal preserves profile credentials and pending operation journals. The connection wrapper creates a fresh operation ID, while the existing lifecycle reconciles any original pending operation first. Detailed manual commands follow below.
+Run `make runner-check`. The offline check requires a reachable Linux Docker engine and a deliberately preloaded `alpine:3.20` image; it fails with an actionable error instead of pulling or silently skipping when isolation cannot be exercised. It builds the sandbox and lightweight profile fixture images that `make go-check`'s and `make go-runtime-check`'s `internal/sandbox`, `internal/supervisor` and `internal/profile` suites then exercise.
 
 ## Native subscription profiles
 
@@ -42,16 +32,16 @@ Build the credential-only image explicitly (this downloads the pinned official p
 DOCKER_BUILDKIT=1 docker build --tag shipmunk-profile-native:local --file runner/containers/Dockerfile .
 ```
 
-The image pins Codex **0.154.0** and Claude Code **2.1.269**. Guided setup persists the built immutable image ID for each installation; later builds cannot redirect another installation to a different image. Manual CLI commands resolve their selected image to an immutable local ID. Every operation verifies the executable version. The profile's server-side runtime version must match. Changing pins requires repeating the offline checks and designated-account runtime scenarios.
+The image pins Codex **0.154.0** and Claude Code **2.1.269**. Setup persists the built immutable image ID for each installation; later builds cannot redirect another installation to a different image. Manual CLI commands resolve their selected image to an immutable local ID. Every operation verifies the executable version. The profile's server-side runtime version must match. Changing pins requires repeating the offline checks and designated-account runtime scenarios.
 
-The image includes the system CA bundle required for native HTTPS certificate verification. `make native-image-check` builds the actual pinned image, then checks its default certificate trust and CLI versions with networking disabled and no host mounts. It also exercises the Docker transport, synthetic supervisor lifecycle and the real pinned Codex tool boundary. Building downloads packages; the checks themselves do not access an account. CI runs both `make runner-check` and `make native-image-check`, each with a private temporary directory. The first target includes the bounded parser, driver, session-storage and execution-exclusion regressions; the second builds the exact image required by the container scenarios.
+The image includes the system CA bundle required for native HTTPS certificate verification. `make native-image-check` builds this exact pinned image, then checks its default certificate trust, pinned CLI versions and baked schema/MCP asset permissions with networking disabled and no host mounts, and proves the Dockerfile's own build-context isolation against a checkout's secrets. It also runs the `internal/codex` suite's Docker transport, synthetic supervisor lifecycle and real pinned Codex tool boundary regressions against that image. Building downloads packages; the checks themselves do not access an account.
 
-Native clients can explicitly create metadata with broader permissions than the runner's umask. After the native container has stopped, the runner validates the entire owned home for unsafe entries, then reduces regular files to `0600` and subdirectories to `0700` while holding the profile lock. The enclosing home stays `0700` throughout. Links, special files, multiple hard links, foreign ownership and special permission bits are rejected before any permissions change. The native-image check also reproduces Codex's generated metadata in a disposable home with networking disabled; foreign-owner coverage runs on Linux, where bind mounts preserve ownership.
+Native clients can explicitly create metadata with broader permissions than the runner's umask. After the native container has stopped, the runner validates the entire owned home for unsafe entries, then reduces regular files to `0600` and subdirectories to `0700` while holding the profile lock. The enclosing home stays `0700` throughout. Links, special files, multiple hard links, foreign ownership and special permission bits are rejected before any permissions change; an unsafe entry keeps the execution reservation quarantined rather than releasing it. Foreign-owner coverage runs on Linux, where bind mounts preserve ownership.
 
 Create the profile through the application API with the assigned runner and exact runtime version, then use its lowercase ULID and a fresh lowercase ULID for the operation. From a terminal on the assigned runner:
 
 ```sh
-php runner/bin/shipmunk-profile \
+./bin/shipmunk-profile \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/profile-runner.token \
   --profiles-dir=/var/lib/shipmunk-profiles \
@@ -69,14 +59,14 @@ The application reserves the profile against both execution and lifecycle work. 
 
 The authenticated preflight uses a fixed `SHIPMUNK_AUTH_OK` prompt in an empty directory and validates structured terminal success. Claude has tools and customizations disabled; Codex has shell execution and web search disabled, a read-only sandbox, no user configuration, no rules and an ephemeral session. Native refresh stays delegated to the official executable. Ambiguous, expired, failed or wrong-mode responses fail closed without API-key fallback. The native output is discarded after parsing. Health never invents quota, cost or reset information.
 
-Each native command receives a clean allowlist environment inside a dedicated Linux container with only its own home mounted. Repository code, other profile homes, the Docker socket and the runner token are absent. Codex helper aliases live in disposable tmpfs rather than the persistent store. The store rejects links, hardlinks, wrong ownership and broad permissions. The host supervisor is trusted infrastructure; same-UID host processes are not mutually isolated. Native execution integrations hold `ProfileExecutionGate` for their entire native process lifetime, do a fresh fenced authorization check, and keep repository subprocesses in a separate sandbox.
+Each native command receives a clean allowlist environment inside a dedicated Linux container with only its own home mounted. Repository code, other profile homes, the Docker socket and the runner token are absent. Codex helper aliases live in disposable tmpfs rather than the persistent store. The store rejects links, hardlinks, wrong ownership and broad permissions. The host runner is trusted infrastructure; same-UID host processes are not mutually isolated. Native execution holds the profile's execution reservation for its entire native process lifetime, does a fresh fenced authorization check, and keeps repository subprocesses in a separate sandbox.
 
 ## Codex execution
 
 After connecting a designated Codex profile, select the native driver explicitly on its assigned dedicated Linux runner:
 
 ```sh
-php runner/bin/shipmunk-runner \
+./bin/shipmunk-runner \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/runner.token \
   --state-dir=/var/lib/shipmunk-runner \
@@ -98,10 +88,10 @@ Local fixtures validate result normalization, patch collection, cancellation and
 
 Disconnect is local product disconnection, **not provider-side token revocation**. Revoke the session with the provider separately when needed. Application reconnect requires confirmed local disconnect cleanup and rotates the opaque credential reference before a new login.
 
-`make runner-check` includes simulated-account lifecycle races, real OS locks and a real Linux credential-container fixture. To verify only the pinned actual executables and container/store provenance without contacting accounts:
+`make runner-check` and `make native-image-check` include simulated-account lifecycle races, real OS locks and a real Linux credential-container fixture. To verify only the pinned actual executables and container/store provenance without contacting accounts:
 
 ```sh
-SHIPMUNK_PROFILE_IMAGE=shipmunk-profile-native:local php runner/tests/ProfileContainerTest.php
+SHIPMUNK_CODEX_DOCKER_TEST=1 SHIPMUNK_CODEX_TEST_IMAGE=shipmunk-profile-native:local go test ./internal/profile -run TestNativeImage
 ```
 
 The real login, authenticated preflight, expiry, native refresh and reconnect scenarios remain unexecuted until designated accounts are supplied. Offline fixtures are not evidence of live subscription compatibility.
