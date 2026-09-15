@@ -13,9 +13,18 @@ import (
 // replacement. No map key and no array element is ever added or removed:
 // a map is only ever rebuilt key by key and a slice only ever rebuilt
 // element by element, so the shape codex-rs actually emitted survives
-// redaction exactly. This is the tool used to build and refresh the
-// recordings under testdata/stream/<codex version>/ (see that directory's
-// README and docs/compatibility/codex.md's version-bump checklist).
+// redaction exactly, PROVIDED it survived encoding/json.Unmarshal first.
+// It does not: encoding/json collapses a duplicate object key to its last
+// value while decoding, before this function ever sees the result, so a
+// duplicate-key line (a web_search item, ThreadItemDetails' flatten) loses
+// that shape here. TestRedactJSONValuesCollapsesDuplicateKeysBeforeRedaction
+// demonstrates this. Redact such a line by hand instead, the way
+// tolerant-shapes.jsonl's web_search line was built, and verify the
+// duplicate survived with a byte-level diff against the source line. This
+// is the tool used to build and refresh the recordings under
+// testdata/stream/<codex version>/ (see that directory's README and
+// docs/compatibility/codex.md's version-bump checklist) for every other
+// (non-duplicate-key) value.
 func redactJSONValues(value any, path string, rewrite func(path string, value any) any) any {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -121,4 +130,25 @@ func sortedKeysOf(m map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// This is the known limitation documented on redactJSONValues: a duplicate
+// object key never reaches it, because encoding/json.Unmarshal has already
+// collapsed the object to one value per key by the time this function walks
+// it. A line shaped like this must be redacted by hand, and the duplicate's
+// survival checked with a byte-level diff against the raw source line, not
+// by trusting this helper or TestRedactJSONValuesPreservesEveryKey.
+func TestRedactJSONValuesCollapsesDuplicateKeysBeforeRedaction(t *testing.T) {
+	const duplicateKeyLine = `{"id":"item-1","type":"web_search","id":"call-1"}`
+	var decoded any
+	if err := json.Unmarshal([]byte(duplicateKeyLine), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	object, ok := decoded.(map[string]any)
+	if !ok || len(object) != 2 {
+		t.Fatalf("json.Unmarshal did not collapse the duplicate key as expected: %#v", decoded)
+	}
+	if object["id"] != "call-1" {
+		t.Fatalf("expected the last value to win, got %#v", object["id"])
+	}
 }
