@@ -206,6 +206,32 @@ func TestStoreRoundTripsRefusedStoppedCount(t *testing.T) {
 	}
 }
 
+func TestStoreAcceptsMaximumRefusedStoppedCountAndRejectsInvalidSaves(t *testing.T) {
+	path := filepath.Join(privateTempDir(t), "active.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	boundary := testState()
+	boundary.RefusedStoppedCount = maxRefusedStoppedCount
+	if err := store.Save(boundary); err != nil {
+		t.Fatalf("Save rejected the maximum refused_stopped_count: %v", err)
+	}
+	for _, count := range []int64{-1, maxRefusedStoppedCount + 1} {
+		invalid := boundary
+		invalid.RefusedStoppedCount = count
+		if err := store.Save(invalid); err == nil {
+			t.Errorf("Save accepted refused_stopped_count %d", count)
+		}
+	}
+	loaded, err := store.Load()
+	if err != nil || loaded == nil || loaded.RefusedStoppedCount != maxRefusedStoppedCount {
+		t.Fatalf("invalid Save changed the boundary journal: %+v, %v", loaded, err)
+	}
+}
+
 func TestStoreRejectsInvalidRefusedStoppedCount(t *testing.T) {
 	for name, value := range map[string]string{
 		"negative":  `-1`,
