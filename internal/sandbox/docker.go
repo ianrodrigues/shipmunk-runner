@@ -27,9 +27,7 @@ const (
 )
 
 var (
-	// ErrCreateUncertain marks a Docker create request whose daemon-side result
-	// cannot be proved from the client response. The persisted name must remain
-	// reserved until an owned container is observed or an operator resolves it.
+	// ErrCreateUncertain marks an unconfirmed create; the persisted name stays reserved until an owned container is observed or resolved.
 	ErrCreateUncertain   = errors.New("sandbox create outcome is uncertain")
 	ulidPattern          = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
 	containerIDPattern   = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
@@ -38,9 +36,8 @@ var (
 	codexNamePattern     = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp-tv-z]{25}-[1-9][0-9]{0,15}$`)
 )
 
-// Config controls the Docker sandbox and the executable used by the independent
-// watchdog. Child processes receive only ClientEnvironment's Docker-client
-// configuration allowlist, not the supervisor's full environment.
+// Config controls the Docker sandbox and independent watchdog executable.
+// Child processes receive only ClientEnvironment's allowlist, not the full environment.
 type Config struct {
 	Image              string
 	DockerExecutable   string
@@ -103,7 +100,8 @@ func New(config Config) (*Docker, error) {
 	return &Docker{config: config}, nil
 }
 
-// Name returns the stable Docker name the coordinator must journal before calling Create, matching the historical attempt/fence naming scheme for on-disk compatibility.
+// Name returns the stable Docker name the coordinator must journal before calling Create.
+// It matches the historical attempt/fence naming scheme for on-disk compatibility.
 func (docker *Docker) Name(claim protocol.Claim) (string, error) {
 	if !ulidPattern.MatchString(claim.RunID) || !ulidPattern.MatchString(claim.AttemptID) || claim.Fence < 1 || claim.Fence > protocol.MaxSafeInteger {
 		return "", errors.New("claim identity is invalid for sandbox naming")
@@ -115,8 +113,7 @@ func (docker *Docker) Name(claim protocol.Claim) (string, error) {
 	return name, nil
 }
 
-// Create reserves the already-journaled deterministic name and creates a
-// stopped container. The caller must arm a watchdog before this operation.
+// Create reserves the already-journaled deterministic name and creates a stopped container; the caller must arm a watchdog first.
 func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInput map[string]any, workspace string) (*Process, error) {
 	name, err := docker.Name(claim)
 	if err != nil {
@@ -215,7 +212,8 @@ func (docker *Docker) Create(ctx context.Context, claim protocol.Claim, agentInp
 	return &Process{docker: docker, name: name, id: created.ID, claim: claim, workspace: workspace, agentInput: input}, nil
 }
 
-// Reconcile stops and removes a Shipmunk-owned container, verifies Docker confirms its absence, and accepts both deterministic names and legacy hex IDs as the identifier.
+// Reconcile stops and removes a Shipmunk-owned container and verifies its absence.
+// It accepts both deterministic names and legacy hex IDs as the identifier.
 func (docker *Docker) Reconcile(ctx context.Context, identifier string) error {
 	if !containerNamePattern.MatchString(identifier) && !containerIDPattern.MatchString(identifier) {
 		return errors.New("unsafe sandbox identifier")

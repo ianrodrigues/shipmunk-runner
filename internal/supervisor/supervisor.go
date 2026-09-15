@@ -22,8 +22,7 @@ var ErrStopped = errors.New("control plane requested stop")
 var ErrLeaseExpired = errors.New("attempt lease expired")
 var ErrCleanupUnconfirmed = errors.New("cleanup unconfirmed; durable attempt retained")
 
-// Client operations must honor cancellation. The HTTP implementation also bounds
-// each request to five seconds; lease renewal runs independently of transfers.
+// Client operations must honor cancellation.
 type Client interface {
 	workspace.Downloader
 	Claim(context.Context, time.Time) (*protocol.Claim, error)
@@ -75,9 +74,7 @@ type Watchdog interface {
 	Arm(string, time.Time, time.Time) (WatchdogLease, error)
 }
 
-// Executor owns a composite native execution boundary: Execute returns only
-// bounded, normalized output, and Cleanup must reconcile every resource a
-// partial Execute may have created before releasing reserved capacity.
+// Executor owns a composite execution boundary: Cleanup must reconcile every resource a partial Execute may have created.
 type Executor interface {
 	Execute(context.Context, protocol.Claim, map[string]any, string) (Execution, error)
 	Cleanup(context.Context, protocol.Claim) error
@@ -101,7 +98,7 @@ type Supervisor struct {
 	heartbeatInterval time.Duration
 }
 
-// Outcome is observable only after accepted completion AND confirmed cleanup.
+// Outcome is observable only after accepted completion and confirmed cleanup.
 type Outcome struct {
 	Worked    bool
 	RunID     string
@@ -109,10 +106,7 @@ type Outcome struct {
 	Result    string
 }
 
-// RunOnce reconciles old state, then claims and supervises at most one attempt.
-// It returns an empty Outcome when the queue is idle and a worked Outcome only
-// after accepted completion and confirmed cleanup. Calls are serialized in this
-// process; the journal's lifetime lock additionally excludes other processes.
+// RunOnce reconciles old state, then claims and supervises at most one attempt; the journal's lifetime lock excludes other processes.
 func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

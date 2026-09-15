@@ -585,9 +585,8 @@ func TestUncertainCreationRetainsReservationWithoutAcknowledgement(t *testing.T)
 	if *saved.SandboxID != name || c.acks != 0 || b.reconciles != 0 || w.removes != 0 || watchdog.disarms != 0 || watchdog.createFinishedCalls != 0 {
 		t.Fatalf("unknown create was acknowledged or disarmed: state=%#v acks=%d reconciles=%d removes=%d disarms=%d finished=%d", saved, c.acks, b.reconciles, w.removes, watchdog.disarms, watchdog.createFinishedCalls)
 	}
-	// A fresh process has no way to reconnect the old pipe watchdog. Even if
-	// Reconcile reports the name absent, it cannot distinguish delayed creation
-	// from confirmed absence and must leave the reservation for manual recovery.
+	// A fresh process has no way to reconnect the old pipe watchdog.
+	// Reconcile cannot distinguish delayed creation from confirmed absence, so it leaves the reservation for manual recovery.
 	freshClient := &fixtureClient{}
 	freshWatchdog := &fixtureWatchdog{}
 	freshSandbox := &fixtureSandbox{state: state, watchdog: freshWatchdog, armed: &freshWatchdog.armed}

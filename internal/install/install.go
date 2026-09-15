@@ -125,8 +125,7 @@ func validatePlatform(platform shipmunkrelease.PlatformRelease) error {
 	return nil
 }
 
-// Install verifies the complete archive before writing and atomically activates
-// it under releases/<archive-sha256>. Existing releases are never repaired.
+// Install verifies the complete archive before writing and atomically activates it under releases/<archive-sha256>; existing releases are never repaired.
 func Install(archive io.Reader, releases string, platform shipmunkrelease.PlatformRelease) (string, error) {
 	return installRelease(archive, releases, platform, syncDirectory)
 }

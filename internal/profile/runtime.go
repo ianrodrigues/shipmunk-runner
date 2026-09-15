@@ -31,9 +31,8 @@ const (
 	profileReservationLabel = "shipmunk.profile-create-reservation"
 )
 
-// ErrCreateUncertain means Docker received a create request but the runtime
-// cannot prove whether the daemon committed it. Callers must retain their
-// durable create-attempt phase until reconciliation resolves the uncertainty.
+// ErrCreateUncertain means the runtime cannot confirm whether Docker committed a create request.
+// Callers must retain their create-attempt phase until reconciliation resolves it.
 var ErrCreateUncertain = errors.New("profile sandbox create outcome is uncertain")
 
 var (
@@ -42,8 +41,7 @@ var (
 	containerIDPattern    = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 )
 
-// Checkpoint renews the operation lease or reports that the operation was
-// revoked. Runtime methods call it before Docker work and while commands run.
+// Checkpoint renews the operation lease or reports revocation, and runtime methods call it before and during Docker work.
 type Checkpoint func() error
 
 // CreatePhase reports the uncertain window around Docker container creation
@@ -53,8 +51,7 @@ type CreatePhase interface {
 	CreateFinished(string) error
 }
 
-// Runtime manages a credential-only native profile container. The caller owns
-// lifecycle and protected storage.
+// Runtime manages a credential-only native profile container; the caller owns lifecycle and protected storage.
 type Runtime interface {
 	Start(context.Context, string, string, Checkpoint, CreatePhase) error
 	Run(context.Context, string, string, string, Checkpoint) (CommandResult, error)
@@ -386,9 +383,7 @@ func (runtime *dockerRuntime) Stop(ctx context.Context, sandboxName string, crea
 	return nil
 }
 
-// ReconcileCreate atomically reserves the deterministic sandbox name before
-// clearing an uncertain create. A late original create then conflicts with the
-// reservation instead of creating a container after recovery observed absence.
+// ReconcileCreate reserves the sandbox name before clearing an uncertain create, so a late original create conflicts instead of succeeding.
 func (runtime *dockerRuntime) ReconcileCreate(ctx context.Context, sandboxName string) error {
 	if err := validateSandboxName(sandboxName); err != nil {
 		return err

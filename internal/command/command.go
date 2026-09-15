@@ -1,6 +1,4 @@
-// Package command owns terminal-facing behavior. Runtime execution is wired by
-// the supervision slice. Keeping this boundary small stops a compatibility
-// scaffold from reserving work before it can guarantee cleanup.
+// Package command owns terminal-facing behavior; the supervision slice wires runtime execution.
 package command
 
 import (

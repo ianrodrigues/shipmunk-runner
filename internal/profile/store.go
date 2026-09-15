@@ -1,6 +1,4 @@
-// Package profile stores native subscription credentials in a protected
-// per-profile directory. It only implements policy for trusted native
-// profile clients, not containers or control-plane operations.
+// Package profile stores native subscription credentials in a protected per-profile directory; it excludes containers and control-plane operations.
 package profile
 
 import (
@@ -24,8 +22,7 @@ var journalNames = map[string]struct{}{
 	"active": {}, "pending": {}, "completed": {}, "execution": {},
 }
 
-// Store addresses the protected directory for one native profile. Callers
-// hold WithExclusive for an entire lifecycle operation or native execution.
+// Store addresses the protected directory for one native profile; callers hold WithExclusive for a full lifecycle operation or native execution.
 type Store struct {
 	root      string
 	directory string
@@ -37,7 +34,7 @@ type Store struct {
 	closed    bool
 }
 
-// Open creates or validates root/profileID. WithExclusive acquires the OS lock.
+// Open creates or validates root/profileID and does not itself acquire a lock.
 func Open(root, profileID string) (*Store, error) {
 	if !profileIdentifierPattern.MatchString(profileID) {
 		return nil, errors.New("invalid profile identifier")
@@ -109,7 +106,7 @@ func (store *Store) WithExclusive(operation func(*Store) error) error {
 	return operation(store)
 }
 
-// Close prevents future operations. It is safe to call more than once.
+// Close prevents future operations and is safe to call more than once.
 func (store *Store) Close() error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -164,8 +161,7 @@ func (store *Store) CreateHome() (string, error) {
 	return store.Home(), nil
 }
 
-// Read reads one fixed-name journal, rejecting unsafe files and inputs above
-// the store's 16 KiB bound. Unknown object fields are preserved by callers.
+// Read reads one fixed-name journal, rejecting unsafe files and inputs above the store's 16 KiB bound; callers preserve unknown object fields.
 func (store *Store) Read(name string) (map[string]any, error) {
 	if err := store.ensureOpen(); err != nil {
 		return nil, err
@@ -392,8 +388,7 @@ func (store *Store) ValidateHome() error {
 	return validateProfileTree(store.Home())
 }
 
-// NormalizeNativeHome validates the complete native tree before changing any
-// permissions. It must be called under WithExclusive after native processes stop.
+// NormalizeNativeHome validates the complete native tree before changing any permissions, and must be called under WithExclusive after native processes stop.
 func (store *Store) NormalizeNativeHome() error {
 	if err := store.assertLocked(); err != nil {
 		return err
@@ -404,8 +399,7 @@ func (store *Store) NormalizeNativeHome() error {
 	return normalizeNativeProfileTree(store.Home(), nativeTreeHooks{})
 }
 
-// Invalidate forgets the active identity and removes home entries without
-// following symlinks. Pending/execution recovery journals remain untouched.
+// Invalidate forgets the active identity and removes home entries without following symlinks; pending/execution recovery journals remain untouched.
 func (store *Store) Invalidate() error {
 	if err := store.ensureOpen(); err != nil {
 		return err

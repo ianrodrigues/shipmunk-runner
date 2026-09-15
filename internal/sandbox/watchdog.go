@@ -14,8 +14,7 @@ import (
 	"time"
 )
 
-// Watchdog launches a separate OS process that owns cleanup if the supervisor
-// is killed. Its executable should be the built shipmunk-watchdog binary.
+// Watchdog launches a separate OS process that owns cleanup if the supervisor is killed.
 type Watchdog struct {
 	config Config
 }
@@ -38,15 +37,12 @@ func NewWatchdog(config Config) *Watchdog {
 	return &Watchdog{config: config}
 }
 
-// Arm starts the independent watchdog for an already-journaled deterministic
-// sandbox name. The returned lease is the sole renewal/disarm control channel.
+// Arm starts the independent watchdog for an already-journaled deterministic sandbox name.
 func (watchdog *Watchdog) Arm(name string, lease, deadline time.Time) (*Lease, error) {
 	return watchdog.arm(name, lease, deadline, false, false)
 }
 
-// ArmProfile starts an independent watchdog for a profile credential
-// container. Its ownership checks use the dedicated profile-runtime label and
-// deterministic profile sandbox name rather than attempt labels.
+// ArmProfile starts an independent watchdog for a profile credential container, using the profile-runtime label instead of attempt labels.
 func (watchdog *Watchdog) ArmProfile(name string, lease, deadline time.Time) (*Lease, error) {
 	return watchdog.arm(name, lease, deadline, true, false)
 }
@@ -147,8 +143,7 @@ func (watchdog *Watchdog) arm(name string, lease, deadline time.Time, profile, c
 	return leaseHandle, nil
 }
 
-// Lease controls one watchdog process. Renewal is monotonic inside the child;
-// its wall-clock input is converted once for each renewal.
+// Lease controls one watchdog process; renewal inside the child is monotonic.
 type Lease struct {
 	docker         *Docker
 	name           string
@@ -198,9 +193,7 @@ func (lease *Lease) CreateStarted() error {
 	return nil
 }
 
-// CreateFinished confirms a definitive create response. Pass the full Docker
-// ID on success or an empty ID only when no container could have been created.
-// Do not call this after Create returns ErrCreateUncertain.
+// CreateFinished confirms a definitive create response and must not be called after Create returns ErrCreateUncertain.
 func (lease *Lease) CreateFinished(containerID string) error {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
@@ -358,16 +351,12 @@ func (lease *Lease) writeMessageLocked(message string) error {
 	}
 }
 
-// RunWatchdog monitors the parent control channel while discarding protocol
-// responses. EOF or expiry triggers cleanup retries until the exact owned
-// container is absent.
+// RunWatchdog monitors the parent control channel and retries cleanup on EOF or expiry until the exact owned container is absent.
 func RunWatchdog(arguments []string, input io.Reader) error {
 	return RunWatchdogCommand(arguments, input, io.Discard)
 }
 
-// RunWatchdogCommand writes readiness and phase acknowledgments to output while
-// monitoring the parent control channel. EOF or expiry triggers cleanup retries
-// until the exact owned container is absent.
+// RunWatchdogCommand writes readiness and phase acknowledgments, and retries cleanup on EOF or expiry until the container is absent.
 func RunWatchdogCommand(arguments []string, input io.Reader, output io.Writer) error {
 	options, err := parseWatchdogArguments(arguments)
 	if err != nil {
@@ -644,9 +633,8 @@ func (docker *Docker) cleanupCodexWatchdog(name string, createInFlight bool) err
 		if err != nil || !absent {
 			return errors.New("watchdog could not confirm Codex volume absence")
 		}
-		// The volume is the topology's first Docker side effect, so confirming its
-		// owned label and then its removal proves the pending create was accepted
-		// and has been fenced by cleanup.
+		// The volume is the topology's first Docker side effect.
+		// Confirming its label and removal proves cleanup fenced the pending create.
 		createInFlight = false
 		continue
 	}
