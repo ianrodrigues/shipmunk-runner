@@ -136,11 +136,11 @@ func TestStoreRejectsUnsupportedStateWithoutMutation(t *testing.T) {
 		"duplicate":            `{"run_id":"run","run_id":"other"}`,
 		"unsupported":          `{"run_id":"run","attempt_id":"attempt","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace","future":true}`,
 		"oversized":            strings.Repeat(" ", maxStateBytes+1),
-		"invalid IDs":          `{"run_id":"run","attempt_id":"attempt","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/attempt-1"}`,
-		"relative workspace":   `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"workspaces/01k4w000000000000000000002-1"}`,
-		"mismatched workspace": `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/another-attempt-1"}`,
-		"unsafe sandbox id":    `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"sandbox_id":"../other","lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1"}`,
-		"invalid profile id":   `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"profile_id":"profile","lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1"}`,
+		"invalid IDs":          `{"run_id":"run","attempt_id":"attempt","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/attempt-1","refused_stopped_count":0}`,
+		"relative workspace":   `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"workspaces/01k4w000000000000000000002-1","refused_stopped_count":0}`,
+		"mismatched workspace": `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/another-attempt-1","refused_stopped_count":0}`,
+		"unsafe sandbox id":    `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"sandbox_id":"../other","lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1","refused_stopped_count":0}`,
+		"invalid profile id":   `{"run_id":"01k4w000000000000000000001","attempt_id":"01k4w000000000000000000002","fence":1,"profile_id":"profile","lease_expires_at":"2026-09-13T10:11:12+00:00","deadline":"2026-09-13T10:12:12+00:00","workspace":"/workspace/01k4w000000000000000000002-1","refused_stopped_count":0}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(privateTempDir(t), "active.json")
