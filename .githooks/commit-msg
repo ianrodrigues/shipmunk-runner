@@ -24,6 +24,10 @@ case "$subject" in
         ;;
 esac
 
+if ! grep -q '^Signed-off-by: ' "$message"; then
+    echo 'commit-msg: missing Signed-off-by trailer; run git commit -s (warning only, will become required after the first external contribution).' >&2
+fi
+
 # Linked worktrees share optional local checks outside the tracked hook files.
 common_dir=$(git rev-parse --git-common-dir)
 for extra in "$common_dir"/hooks/commit-msg.d/*; do
