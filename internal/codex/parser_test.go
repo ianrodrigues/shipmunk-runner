@@ -271,11 +271,12 @@ func TestParseRejectsInvalidStructuredResults(t *testing.T) {
 }
 
 func TestParseAcceptsSchemaAuthorizedFindingsAndEnums(t *testing.T) {
-	for _, outcome := range []string{"findings", "changes_proposed", "incomplete", "needs_input"} {
-		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[` + findingJSON(findingPath, 1, 2) + `],"tests":[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]}`
+	testsClause := `[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]`
+	for _, outcome := range []string{"findings", "changes_proposed"} {
+		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[` + findingJSON(findingPath, 1, 2) + `],"tests":` + testsClause + `}`
 		if outcome == "findings" {
 			result = `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON(findingPath, 1, 2) + `],"coverage":` +
-				coverageJSON(findingPath) + `,"verification_state":"none","tests":[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]}`
+				coverageJSON(findingPath) + `,"verification_state":"none","tests":` + testsClause + `}`
 		}
 		stream, err := Parse([]byte(validStream(result)), nil)
 		if err != nil {
@@ -284,6 +285,28 @@ func TestParseAcceptsSchemaAuthorizedFindingsAndEnums(t *testing.T) {
 		if stream.Result.Findings[0].Severity != "high" || stream.Result.Tests[0].Status != "error" {
 			t.Fatalf("outcome %q changed result: %#v", outcome, stream.Result)
 		}
+	}
+	// incomplete and needs_input forbid findings entirely; only the tests enum is exercised here.
+	for _, outcome := range []string{"incomplete", "needs_input"} {
+		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[],"tests":` + testsClause + `}`
+		stream, err := Parse([]byte(validStream(result)), nil)
+		if err != nil {
+			t.Fatalf("outcome %q rejected schema-authorized result: %v", outcome, err)
+		}
+		if stream.Result.Tests[0].Status != "error" {
+			t.Fatalf("outcome %q changed result: %#v", outcome, stream.Result)
+		}
+	}
+}
+
+func TestParseRejectsFindingsOnIncompleteOrNeedsInput(t *testing.T) {
+	for _, outcome := range []string{"incomplete", "needs_input"} {
+		t.Run(outcome, func(t *testing.T) {
+			result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[` + findingJSON(findingPath, 1, 2) + `],"tests":[]}`
+			if _, err := Parse([]byte(validStream(result)), nil); !errors.Is(err, ErrInvalidResult) {
+				t.Fatalf("outcome %q accepted a non-empty findings array: %v", outcome, err)
+			}
+		})
 	}
 }
 

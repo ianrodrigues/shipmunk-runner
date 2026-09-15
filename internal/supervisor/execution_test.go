@@ -82,6 +82,31 @@ func TestDecodeExecutionNormalizesMissingTestsForFailedExit(t *testing.T) {
 	}
 }
 
+func TestDecodeExecutionDropsFindingsForFailedExit(t *testing.T) {
+	claim := fixtureClaim(t)
+	var envelope map[string]any
+	if err := json.Unmarshal(normalizedOutput(t, claim, "findings"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	result := envelope["result"].(map[string]any)
+	result["findings"] = []any{map[string]any{
+		"category": "correctness", "severity": "high", "relation": "introduced",
+		"scenario": "s", "consequence": "c", "action": "a", "explanation": "e",
+		"evidence": []any{map[string]any{"snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "path": "a.go", "line_start": 1, "line_end": 1}},
+	}}
+
+	execution, err := DecodeExecution(claim, 1, marshalEnvelope(t, envelope))
+	if err != nil {
+		t.Fatalf("failed native execution was not normalized: %v", err)
+	}
+	if execution.Result["outcome"] != "incomplete" {
+		t.Fatalf("failed native execution outcome = %v", execution.Result["outcome"])
+	}
+	if findings, ok := execution.Result["findings"].([]any); !ok || len(findings) != 0 {
+		t.Fatalf("failed native execution retained findings: %#v", execution.Result["findings"])
+	}
+}
+
 func TestDecodeExecutionDiscardsPatchArtifactsForFailedExit(t *testing.T) {
 	claim := fixtureClaim(t)
 	execution, err := DecodeExecution(claim, 1, outputWithPatch(t, claim, "changes_proposed"))

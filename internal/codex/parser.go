@@ -419,7 +419,8 @@ func parseResult(raw []byte) (Result, error) {
 	}
 	findingsRaw, findingsOK := object["findings"].([]any)
 	testsRaw, testsOK := object["tests"].([]any)
-	if !findingsOK || !testsOK || len(findingsRaw) > MaxFindings || len(testsRaw) > 100 || (outcome == "findings" && len(findingsRaw) == 0) || (outcome == "no_findings" && len(findingsRaw) != 0) {
+	emptyFindingsRequired := outcome == "no_findings" || outcome == "incomplete" || outcome == "needs_input"
+	if !findingsOK || !testsOK || len(findingsRaw) > MaxFindings || len(testsRaw) > 100 || (outcome == "findings" && len(findingsRaw) == 0) || (emptyFindingsRequired && len(findingsRaw) != 0) {
 		return Result{}, ErrInvalidResult
 	}
 	result := Result{Summary: summary, Outcome: outcome, Findings: make([]Finding, 0, len(findingsRaw)), Tests: make([]Test, 0, len(testsRaw))}
