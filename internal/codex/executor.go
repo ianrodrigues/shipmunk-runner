@@ -147,7 +147,7 @@ func (e *Executor) Execute(ctx context.Context, claim protocol.Claim, _ map[stri
 	if err != nil {
 		return supervisor.Execution{}, errors.New("Codex session selection failed")
 	}
-	argv, stdin, err := executionCommand(claim, session, trusted)
+	argv, stdin, err := executionCommand(claim, session, trusted, sources.baselinePath() != "")
 	if err != nil {
 		return supervisor.Execution{}, err
 	}
@@ -276,7 +276,12 @@ func (e *Executor) Renew(claim protocol.Claim, expiry time.Time) error {
 	return watchdog.Renew(expiry)
 }
 
-func executionCommand(claim protocol.Claim, session *codexsession.Session, trusted string) ([]string, string, error) {
+// executionCommand builds the native argv and stdin for one attempt. review
+// must be derived from the exact same value that decided whether the
+// transport's mediator and mounts are review-shaped (sources.baselinePath()
+// != ""), never re-derived independently from the claim, so the tool surface
+// offered to the model and the boundary actually enforced can never diverge.
+func executionCommand(claim protocol.Claim, session *codexsession.Session, trusted string, review bool) ([]string, string, error) {
 	config, ok := claim.Manifest["effective_config"].(map[string]any)
 	model, _ := config["model"].(string)
 	instructions, _ := config["instructions"].(string)
@@ -284,9 +289,8 @@ func executionCommand(claim protocol.Claim, session *codexsession.Session, trust
 	if !ok || !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`).MatchString(model) || len(instructions) > 50_000 || contextText == "" || len(contextText) > 32768 {
 		return nil, "", errors.New("Codex execution configuration is invalid")
 	}
-	review := claim.Manifest["kind"] == "review"
 	snapshotInstructions := "The synthetic local Git commit is the supplied head snapshot, not PR history."
-	mcpArgs := `args=["/usr/local/lib/shipmunk/codex-mcp.mjs"]`
+	mcpArgs := `args=["/usr/local/lib/shipmunk/codex-mcp.mjs","repository"]`
 	mcpTools := `enabled_tools=["repository_command"],tools={repository_command={approval_mode="approve"}}`
 	toolSurface := "Repository files and commands are available only through the repository MCP tool."
 	if review {
