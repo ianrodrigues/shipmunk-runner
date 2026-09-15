@@ -1,6 +1,6 @@
 # Shipmunk runner
 
-The standalone execution host for Shipmunk. The Go runner runs Codex work in isolated Linux containers and connects to a separately deployed Shipmunk application. It does not load Laravel, Composer dependencies, application environment files, database credentials or GitHub credentials. The verified Go release is the supported installation path; the PHP installer under `runner/bin` is obsolete and scheduled for removal in a separate change.
+The standalone execution host for Shipmunk. The Go runner runs Codex work in isolated Linux containers and connects to a separately deployed Shipmunk application. It does not load Laravel, Composer dependencies, application environment files, database credentials or GitHub credentials. The verified Go release is the only supported installation path.
 
 The initial version is `v0.1.0-alpha.1`. Runner versions and release tags are independent of application versions; each deployment pins a specific published tag from its own `runner-release.json`. Every tag remains a prerelease until noted otherwise: offline checks establish the tested behavior, not live subscription compatibility or full product release readiness.
 
@@ -55,7 +55,7 @@ make check
 
 ## Local Git hooks
 
-Run `make hooks` once per clone to enable the tracked hooks, including linked worktrees. Installation is repeatable and refuses to overwrite a custom `core.hooksPath` or hide executable default hooks; combine your existing hooks explicitly first. Hooks use Bash and the existing Go/PHP tools, perform no network calls or test suites, and never rewrite or stage files. Pre-commit checks whitespace/conflict markers and the exact staged Go formatting and PHP syntax, so partial staging is respected. `make hooks-check` runs their isolated Git regressions and is included in `make check`.
+Run `make hooks` once per clone to enable the tracked hooks, including linked worktrees. Installation is repeatable and refuses to overwrite a custom `core.hooksPath` or hide executable default hooks; combine your existing hooks explicitly first. Hooks use Bash and the existing Go tools, perform no network calls or test suites, and never rewrite or stage files. Pre-commit checks whitespace/conflict markers and the exact staged Go formatting, so partial staging is respected. `make hooks-check` runs their isolated Git regressions and is included in `make check`.
 
 Use Conventional Commits such as `fix: preserve base snapshots`: the entire subject must be at most 72 characters, start its description in lower case, omit a final period, and have a blank line before the body. Git-generated `fixup!`, `squash!`, and `amend!` messages are exempt; autosquash them before merging. Optional executable checks in `$(git rev-parse --git-common-dir)/hooks/commit-msg.d/` receive every commit message, including autosquash messages. Pre-push rejects creating, updating, or deleting the remote `main` branch; push a feature branch for review. Release tags are allowed.
 
