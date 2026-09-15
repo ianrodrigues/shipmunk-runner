@@ -27,6 +27,8 @@ tar -xf "shipmunk-runner-$version-$platform.tar" bin/shipmunk-setup
 
 Run on an operator terminal: stdin, stdout and stderr must all be a TTY. Append `--server-url=https://your-runner-reachable-server` for a runner host separate from the application; loopback HTTP is only for same-host development. Setup verifies the archive against the manifest, confirms the server and runner interactively, checks `/up` and the Docker preflight, builds the pinned runtime image, and activates private configuration and the `run`/`connect` launchers under `~/.shipmunk/runners/<runner-id>/`. It never starts queued work.
 
+The four `platform` values above are all packaged, but validated differently: `linux-amd64` is smoke-tested in CI in a PHP-free container on every push; `linux-arm64` smoke passes locally under QEMU emulation or native hardware and is a tested parameter not yet wired to a CI runner; `darwin-arm64` native operation was demonstrated by the server's published-runner check against `v0.1.0-alpha.10` on an Apple Silicon host, though that host was not PHP-free, so it is native-operation evidence rather than a clean-host smoke test; `darwin-amd64` is compile-only and unvalidated and is not a supported executable platform until a smoke run exists on an Intel host. See [release packaging and application pins](docs/releases.md) for details.
+
 Once installed, use the printed launchers directly:
 
 ```sh
