@@ -68,6 +68,74 @@ func TestPinnedContractFixtures(t *testing.T) {
 	}
 }
 
+func TestResultContractAcceptsSeverityBoundaryFixtures(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		severity  string
+		action    string
+		hasAnchor bool
+	}{
+		{name: "result.critical-finding", severity: "critical", hasAnchor: true},
+		{name: "result.info-finding", severity: "info", action: "No action needed now", hasAnchor: false},
+	} {
+		t.Run(test.severity, func(t *testing.T) {
+			raw := readContractFixture(t, test.name)
+			if err := Validate("result", raw); err != nil {
+				t.Fatalf("embedded result contract rejected %s fixture: %v", test.severity, err)
+			}
+			decoded, err := Decode(raw, ResultMaxBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := object(decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			findings, ok := result["findings"].([]any)
+			if !ok || len(findings) != 1 {
+				t.Fatalf("%s fixture has unexpected findings: %#v", test.severity, result["findings"])
+			}
+			finding, err := object(findings[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if finding["severity"] != test.severity {
+				t.Fatalf("fixture severity = %#v, want %q", finding["severity"], test.severity)
+			}
+			action, actionOK := finding["action"].(string)
+			if test.action != "" && (!actionOK || !strings.HasPrefix(action, test.action)) {
+				t.Fatalf("%s action does not state that no action is needed: %#v", test.severity, finding["action"])
+			}
+			_, hasAnchor := finding["anchor"]
+			if hasAnchor != test.hasAnchor {
+				t.Fatalf("%s anchor presence = %t, want %t", test.severity, hasAnchor, test.hasAnchor)
+			}
+		})
+	}
+}
+
+func TestResultContractRejectsStaleCharterVersionFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(contractFixtures, "invalid", "stale-charter-version.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(raw, ManifestMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := object(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, ok := wrapper["document"]
+	if !ok {
+		t.Fatal("stale charter fixture has no document")
+	}
+	if err := Validate("result", []byte(mustJSON(document))); err == nil {
+		t.Fatal("embedded result contract accepted a stale charter version")
+	}
+}
+
 func TestDecodeRejectsAmbiguousAndMalformedInput(t *testing.T) {
 	for name, raw := range map[string][]byte{
 		"duplicate root":    []byte(`{"result":1,"result":2}`),

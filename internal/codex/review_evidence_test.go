@@ -246,7 +246,10 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	developer := developerInstructionsArg(t, argv)
-	for _, want := range []string{ReviewCharterVersion, sampleBaselineSHA, sampleHeadSHA, "a.go", "review_list", "Severity", "Never report two findings that trace back to the same root cause"} {
+	if count := strings.Count(developer, reviewCharterText); count != 1 {
+		t.Fatalf("review prompt contains the embedded charter %d times, want exactly once:\n%s", count, developer)
+	}
+	for _, want := range []string{ReviewCharterVersion, sampleBaselineSHA, sampleHeadSHA, "a.go", "review_list"} {
 		if !strings.Contains(developer, want) {
 			t.Fatalf("review prompt missing %q:\n%s", want, developer)
 		}
@@ -257,6 +260,9 @@ func TestExecutionCommandInjectsCharterAndEvidenceOnlyForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	developer = developerInstructionsArg(t, argv)
+	if strings.Contains(developer, reviewCharterText) {
+		t.Fatalf("implement prompt unexpectedly contains the review charter:\n%s", developer)
+	}
 	for _, absent := range []string{sampleBaselineSHA, sampleHeadSHA, "review_list", "charter_version"} {
 		if strings.Contains(developer, absent) {
 			t.Fatalf("implement prompt unexpectedly contains %q:\n%s", absent, developer)
