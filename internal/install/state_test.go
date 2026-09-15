@@ -114,40 +114,58 @@ func TestPreflightRefusalDoesNotChangeExistingLayout(t *testing.T) {
 	}
 }
 
+// installedArchiveDigest is the archive digest every configuration() fixture
+// records as its release_path basename.
+var installedArchiveDigest = strings.Repeat("a", 64)
+
 func TestPreflightRefusesOlderReleaseAndAllowsSameOrNewer(t *testing.T) {
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
+	differentDigest := strings.Repeat("c", 64)
 	for _, test := range []struct {
 		name                string
 		installed, incoming string
+		digest              string
 		refused             bool
 	}{
-		{"older patch refused", "v1.2.3", "v1.2.2", true},
-		{"same version allowed", "v1.2.3", "v1.2.3", false},
-		{"newer patch allowed", "v1.2.3", "v1.2.4", false},
-		{"older prerelease refused", "v0.1.0-alpha.10", "v0.1.0-alpha.9", true},
-		{"newer prerelease allowed", "v0.1.0-alpha.9", "v0.1.0-alpha.10", false},
-		{"release supersedes prerelease", "v0.1.0-alpha.10", "v0.1.0", false},
-		{"prerelease after release refused", "v0.1.0", "v0.1.0-alpha.10", true},
+		{"older patch refused", "v1.2.3", "v1.2.2", installedArchiveDigest, true},
+		{"same version same digest allowed", "v1.2.3", "v1.2.3", installedArchiveDigest, false},
+		{"same version different digest refused", "v1.2.3", "v1.2.3", differentDigest, true},
+		{"newer patch allowed", "v1.2.3", "v1.2.4", installedArchiveDigest, false},
+		{"older prerelease refused", "v0.1.0-alpha.10", "v0.1.0-alpha.9", installedArchiveDigest, true},
+		{"newer prerelease allowed", "v0.1.0-alpha.9", "v0.1.0-alpha.10", installedArchiveDigest, false},
+		{"release supersedes prerelease", "v0.1.0-alpha.10", "v0.1.0", installedArchiveDigest, false},
+		{"prerelease after release refused", "v0.1.0", "v0.1.0-alpha.10", installedArchiveDigest, true},
+		// Build metadata never affects precedence (semver 2.0.0), so these
+		// are still equal-version renewals: the digest check still applies.
+		{"same version with build metadata and same digest allowed", "v1.2.3", "v1.2.3+build.5", installedArchiveDigest, false},
+		{"same version with build metadata but different digest refused", "v1.2.3", "v1.2.3+build.5", differentDigest, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := installation(t)
 			mustWrite(t, filepath.Join(root, "config.json"), configuration(root, identity, test.installed))
-			guard := Guard{Root: root, Identity: identity, IncomingReleaseVersion: test.incoming}
+			guard := Guard{Root: root, Identity: identity, IncomingReleaseVersion: test.incoming, IncomingArchiveDigest: test.digest}
 			err := guard.Preflight()
 			if test.refused && err == nil {
-				t.Fatalf("release %s over installed %s was accepted", test.incoming, test.installed)
+				t.Fatalf("release %s (digest %s) over installed %s was accepted", test.incoming, test.digest, test.installed)
 			}
 			if !test.refused && err != nil {
-				t.Fatalf("release %s over installed %s was refused: %v", test.incoming, test.installed, err)
+				t.Fatalf("release %s (digest %s) over installed %s was refused: %v", test.incoming, test.digest, test.installed, err)
 			}
 		})
 	}
 }
 
 func TestValidateReleaseOrderFailsClosedOnMalformedInstalledVersion(t *testing.T) {
-	guard := Guard{IncomingReleaseVersion: "v1.0.0"}
-	if err := guard.validateReleaseOrder("not-a-version"); err == nil {
+	guard := Guard{IncomingReleaseVersion: "v1.0.0", IncomingArchiveDigest: installedArchiveDigest}
+	if err := guard.validateReleaseOrder("not-a-version", "releases/"+installedArchiveDigest); err == nil {
 		t.Fatal("malformed installed release version was accepted")
+	}
+}
+
+func TestValidateReleaseOrderFailsClosedOnMissingArchiveDigest(t *testing.T) {
+	guard := Guard{IncomingReleaseVersion: "v1.0.0"}
+	if err := guard.validateReleaseOrder("v1.0.0", "releases/"+installedArchiveDigest); err == nil {
+		t.Fatal("same-version renewal without an incoming archive digest was accepted")
 	}
 }
 
