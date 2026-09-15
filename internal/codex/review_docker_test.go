@@ -33,14 +33,18 @@ func TestDockerReviewToolsInspectOnlyAuthorizedSnapshots(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(head, "src"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(head, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	for path, body := range map[string]string{
-		filepath.Join(base, "changed.txt"):   "base contents\n",
-		filepath.Join(head, "changed.txt"):   "head contents\n",
-		filepath.Join(base, "deleted.txt"):   "base-only file\n",
-		filepath.Join(head, "added.txt"):     "head-only file\n",
-		filepath.Join(base, "unchanged.txt"): "same\n",
-		filepath.Join(head, "unchanged.txt"): "same\n",
-		filepath.Join(head, "src", "app.go"): "package main\n\nfunc main() {}\n",
+		filepath.Join(base, "changed.txt"):         "base contents\n",
+		filepath.Join(head, "changed.txt"):         "head contents\n",
+		filepath.Join(base, "deleted.txt"):         "base-only file\n",
+		filepath.Join(head, "added.txt"):           "head-only file\n",
+		filepath.Join(base, "unchanged.txt"):       "same\n",
+		filepath.Join(head, "unchanged.txt"):       "same\n",
+		filepath.Join(head, "src", "app.go"):       "package main\n\nfunc main() {}\n",
+		filepath.Join(head, ".codex", "auth.json"): "not a credential\n",
 	} {
 		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 			t.Fatal(err)
@@ -128,16 +132,22 @@ echo probe-ok`
 		arguments map[string]any
 	}
 	calls := []toolCall{
-		{"review_list", map[string]any{"snapshot": "workspace", "path": ""}},
-		{"review_list", map[string]any{"snapshot": "workspace", "path": "src"}},
+		{"review_list", map[string]any{"snapshot": "workspace", "path": "", "offset": 0}},
+		{"review_list", map[string]any{"snapshot": "workspace", "path": "src", "offset": 0}},
 		{"review_read", map[string]any{"snapshot": "baseline", "path": "changed.txt", "start_line": 1, "line_count": 10}},
 		{"review_search", map[string]any{"snapshot": "workspace", "path": "", "query": "head contents"}},
 		{"review_diff", map[string]any{"path": ""}},
 		{"review_diff", map[string]any{"path": "changed.txt"}},
 		{"review_read", map[string]any{"snapshot": "baseline", "path": "../deleted.txt", "start_line": 1, "line_count": 10}},
 		{"review_read", map[string]any{"snapshot": "workspace", "path": "deleted.txt", "start_line": 1, "line_count": 10}},
+		// A profile-shaped path is absent from baseline (the profile canary was
+		// never loaded into either snapshot map at all), while the SAME path
+		// legitimately exists in workspace with unrelated content planted
+		// there directly (see call 10 below) - proving the isolation is
+		// structural, not merely "that path happens not to exist".
 		{"review_read", map[string]any{"snapshot": "baseline", "path": ".codex/auth.json", "start_line": 1, "line_count": 10}},
 		{"review_search", map[string]any{"snapshot": "workspace", "path": "", "query": canary}},
+		{"review_read", map[string]any{"snapshot": "workspace", "path": ".codex/auth.json", "start_line": 1, "line_count": 10}},
 	}
 	var requests strings.Builder
 	requests.WriteString("{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"review-regression\",\"version\":\"1\"}}}\n")
@@ -216,7 +226,7 @@ echo probe-ok`
 	for index, description := range map[int]string{
 		6: "traversal path",
 		7: "cross-snapshot access",
-		8: "profile-shaped path",
+		8: "profile-shaped path absent from baseline",
 	} {
 		if !errored[index] {
 			t.Fatalf("%s was not rejected: %s", description, outputs[index])
@@ -226,6 +236,15 @@ echo probe-ok`
 	if errored[9] || outputs[9] != "no matches" {
 		t.Fatalf("canary search unexpected: error=%t output=%s", errored[9], outputs[9])
 	}
+
+	// The same profile-shaped path legitimately exists in workspace (planted
+	// directly in the fixture, not via /profile): it must return that planted
+	// content, never the real profile canary, proving the tool surface has no
+	// channel to /profile regardless of what the path string looks like.
+	if errored[10] || strings.TrimSpace(outputs[10]) != "not a credential" {
+		t.Fatalf("profile-shaped path in workspace returned unexpected content: error=%t output=%s", errored[10], outputs[10])
+	}
+
 	for index, output := range outputs {
 		if strings.Contains(output, canary) {
 			t.Fatalf("canary credential leaked through tool response %d: %s", index, output)
