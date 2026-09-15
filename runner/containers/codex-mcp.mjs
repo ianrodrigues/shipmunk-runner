@@ -50,7 +50,7 @@ function metadata(value) {
             return false;
         }
     }
-    // Pinned Codex adds opaque trace metadata. It is never forwarded to the repository spool.
+    // Pinned Codex adds opaque trace metadata. The metadata is never forwarded to the repository spool.
     const trace = value['x-codex-turn-metadata'];
     return (
         trace === undefined ||
@@ -188,10 +188,10 @@ async function reviewBridge(op, args) {
     ) {
         throw new Error('Invalid response.');
     }
-    // snapshot_sha (review_list/review_read only) is the real 40-character
-    // SHA of the snapshot the response came from; it must reach the model in
-    // the text content, not just the outer mediator struct, or the model has
-    // no way to cite an evidence snapshot that actually exists.
+    // snapshot_sha (review_list/review_read only) is the real 40-character SHA
+    // of the snapshot the response came from. It must reach the model in the
+    // text content, not just the outer mediator struct, or the model cannot
+    // cite an evidence snapshot that exists.
     const text = value.snapshot_sha
         ? `snapshot_sha: ${value.snapshot_sha}\n${value.output}`
         : value.output;
@@ -221,10 +221,10 @@ const reviewPathSchema = {
 };
 
 // The active tool set is chosen once from the fixed launch argument the
-// runner supplies; it never changes for the life of this process, and a
-// review process never advertises or accepts repository_command. An
-// unrecognized argument fails closed rather than silently defaulting to the
-// more permissive repository mode.
+// runner supplies, and never changes for the process's life. A review
+// process never advertises or accepts repository_command. An unrecognized
+// argument fails closed instead of defaulting to the more permissive
+// repository mode.
 const modeArgument = process.argv[2];
 if (modeArgument !== 'review' && modeArgument !== 'repository') {
     process.stderr.write('Unsupported repository bridge mode.\n');
@@ -461,8 +461,6 @@ async function dispatch(message) {
                 content: [
                     {
                         type: 'text',
-                        // Repository mode keeps its exact original wording, a
-                        // fixture string the PHP boundary test still checks.
                         text:
                             mode === 'repository'
                                 ? 'Repository command finished, but its response exceeds the MCP output limit. Inspect results with a command that produces less output.'

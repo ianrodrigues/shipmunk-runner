@@ -177,9 +177,9 @@ func (lease *Lease) Renew(expiry time.Time) error {
 	return lease.writeMessageLocked(fmt.Sprintf("renew:%d\n", expiry.UnixNano()))
 }
 
-// CreateStarted tells the independent watchdog that a Docker create request is
-// about to be issued. If the parent dies before CreateFinished, absence cannot
-// prove that the daemon did not accept the request, so cleanup remains active.
+// CreateStarted tells the independent watchdog a Docker create request is about
+// to be issued: cleanup stays active until CreateFinished, because the parent's
+// absence alone cannot prove the daemon rejected the request.
 func (lease *Lease) CreateStarted() error {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
@@ -644,9 +644,9 @@ func (docker *Docker) cleanupCodexWatchdog(name string, createInFlight bool) err
 		if err != nil || !absent {
 			return errors.New("watchdog could not confirm Codex volume absence")
 		}
-		// The volume is the topology's first Docker side effect. Observing its
-		// owned label and then confirming its removal proves the pending create
-		// sequence was accepted and has been fenced by cleanup.
+		// The volume is the topology's first Docker side effect, so confirming its
+		// owned label and then its removal proves the pending create was accepted
+		// and has been fenced by cleanup.
 		createInFlight = false
 		continue
 	}

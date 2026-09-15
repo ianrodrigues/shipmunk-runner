@@ -1,5 +1,3 @@
-// Package profile contains policy for trusted native profile clients. It does
-// not manage profile storage, containers, or control-plane operations.
 package profile
 
 import (

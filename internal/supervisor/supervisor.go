@@ -54,12 +54,10 @@ type Process interface {
 	Wait(context.Context) (int, []byte, error)
 }
 
-// Name reserves a stable identity without creating anything. The supervisor
-// journals this name before signaling CreateStarted and calling Create. A
-// successful Create returns an immutable full container ID; CreateFinished must
-// acknowledge that ID before it is promoted into the journal. ErrCreateUncertain
-// leaves the watchdog phase and name reservation pending. A fresh supervisor
-// cannot prove a name-only reservation is absent and blocks for manual recovery.
+// Sandbox reserves a stable name before Create, whose immutable container ID
+// CreateFinished must acknowledge before journal promotion. ErrCreateUncertain
+// leaves the reservation pending, and a fresh supervisor blocks for manual
+// recovery since it cannot prove a name-only reservation is absent.
 type Sandbox interface {
 	Name(protocol.Claim) (string, error)
 	Create(context.Context, protocol.Claim, map[string]any, string) (Process, error)
@@ -79,10 +77,9 @@ type Watchdog interface {
 	Arm(string, time.Time, time.Time) (WatchdogLease, error)
 }
 
-// Executor owns a composite native execution boundary. Execute must return only
-// bounded, normalized output. Cleanup must reconcile every resource it may have
-// created, including resources left by a partially completed Execute call, and
-// release reserved capacity only after that reconciliation succeeds.
+// Executor owns a composite native execution boundary: Execute returns only
+// bounded, normalized output, and Cleanup must reconcile every resource a
+// partial Execute may have created before releasing reserved capacity.
 type Executor interface {
 	Execute(context.Context, protocol.Claim, map[string]any, string) (Execution, error)
 	Cleanup(context.Context, protocol.Claim) error
