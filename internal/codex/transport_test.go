@@ -302,7 +302,7 @@ func transportFixture(t *testing.T, docker dockerCommand, review ...bool) *Docke
 	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("original\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	baseline := ""
+	baseline, baselineSHA, headSHA := "", "", ""
 	if len(review) > 0 && review[0] {
 		baseline = filepath.Join(root, "baseline")
 		if err := os.Mkdir(baseline, 0700); err != nil {
@@ -311,8 +311,9 @@ func transportFixture(t *testing.T, docker dockerCommand, review ...bool) *Docke
 		if err := os.WriteFile(filepath.Join(baseline, "base.txt"), []byte("base\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
+		baselineSHA, headSHA = strings.Repeat("a", 40), strings.Repeat("b", 40)
 	}
-	transport, err := newDockerTransport(TransportConfig{Name: testTransportName, ProfileHome: profile, Source: source, Baseline: baseline, NativeImage: "native:pinned", RepositoryImage: "repo:pinned", MaxCommands: 2}, docker)
+	transport, err := newDockerTransport(TransportConfig{Name: testTransportName, ProfileHome: profile, Source: source, Baseline: baseline, BaselineSHA: baselineSHA, HeadSHA: headSHA, NativeImage: "native:pinned", RepositoryImage: "repo:pinned", MaxCommands: 2}, docker)
 	if err != nil {
 		t.Fatal(err)
 	}

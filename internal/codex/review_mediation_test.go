@@ -31,7 +31,7 @@ func reviewMediatorFixture(t *testing.T, maxRequests int, setup func(baseline, h
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = headHandle.Close() })
-	mediator, err := NewReviewMediator(7, maxRequests, head, headHandle, baseline, baselineHandle)
+	mediator, err := NewReviewMediator(7, maxRequests, head, headHandle, baseline, baselineHandle, sampleHeadSHA, sampleBaselineSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +198,38 @@ func TestReviewMediatorIsolatesSnapshotsFromEachOther(t *testing.T) {
 		if response.OK != test.wantOK {
 			t.Fatalf("snapshot=%s path=%s ok=%t want=%t output=%s", test.snapshot, test.path, response.OK, test.wantOK, response.Output)
 		}
+	}
+}
+
+func TestReviewMediatorResponsesCarrySnapshotSHA(t *testing.T) {
+	mediator := reviewMediatorFixture(t, 5, func(baseline, head string) {
+		writeFile(t, baseline, "file.txt", "base\n", 0644)
+		writeFile(t, head, "file.txt", "head\n", 0644)
+	})
+	for id, test := range []struct {
+		op, snapshot string
+		want         string
+	}{
+		{"review_list", "baseline", sampleBaselineSHA},
+		{"review_list", "workspace", sampleHeadSHA},
+		{"review_read", "baseline", sampleBaselineSHA},
+		{"review_read", "workspace", sampleHeadSHA},
+	} {
+		var request string
+		if test.op == "review_list" {
+			request = fmt.Sprintf(`{"fence":7,"id":%d,"op":"review_list","snapshot":%q,"path":"","offset":0}`, id+1, test.snapshot)
+		} else {
+			request = fmt.Sprintf(`{"fence":7,"id":%d,"op":"review_read","snapshot":%q,"path":"file.txt","start_line":1,"line_count":10}`, id+1, test.snapshot)
+		}
+		response := handleReviewJSON(t, mediator, request)
+		if !response.OK || response.SnapshotSHA != test.want {
+			t.Fatalf("%s %s: snapshot_sha=%q want=%q ok=%t", test.op, test.snapshot, response.SnapshotSHA, test.want, response.OK)
+		}
+	}
+
+	search := handleReviewJSON(t, mediator, `{"fence":7,"id":5,"op":"review_search","snapshot":"workspace","path":"","query":"head"}`)
+	if search.SnapshotSHA != "" {
+		t.Fatalf("review_search unexpectedly carried snapshot_sha: %q", search.SnapshotSHA)
 	}
 }
 

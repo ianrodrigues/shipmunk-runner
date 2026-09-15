@@ -37,6 +37,7 @@ var transportNamePattern = regexp.MustCompile(`^shipmunk-codex-[0-7][0-9a-hjkmnp
 // resolved to immutable IDs before any container is created.
 type TransportConfig struct {
 	Name, ProfileHome, Source, Baseline, NativeImage, RepositoryImage string
+	BaselineSHA, HeadSHA                                              string
 	DockerExecutable                                                  string
 	MaxCommands                                                       int
 	CommandTimeout                                                    time.Duration
@@ -212,7 +213,7 @@ func newDockerTransport(cfg TransportConfig, docker dockerCommand) (*DockerTrans
 	}
 	t := &DockerTransport{cfg: cfg, docker: docker, bridge: bridge, workspaceVolume: cfg.Name + "-workspace", fence: fence, profileHandle: handles[0], sourceHandle: handles[1], baselineHandle: handles[2]}
 	if cfg.Baseline != "" {
-		reviewMediator, err := NewReviewMediator(fence, cfg.MaxCommands, cfg.Source, handles[1], cfg.Baseline, handles[2])
+		reviewMediator, err := NewReviewMediator(fence, cfg.MaxCommands, cfg.Source, handles[1], cfg.Baseline, handles[2], cfg.HeadSHA, cfg.BaselineSHA)
 		if err != nil {
 			closeHandles()
 			_ = os.RemoveAll(bridge)

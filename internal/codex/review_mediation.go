@@ -50,6 +50,7 @@ type ReviewMediator struct {
 
 	headRoot, baselineRoot     string
 	headHandle, baselineHandle *os.File
+	headSHA, baselineSHA       string
 
 	loadOnce sync.Once
 	loadErr  error
@@ -66,12 +67,14 @@ type ReviewMediator struct {
 }
 
 // NewReviewMediator binds one attempt's fence and request budget to the two
-// pinned snapshot directories already opened by the transport.
-func NewReviewMediator(fence int64, maxRequests int, headRoot string, headHandle *os.File, baselineRoot string, baselineHandle *os.File) (*ReviewMediator, error) {
-	if fence < 1 || fence > protocol.MaxSafeInteger || maxRequests < 1 || headRoot == "" || headHandle == nil || baselineRoot == "" || baselineHandle == nil {
+// pinned snapshot directories already opened by the transport. headSHA and
+// baselineSHA are the real commit identities so review_list/review_read
+// responses can carry snapshot_sha and the model can cite them verbatim.
+func NewReviewMediator(fence int64, maxRequests int, headRoot string, headHandle *os.File, baselineRoot string, baselineHandle *os.File, headSHA, baselineSHA string) (*ReviewMediator, error) {
+	if fence < 1 || fence > protocol.MaxSafeInteger || maxRequests < 1 || headRoot == "" || headHandle == nil || baselineRoot == "" || baselineHandle == nil || !fullSHAPattern.MatchString(headSHA) || !fullSHAPattern.MatchString(baselineSHA) {
 		return nil, errors.New("review mediator configuration is invalid")
 	}
-	return &ReviewMediator{fence: fence, remaining: maxRequests, headRoot: headRoot, headHandle: headHandle, baselineRoot: baselineRoot, baselineHandle: baselineHandle}, nil
+	return &ReviewMediator{fence: fence, remaining: maxRequests, headRoot: headRoot, headHandle: headHandle, baselineRoot: baselineRoot, baselineHandle: baselineHandle, headSHA: headSHA, baselineSHA: baselineSHA}, nil
 }
 
 // Seal permanently rejects new review requests once the attempt is winding down.
@@ -135,7 +138,11 @@ func (m *ReviewMediator) Handle(ctx context.Context, raw []byte) ([]byte, error)
 	}
 
 	output, truncated, ok := m.execute(request)
-	return encodeReviewResponse(m.fence, request.ID, ok, output, truncated)
+	snapshotSHA := ""
+	if ok && (request.Op == "review_list" || request.Op == "review_read") {
+		snapshotSHA = m.snapshotSHAByName(request.Snapshot)
+	}
+	return encodeReviewResponse(m.fence, request.ID, ok, output, truncated, snapshotSHA)
 }
 
 func (m *ReviewMediator) execute(request reviewRequest) (output string, truncated, ok bool) {
@@ -158,6 +165,13 @@ func (m *ReviewMediator) snapshotByName(name string) map[string]fileState {
 		return m.baseline
 	}
 	return m.head
+}
+
+func (m *ReviewMediator) snapshotSHAByName(name string) string {
+	if name == "baseline" {
+		return m.baselineSHA
+	}
+	return m.headSHA
 }
 
 func (m *ReviewMediator) list(snapshotName, dir string, offset int64) (string, bool, bool) {
@@ -679,17 +693,18 @@ func encodeFencedReviewRequest(fence int64, request reviewRequest) ([]byte, erro
 }
 
 type reviewResponse struct {
-	Fence     int64  `json:"fence"`
-	ID        int64  `json:"id"`
-	OK        bool   `json:"ok"`
-	Output    string `json:"output"`
-	Truncated bool   `json:"truncated"`
+	Fence       int64  `json:"fence"`
+	ID          int64  `json:"id"`
+	OK          bool   `json:"ok"`
+	Output      string `json:"output"`
+	Truncated   bool   `json:"truncated"`
+	SnapshotSHA string `json:"snapshot_sha,omitempty"`
 }
 
 // reviewResponseOverhead generously bounds the encoded size of every
-// reviewResponse field except Output: braces, field names, punctuation and
-// the widest fence/id/bool renderings.
-const reviewResponseOverhead = 128
+// reviewResponse field except Output: braces, field names, punctuation, the
+// widest fence/id/bool renderings and one optional 40-character snapshot_sha.
+const reviewResponseOverhead = 192
 
 const jsonTruncationMarker = "\n... [truncated: response exceeds the frame limit]"
 
@@ -698,7 +713,7 @@ const jsonTruncationMarker = "\n... [truncated: response exceeds the frame limit
 // control characters can expand well past its raw byte count once escaped,
 // and budgeting on raw bytes alone lets that content silently fail closed
 // with no output at all instead of a bounded, truncated one.
-func encodeReviewResponse(fence, id int64, ok bool, output string, truncated bool) ([]byte, error) {
+func encodeReviewResponse(fence, id int64, ok bool, output string, truncated bool, snapshotSHA string) ([]byte, error) {
 	budget := MaxReviewResponseBytes - reviewResponseOverhead
 	if budget < 0 {
 		budget = 0
@@ -706,7 +721,7 @@ func encodeReviewResponse(fence, id int64, ok bool, output string, truncated boo
 	if cut, didTruncate := truncateForJSONBudget(output, budget); didTruncate {
 		output, truncated = cut, true
 	}
-	response := reviewResponse{Fence: fence, ID: id, OK: ok, Output: output, Truncated: truncated}
+	response := reviewResponse{Fence: fence, ID: id, OK: ok, Output: output, Truncated: truncated, SnapshotSHA: snapshotSHA}
 	encoded, err := marshalReviewResponse(response)
 	if err != nil || len(encoded) > MaxReviewResponseBytes {
 		response = reviewResponse{Fence: fence, ID: id, OK: false, Output: "review response exceeds its frame limit."}

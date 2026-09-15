@@ -1,0 +1,44 @@
+{
+  "contract": "result",
+  "document": {
+    "protocol_version": "1.0",
+    "run_id": "01k4w000000000000000000001",
+    "attempt_id": "01k4w000000000000000000002",
+    "fence": 1,
+    "summary": "Review assessment.",
+    "outcome": "findings",
+    "charter_version": "1",
+    "findings": [
+      {
+        "category": "correctness",
+        "severity": "high",
+        "relation": "introduced",
+        "scenario": "An empty rule set reaches the matcher and is treated as allowing every path.",
+        "consequence": "Inline comments are published outside the frozen review scope.",
+        "action": "Refuse an empty rule set before matching.",
+        "explanation": "The new early return turns an empty rule set into an unconditional allow.",
+        "evidence": [
+          {
+            "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "path": "app/Support/ReviewPathRules.php",
+            "line_start": 41,
+            "line_end": 30
+          }
+        ]
+      }
+    ],
+    "coverage": {
+      "files": [
+        {
+          "path": "app/Support/ReviewPathRules.php",
+          "status": "reviewed"
+        }
+      ],
+      "context_gaps": []
+    },
+    "verification_state": "none",
+    "patch_artifact": null,
+    "tests": [],
+    "usage": null
+  }
+}

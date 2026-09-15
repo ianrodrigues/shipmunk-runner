@@ -17,12 +17,35 @@ const maxSchemaBytes = 128 * 1024
 const safeRelativePathPattern = `^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*\\)[^\x00-\x1f]+$`
 
 var supportedSchemaKeywords = map[string]struct{}{
-	"$schema": {}, "$id": {},
+	"$schema": {}, "$id": {}, "$ref": {}, "$defs": {},
 	"type": {}, "const": {}, "enum": {},
 	"anyOf": {}, "allOf": {}, "if": {}, "then": {}, "else": {},
 	"properties": {}, "required": {}, "additionalProperties": {}, "items": {},
 	"minLength": {}, "maxLength": {}, "pattern": {}, "format": {},
 	"minimum": {}, "maximum": {}, "minItems": {}, "maxItems": {},
+}
+
+// refPrefix is the only $ref shape resolved: a same-document pointer into the
+// root schema's own $defs. Anything else is rejected, not ignored.
+const refPrefix = "#/$defs/"
+
+func resolveRef(root map[string]any, ref string) (any, error) {
+	if root == nil || !strings.HasPrefix(ref, refPrefix) {
+		return nil, fmt.Errorf("unsupported $ref target %q", ref)
+	}
+	name := ref[len(refPrefix):]
+	if name == "" || strings.ContainsAny(name, "/") {
+		return nil, fmt.Errorf("unsupported $ref target %q", ref)
+	}
+	defs, ok := root["$defs"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("schema has no $defs for %q", ref)
+	}
+	target, exists := defs[name]
+	if !exists {
+		return nil, fmt.Errorf("unknown $ref target %q", ref)
+	}
+	return target, nil
 }
 
 // Validate checks a raw protocol document against its embedded contract schema.
@@ -63,17 +86,60 @@ func decodeValidated(contract string, schemaRaw, raw []byte) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("protocol contract schema must be an object")
 	}
-	if err := validateSchema(schema, "$schema"); err != nil {
+	if err := validateSchema(schema, "$schema", schema); err != nil {
 		return nil, fmt.Errorf("unsupported protocol contract schema: %w", err)
 	}
 	document, err := Decode(raw, limit)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateNode(schema, document, "$", 0); err != nil {
+	if err := validateNode(schema, document, "$", 0, schema); err != nil {
 		return nil, err
 	}
+	if contract == "result" {
+		if err := assertEvidenceRanges(document); err != nil {
+			return nil, err
+		}
+	}
 	return document, nil
+}
+
+// assertEvidenceRanges rejects line_end below line_start: JSON Schema can't
+// compare sibling properties, so this mirrors the server's ProtocolValidator.
+func assertEvidenceRanges(document any) error {
+	root, ok := document.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var citing []any
+	if findings, ok := root["findings"].([]any); ok {
+		citing = append(citing, findings...)
+	}
+	if questions, ok := root["questions"].([]any); ok {
+		citing = append(citing, questions...)
+	}
+	for _, item := range citing {
+		itemObject, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		evidence, ok := itemObject["evidence"].([]any)
+		if !ok {
+			continue
+		}
+		for _, entry := range evidence {
+			evidenceObject, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			start, startErr := numberValue(evidenceObject["line_start"])
+			end, endErr := numberValue(evidenceObject["line_end"])
+			if startErr == nil && endErr == nil && end.Cmp(start) < 0 {
+				return fmt.Errorf("result evidence line range is invalid")
+			}
+		}
+	}
+	return nil
 }
 
 func documentLimit(contract string) (int, error) {
@@ -91,7 +157,7 @@ func documentLimit(contract string) (int, error) {
 	}
 }
 
-func validateSchema(node any, path string) error {
+func validateSchema(node any, path string, root map[string]any) error {
 	switch schema := node.(type) {
 	case bool:
 		return nil
@@ -99,6 +165,26 @@ func validateSchema(node any, path string) error {
 		for keyword := range schema {
 			if _, supported := supportedSchemaKeywords[keyword]; !supported {
 				return fmt.Errorf("%s uses an unsupported keyword", path)
+			}
+		}
+		if refValue, exists := schema["$ref"]; exists {
+			ref, ok := refValue.(string)
+			if !ok {
+				return fmt.Errorf("%s has an invalid $ref keyword", path)
+			}
+			if _, err := resolveRef(root, ref); err != nil {
+				return fmt.Errorf("%s has an invalid $ref keyword: %w", path, err)
+			}
+		}
+		if defsValue, exists := schema["$defs"]; exists {
+			defs, ok := defsValue.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s has an invalid $defs keyword", path)
+			}
+			for name, def := range defs {
+				if err := validateSchema(def, path+".$defs."+name, root); err != nil {
+					return err
+				}
 			}
 		}
 		for _, keyword := range []string{"$schema", "$id", "pattern", "format"} {
@@ -150,7 +236,7 @@ func validateSchema(node any, path string) error {
 					return fmt.Errorf("%s has an invalid %s keyword", path, keyword)
 				}
 				for _, alternative := range alternatives {
-					if err := validateSchema(alternative, path+"."+keyword); err != nil {
+					if err := validateSchema(alternative, path+"."+keyword, root); err != nil {
 						return err
 					}
 				}
@@ -158,7 +244,7 @@ func validateSchema(node any, path string) error {
 		}
 		for _, keyword := range []string{"if", "then", "else", "items", "additionalProperties"} {
 			if value, exists := schema[keyword]; exists {
-				if err := validateSchema(value, path+"."+keyword); err != nil {
+				if err := validateSchema(value, path+"."+keyword, root); err != nil {
 					return err
 				}
 			}
@@ -169,7 +255,7 @@ func validateSchema(node any, path string) error {
 				return fmt.Errorf("%s has an invalid properties keyword", path)
 			}
 			for name, property := range properties {
-				if err := validateSchema(property, path+".properties."+name); err != nil {
+				if err := validateSchema(property, path+".properties."+name, root); err != nil {
 					return err
 				}
 			}
@@ -229,7 +315,7 @@ func validateSchemaTypes(value any, path string) error {
 	return nil
 }
 
-func validateNode(node any, value any, path string, depth int) error {
+func validateNode(node any, value any, path string, depth int, root map[string]any) error {
 	if depth > MaxJSONDepth {
 		return fmt.Errorf("%s exceeds the protocol schema depth limit", path)
 	}
@@ -240,6 +326,15 @@ func validateNode(node any, value any, path string, depth int) error {
 		}
 		return fmt.Errorf("%s is not allowed", path)
 	case map[string]any:
+		if ref, ok := schema["$ref"].(string); ok {
+			resolved, err := resolveRef(root, ref)
+			if err != nil {
+				return fmt.Errorf("%s has an unresolved $ref: %w", path, err)
+			}
+			if err := validateNode(resolved, value, path, depth+1, root); err != nil {
+				return err
+			}
+		}
 		if constant, ok := schema["const"]; ok && !sameJSON(constant, value) {
 			return fmt.Errorf("%s does not match its required value", path)
 		}
@@ -261,7 +356,7 @@ func validateNode(node any, value any, path string, depth int) error {
 		if alternatives, ok := schema["anyOf"].([]any); ok {
 			matched := false
 			for _, alternative := range alternatives {
-				if validateNode(alternative, value, path, depth+1) == nil {
+				if validateNode(alternative, value, path, depth+1, root) == nil {
 					matched = true
 					break
 				}
@@ -272,18 +367,18 @@ func validateNode(node any, value any, path string, depth int) error {
 		}
 		if alternatives, ok := schema["allOf"].([]any); ok {
 			for _, alternative := range alternatives {
-				if err := validateNode(alternative, value, path, depth+1); err != nil {
+				if err := validateNode(alternative, value, path, depth+1, root); err != nil {
 					return err
 				}
 			}
 		}
 		if condition, ok := schema["if"]; ok {
 			selected := "then"
-			if validateNode(condition, value, path, depth+1) != nil {
+			if validateNode(condition, value, path, depth+1, root) != nil {
 				selected = "else"
 			}
 			if branch, exists := schema[selected]; exists {
-				if err := validateNode(branch, value, path, depth+1); err != nil {
+				if err := validateNode(branch, value, path, depth+1, root); err != nil {
 					return err
 				}
 			}
@@ -294,10 +389,10 @@ func validateNode(node any, value any, path string, depth int) error {
 		if err := numberRules(schema, value, path); err != nil {
 			return err
 		}
-		if err := arrayRules(schema, value, path, depth); err != nil {
+		if err := arrayRules(schema, value, path, depth, root); err != nil {
 			return err
 		}
-		if err := objectRules(schema, value, path, depth); err != nil {
+		if err := objectRules(schema, value, path, depth, root); err != nil {
 			return err
 		}
 		return nil
@@ -405,7 +500,7 @@ func numberRules(schema map[string]any, value any, path string) error {
 	return nil
 }
 
-func arrayRules(schema map[string]any, value any, path string, depth int) error {
+func arrayRules(schema map[string]any, value any, path string, depth int, root map[string]any) error {
 	array, ok := value.([]any)
 	if !ok {
 		return nil
@@ -418,7 +513,7 @@ func arrayRules(schema map[string]any, value any, path string, depth int) error 
 	}
 	if items, ok := schema["items"]; ok {
 		for index, item := range array {
-			if err := validateNode(items, item, fmt.Sprintf("%s[%d]", path, index), depth+1); err != nil {
+			if err := validateNode(items, item, fmt.Sprintf("%s[%d]", path, index), depth+1, root); err != nil {
 				return err
 			}
 		}
@@ -426,7 +521,7 @@ func arrayRules(schema map[string]any, value any, path string, depth int) error 
 	return nil
 }
 
-func objectRules(schema map[string]any, value any, path string, depth int) error {
+func objectRules(schema map[string]any, value any, path string, depth int, root map[string]any) error {
 	data, ok := value.(map[string]any)
 	if !ok {
 		return nil
@@ -443,7 +538,7 @@ func objectRules(schema map[string]any, value any, path string, depth int) error
 	additional, hasAdditional := schema["additionalProperties"]
 	for name, field := range data {
 		if propertySchema, known := properties[name]; known {
-			if err := validateNode(propertySchema, field, path+"."+name, depth+1); err != nil {
+			if err := validateNode(propertySchema, field, path+"."+name, depth+1, root); err != nil {
 				return err
 			}
 			continue
@@ -457,7 +552,7 @@ func objectRules(schema map[string]any, value any, path string, depth int) error
 		case true:
 			continue
 		default:
-			if err := validateNode(additional, field, path, depth+1); err != nil {
+			if err := validateNode(additional, field, path, depth+1, root); err != nil {
 				return err
 			}
 		}

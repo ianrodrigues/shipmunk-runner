@@ -92,7 +92,7 @@ async function runNative(
             const schema = body.text.format.schema;
             assert.equal(schema.properties.outcome.type, 'string');
             assert.equal(
-                schema.properties.findings.items.properties.side.type,
+                schema.properties.findings.items.properties.anchor.properties.side.type,
                 'string',
             );
             assert.equal(
@@ -105,7 +105,7 @@ async function runNative(
             );
             assert.equal(
                 Object.hasOwn(
-                    schema.properties.findings.items.properties.path,
+                    schema.properties.findings.items.properties.evidence.items.properties.path,
                     'pattern',
                 ),
                 false,

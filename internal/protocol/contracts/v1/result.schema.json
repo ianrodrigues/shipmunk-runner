@@ -37,26 +37,29 @@
         "needs_input"
       ]
     },
+    "charter_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8,
+      "pattern": "^[0-9]+$",
+      "enum": [
+        "1"
+      ]
+    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\x00-\\x1f]+$"
-          },
-          "line": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
-          },
-          "side": {
+          "category": {
             "enum": [
-              "LEFT",
-              "RIGHT"
+              "correctness",
+              "security",
+              "contract",
+              "maintenance",
+              "test_adequacy",
+              "performance",
+              "other"
             ]
           },
           "severity": {
@@ -68,22 +71,74 @@
               "critical"
             ]
           },
+          "relation": {
+            "enum": [
+              "introduced",
+              "modified",
+              "preexisting"
+            ]
+          },
+          "scenario": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "consequence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
           "explanation": {
             "type": "string",
             "minLength": 1,
             "maxLength": 8192
           },
           "evidence": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 8192
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/$defs/evidence"
+            }
+          },
+          "anchor": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/repository_path"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "side": {
+                "enum": [
+                  "LEFT",
+                  "RIGHT"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "line",
+              "side"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "path",
-          "line",
-          "side",
+          "category",
           "severity",
+          "relation",
+          "scenario",
+          "consequence",
+          "action",
           "explanation",
           "evidence"
         ],
@@ -91,29 +146,124 @@
       },
       "maxItems": 100
     },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "why_material": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        },
+        "required": [
+          "topic",
+          "question",
+          "why_material"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 20
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/repository_path"
+              },
+              "status": {
+                "enum": [
+                  "reviewed",
+                  "unreviewed"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "path",
+              "status"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "unreviewed"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "reason"
+                  ]
+                },
+                "else": {
+                  "properties": {
+                    "reason": false
+                  }
+                }
+              }
+            ]
+          },
+          "maxItems": 300
+        },
+        "context_gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "files",
+        "context_gaps"
+      ],
+      "additionalProperties": false
+    },
+    "verification_state": {
+      "enum": [
+        "none"
+      ]
+    },
     "patch_artifact": {
       "anyOf": [
         {
-          "type": "object",
-          "properties": {
-            "artifact_id": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 26,
-              "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
-            },
-            "sha256": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 64,
-              "pattern": "^[a-f0-9]{64}$"
-            }
-          },
-          "required": [
-            "artifact_id",
-            "sha256"
-          ],
-          "additionalProperties": false
+          "$ref": "#/$defs/artifact_reference"
         },
         {
           "type": "null"
@@ -159,40 +309,13 @@
           "type": "object",
           "properties": {
             "input_tokens": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/token_count"
             },
             "cached_input_tokens": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/token_count"
             },
             "output_tokens": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/token_count"
             }
           },
           "required": [
@@ -271,29 +394,126 @@
       "then": {
         "properties": {
           "patch_artifact": {
-            "type": "object",
-            "properties": {
-              "artifact_id": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 26,
-                "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
-              },
-              "sha256": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64,
-                "pattern": "^[a-f0-9]{64}$"
-              }
-            },
-            "required": [
-              "artifact_id",
-              "sha256"
-            ],
-            "additionalProperties": false
+            "$ref": "#/$defs/artifact_reference"
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "findings",
+              "no_findings"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "charter_version",
+          "coverage",
+          "verification_state"
+        ]
+      },
+      "else": {
+        "properties": {
+          "charter_version": false,
+          "questions": false,
+          "verification_state": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "changes_proposed",
+              "needs_input"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "coverage": false
+        }
+      }
     }
-  ]
+  ],
+  "$defs": {
+    "repository_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\x00-\\x1f]+$"
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "type": "string",
+          "minLength": 40,
+          "maxLength": 40,
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "line_start": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "line_end": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "snapshot",
+        "path",
+        "line_start",
+        "line_end"
+      ],
+      "additionalProperties": false
+    },
+    "artifact_reference": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 26,
+          "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "token_count": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
 }

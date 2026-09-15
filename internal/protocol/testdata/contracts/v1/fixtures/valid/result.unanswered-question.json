@@ -1,0 +1,42 @@
+{
+  "protocol_version": "1.0",
+  "run_id": "01k4w000000000000000000001",
+  "attempt_id": "01k4w000000000000000000002",
+  "fence": 1,
+  "summary": "Nothing reachable was found in the changed code. One requirement the change depends on lives outside this repository and could not be read, so it is recorded as a question rather than a defect.",
+  "outcome": "no_findings",
+  "charter_version": "1",
+  "findings": [],
+  "questions": [
+    {
+      "topic": "External path-rule requirement",
+      "question": "Does the operator policy still require every rule set to match at least one pattern, or was that relaxed when the policy document moved out of this repository?",
+      "why_material": "The changed matcher fails closed on that assumption. If the external policy relaxed it, the new code rejects configurations the operator expects to work.",
+      "evidence": [
+        {
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "path": "app/Support/ReviewPathRules.php",
+          "line_start": 30,
+          "line_end": 41
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "files": [
+      {
+        "path": "app/Support/ReviewPathRules.php",
+        "status": "reviewed"
+      },
+      {
+        "path": "app/Services/GitHub/ReviewFindings.php",
+        "status": "reviewed"
+      }
+    ],
+    "context_gaps": []
+  },
+  "verification_state": "none",
+  "patch_artifact": null,
+  "tests": [],
+  "usage": null
+}

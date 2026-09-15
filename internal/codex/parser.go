@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
@@ -15,7 +16,23 @@ const (
 	MaxOutputBytes = 2 * 1024 * 1024
 	MaxLineBytes   = 64 * 1024
 	MaxEvents      = 10_000
+
+	// Mirror internal/protocol/contracts/v1/result.schema.json exactly.
+	MaxFindings             = 100
+	MinFindingEvidence      = 1
+	MaxFindingEvidence      = 5
+	MaxQuestions            = 20
+	MaxQuestionEvidence     = 5
+	MaxCoverageFiles        = 300
+	MaxCoverageContextGaps  = 20
+	MaxMaterialTextBytes    = 2000
+	MaxCoverageReasonBytes  = 500
+	MaxQuestionTopicBytes   = 200
+	MaxCharterVersionBytes  = 8
+	MaxVerificationStateLen = 16
 )
+
+var evidenceSnapshotPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
 var (
 	ErrMalformedOutput = errors.New("malformed Codex output")
@@ -49,13 +66,51 @@ type Event struct {
 	ItemType string
 }
 
+// EvidenceRef.Snapshot is the real 40-character SHA of one of the attempt's
+// two snapshots, never the "baseline"/"workspace" label review_* tools use.
+type EvidenceRef struct {
+	Snapshot  string
+	Path      string
+	LineStart int64
+	LineEnd   int64
+}
+
+// Anchor is an optional, presentation-only pointer to one line. It is never
+// used in place of Evidence for the checks that matter.
+type Anchor struct {
+	Path string
+	Line int64
+	Side string
+}
+
 type Finding struct {
-	Path        string
-	Line        int64
-	Side        string
+	Category    string
 	Severity    string
+	Relation    string
+	Scenario    string
+	Consequence string
+	Action      string
 	Explanation string
-	Evidence    string
+	Evidence    []EvidenceRef
+	Anchor      *Anchor
+}
+
+type Question struct {
+	Topic       string
+	Question    string
+	WhyMaterial string
+	Evidence    []EvidenceRef
+}
+
+type CoverageFile struct {
+	Path   string
+	Status string
+	Reason string
+}
+
+type Coverage struct {
+	Files       []CoverageFile
+	ContextGaps []string
 }
 
 type Test struct {
@@ -64,11 +119,18 @@ type Test struct {
 	Summary string
 }
 
+// Result mirrors contracts/v1/result.schema.json minus the envelope fields
+// normalizeExecution adds. CharterVersion, Coverage, VerificationState and
+// Questions are populated only as Outcome's allOf conditionals permit.
 type Result struct {
-	Summary  string
-	Outcome  string
-	Findings []Finding
-	Tests    []Test
+	Summary           string
+	Outcome           string
+	CharterVersion    string
+	Findings          []Finding
+	Questions         []Question
+	Coverage          *Coverage
+	VerificationState string
+	Tests             []Test
 }
 
 type Usage struct {
@@ -324,6 +386,10 @@ func parseUsage(value any) (*Usage, error) {
 	return &Usage{InputTokens: input, CachedInputTokens: cached, OutputTokens: output}, nil
 }
 
+// parseResult's allowed-keys-by-outcome mirrors result.schema.json's allOf
+// conditionals: findings/no_findings require charter_version, coverage and
+// verification_state and permit questions; incomplete permits coverage alone;
+// every other outcome permits none of the four.
 func parseResult(raw []byte) (Result, error) {
 	value, err := protocol.Decode(raw, MaxLineBytes)
 	if err != nil {
@@ -334,19 +400,26 @@ func parseResult(raw []byte) (Result, error) {
 		return Result{}, ErrInvalidResult
 	}
 	allowed := map[string]bool{"summary": true, "outcome": true, "findings": true, "tests": true}
-	for key := range object {
-		if !allowed[key] {
-			return Result{}, ErrInvalidResult
-		}
-	}
 	summary, summaryOK := boundedString(object["summary"], 16_384)
 	outcome, outcomeOK := boundedString(object["outcome"], 64)
 	if !summaryOK || !outcomeOK || (outcome != "findings" && outcome != "no_findings" && outcome != "changes_proposed" && outcome != "incomplete" && outcome != "needs_input") {
 		return Result{}, ErrInvalidResult
 	}
+	extended := outcome == "findings" || outcome == "no_findings"
+	switch {
+	case extended:
+		allowed["charter_version"], allowed["coverage"], allowed["verification_state"], allowed["questions"] = true, true, true, true
+	case outcome == "incomplete":
+		allowed["coverage"] = true
+	}
+	for key := range object {
+		if !allowed[key] {
+			return Result{}, ErrInvalidResult
+		}
+	}
 	findingsRaw, findingsOK := object["findings"].([]any)
 	testsRaw, testsOK := object["tests"].([]any)
-	if !findingsOK || !testsOK || len(findingsRaw) > 100 || len(testsRaw) > 100 || (outcome == "findings" && len(findingsRaw) == 0) || (outcome == "no_findings" && len(findingsRaw) != 0) {
+	if !findingsOK || !testsOK || len(findingsRaw) > MaxFindings || len(testsRaw) > 100 || (outcome == "findings" && len(findingsRaw) == 0) || (outcome == "no_findings" && len(findingsRaw) != 0) {
 		return Result{}, ErrInvalidResult
 	}
 	result := Result{Summary: summary, Outcome: outcome, Findings: make([]Finding, 0, len(findingsRaw)), Tests: make([]Test, 0, len(testsRaw))}
@@ -364,24 +437,245 @@ func parseResult(raw []byte) (Result, error) {
 		}
 		result.Tests = append(result.Tests, test)
 	}
+
+	if extended {
+		charterVersion, ok := boundedString(object["charter_version"], MaxCharterVersionBytes)
+		if !ok {
+			return Result{}, ErrInvalidResult
+		}
+		result.CharterVersion = charterVersion
+		verificationState, ok := boundedString(object["verification_state"], MaxVerificationStateLen)
+		if !ok || verificationState != "none" {
+			return Result{}, ErrInvalidResult
+		}
+		result.VerificationState = verificationState
+		coverage, ok := parseCoverage(object["coverage"])
+		if !ok {
+			return Result{}, ErrInvalidResult
+		}
+		result.Coverage = &coverage
+		if rawQuestions, exists := object["questions"]; exists {
+			questionsRaw, ok := rawQuestions.([]any)
+			if !ok || len(questionsRaw) > MaxQuestions {
+				return Result{}, ErrInvalidResult
+			}
+			result.Questions = make([]Question, 0, len(questionsRaw))
+			for _, rawQuestion := range questionsRaw {
+				question, ok := parseQuestion(rawQuestion)
+				if !ok {
+					return Result{}, ErrInvalidResult
+				}
+				result.Questions = append(result.Questions, question)
+			}
+		}
+	} else if outcome == "incomplete" {
+		if rawCoverage, exists := object["coverage"]; exists {
+			coverage, ok := parseCoverage(rawCoverage)
+			if !ok {
+				return Result{}, ErrInvalidResult
+			}
+			result.Coverage = &coverage
+		}
+	}
 	return result, nil
 }
 
+// validRelativePath mirrors result.schema.json's $defs.repository_path pattern.
+func validRelativePath(name string) bool {
+	clean := path.Clean(name)
+	return !strings.Contains(name, "\\") && !containsC0(name) && clean == name && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/")
+}
+
 func parseFinding(value any) (Finding, bool) {
-	object, ok := exactObject(value, "path", "line", "side", "severity", "explanation", "evidence")
+	object, ok := value.(map[string]any)
 	if !ok {
 		return Finding{}, false
+	}
+	_, hasAnchor := object["anchor"]
+	required := []string{"category", "severity", "relation", "scenario", "consequence", "action", "explanation", "evidence"}
+	expected := len(required)
+	if hasAnchor {
+		expected++
+	}
+	if len(object) != expected {
+		return Finding{}, false
+	}
+	for _, key := range required {
+		if _, exists := object[key]; !exists {
+			return Finding{}, false
+		}
+	}
+	category, categoryOK := boundedString(object["category"], 32)
+	severity, severityOK := boundedString(object["severity"], 16)
+	relation, relationOK := boundedString(object["relation"], 16)
+	scenario, scenarioOK := boundedString(object["scenario"], MaxMaterialTextBytes)
+	consequence, consequenceOK := boundedString(object["consequence"], MaxMaterialTextBytes)
+	action, actionOK := boundedString(object["action"], MaxMaterialTextBytes)
+	explanation, explanationOK := boundedString(object["explanation"], 8192)
+	validCategory := categoryOK && oneOf(category, "correctness", "security", "contract", "maintenance", "test_adequacy", "performance", "other")
+	validSeverity := severityOK && oneOf(severity, "info", "low", "medium", "high", "critical")
+	validRelation := relationOK && oneOf(relation, "introduced", "modified", "preexisting")
+
+	evidenceRaw, evidenceOK := object["evidence"].([]any)
+	if !evidenceOK || len(evidenceRaw) < MinFindingEvidence || len(evidenceRaw) > MaxFindingEvidence {
+		return Finding{}, false
+	}
+	evidence := make([]EvidenceRef, 0, len(evidenceRaw))
+	for _, rawEvidence := range evidenceRaw {
+		ref, ok := parseEvidenceRef(rawEvidence)
+		if !ok {
+			return Finding{}, false
+		}
+		evidence = append(evidence, ref)
+	}
+
+	var anchor *Anchor
+	if hasAnchor {
+		parsed, ok := parseAnchor(object["anchor"])
+		if !ok {
+			return Finding{}, false
+		}
+		anchor = &parsed
+	}
+
+	valid := validCategory && validSeverity && validRelation && scenarioOK && consequenceOK && actionOK && explanationOK
+	return Finding{Category: category, Severity: severity, Relation: relation, Scenario: scenario, Consequence: consequence, Action: action, Explanation: explanation, Evidence: evidence, Anchor: anchor}, valid
+}
+
+func parseEvidenceRef(value any) (EvidenceRef, bool) {
+	object, ok := exactObject(value, "snapshot", "path", "line_start", "line_end")
+	if !ok {
+		return EvidenceRef{}, false
+	}
+	snapshot, snapshotOK := boundedString(object["snapshot"], 40)
+	name, nameOK := boundedString(object["path"], 1024)
+	lineStart, startOK := positiveInteger(object["line_start"])
+	lineEnd, endOK := positiveInteger(object["line_end"])
+	validSnapshot := snapshotOK && evidenceSnapshotPattern.MatchString(snapshot)
+	validPath := nameOK && validRelativePath(name)
+	validRange := startOK && endOK && lineEnd >= lineStart
+	return EvidenceRef{Snapshot: snapshot, Path: name, LineStart: lineStart, LineEnd: lineEnd}, validSnapshot && validPath && validRange
+}
+
+func parseAnchor(value any) (Anchor, bool) {
+	object, ok := exactObject(value, "path", "line", "side")
+	if !ok {
+		return Anchor{}, false
 	}
 	name, nameOK := boundedString(object["path"], 1024)
 	line, lineOK := positiveInteger(object["line"])
 	side, sideOK := boundedString(object["side"], 16)
-	severity, severityOK := boundedString(object["severity"], 16)
-	explanation, explanationOK := boundedString(object["explanation"], 8192)
-	evidence, evidenceOK := boundedString(object["evidence"], 8192)
-	clean := path.Clean(name)
-	validPath := nameOK && !strings.Contains(name, "\\") && !containsC0(name) && clean == name && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/")
-	validEnum := sideOK && (side == "LEFT" || side == "RIGHT") && severityOK && (severity == "info" || severity == "low" || severity == "medium" || severity == "high" || severity == "critical")
-	return Finding{Path: name, Line: line, Side: side, Severity: severity, Explanation: explanation, Evidence: evidence}, validPath && lineOK && validEnum && explanationOK && evidenceOK
+	validPath := nameOK && validRelativePath(name)
+	validSide := sideOK && (side == "LEFT" || side == "RIGHT")
+	return Anchor{Path: name, Line: line, Side: side}, validPath && lineOK && validSide
+}
+
+// parseQuestion requires an exact key set per evidence presence, which
+// structurally forbids any extra property such as an invented "severity".
+func parseQuestion(value any) (Question, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return Question{}, false
+	}
+	_, hasEvidence := object["evidence"]
+	expected := 3
+	if hasEvidence {
+		expected = 4
+	}
+	if len(object) != expected {
+		return Question{}, false
+	}
+	for _, key := range []string{"topic", "question", "why_material"} {
+		if _, exists := object[key]; !exists {
+			return Question{}, false
+		}
+	}
+	topic, topicOK := boundedString(object["topic"], MaxQuestionTopicBytes)
+	question, questionOK := boundedString(object["question"], MaxMaterialTextBytes)
+	why, whyOK := boundedString(object["why_material"], MaxMaterialTextBytes)
+	var evidence []EvidenceRef
+	if hasEvidence {
+		rawEvidence, ok := object["evidence"].([]any)
+		if !ok || len(rawEvidence) > MaxQuestionEvidence {
+			return Question{}, false
+		}
+		evidence = make([]EvidenceRef, 0, len(rawEvidence))
+		for _, entry := range rawEvidence {
+			ref, ok := parseEvidenceRef(entry)
+			if !ok {
+				return Question{}, false
+			}
+			evidence = append(evidence, ref)
+		}
+	}
+	return Question{Topic: topic, Question: question, WhyMaterial: why, Evidence: evidence}, topicOK && questionOK && whyOK
+}
+
+func parseCoverage(value any) (Coverage, bool) {
+	object, ok := exactObject(value, "files", "context_gaps")
+	if !ok {
+		return Coverage{}, false
+	}
+	filesRaw, filesOK := object["files"].([]any)
+	gapsRaw, gapsOK := object["context_gaps"].([]any)
+	if !filesOK || !gapsOK || len(filesRaw) > MaxCoverageFiles || len(gapsRaw) > MaxCoverageContextGaps {
+		return Coverage{}, false
+	}
+	coverage := Coverage{Files: make([]CoverageFile, 0, len(filesRaw)), ContextGaps: make([]string, 0, len(gapsRaw))}
+	for _, rawFile := range filesRaw {
+		file, ok := parseCoverageFile(rawFile)
+		if !ok {
+			return Coverage{}, false
+		}
+		coverage.Files = append(coverage.Files, file)
+	}
+	for _, rawGap := range gapsRaw {
+		gap, ok := boundedString(rawGap, MaxCoverageReasonBytes)
+		if !ok {
+			return Coverage{}, false
+		}
+		coverage.ContextGaps = append(coverage.ContextGaps, gap)
+	}
+	return coverage, true
+}
+
+// parseCoverageFile enforces the schema's conditional exactly: reason is
+// required when status is unreviewed and forbidden otherwise.
+func parseCoverageFile(value any) (CoverageFile, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return CoverageFile{}, false
+	}
+	name, nameOK := boundedString(object["path"], 1024)
+	status, statusOK := boundedString(object["status"], 16)
+	validStatus := statusOK && (status == "reviewed" || status == "unreviewed")
+	_, hasReason := object["reason"]
+	expected := 2
+	if hasReason {
+		expected = 3
+	}
+	if len(object) != expected || hasReason != (status == "unreviewed") {
+		return CoverageFile{}, false
+	}
+	var reason string
+	if hasReason {
+		text, ok := boundedString(object["reason"], MaxCoverageReasonBytes)
+		if !ok {
+			return CoverageFile{}, false
+		}
+		reason = text
+	}
+	validPath := nameOK && validRelativePath(name)
+	return CoverageFile{Path: name, Status: status, Reason: reason}, validPath && validStatus
+}
+
+func oneOf(value string, options ...string) bool {
+	for _, option := range options {
+		if value == option {
+			return true
+		}
+	}
+	return false
 }
 
 func parseTest(value any) (Test, bool) {

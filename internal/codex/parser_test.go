@@ -24,7 +24,46 @@ func quote(value string) string {
 	return string(encoded)
 }
 
-const validResult = `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[]}`
+const (
+	sampleBaselineSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sampleHeadSHA     = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+// finding, coverage and question builders below mirror
+// contracts/v1/result.schema.json exactly (internal/protocol/contracts/v1/result.schema.json),
+// minus the envelope fields normalizeExecution adds.
+
+func findingJSON(path string, lineStart, lineEnd int64) string {
+	return `{"category":"correctness","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` + evidenceJSON(sampleHeadSHA, path, lineStart, lineEnd) + `]}`
+}
+
+func evidenceJSON(snapshot, path string, lineStart, lineEnd int64) string {
+	raw, err := json.Marshal(map[string]any{"snapshot": snapshot, "path": path, "line_start": lineStart, "line_end": lineEnd})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func coverageJSON(path string) string {
+	raw, err := json.Marshal(map[string]any{"files": []any{map[string]any{"path": path, "status": "reviewed"}}, "context_gaps": []any{}})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+const findingPath = "internal/codex/parser.go"
+
+func noFindingsResult() string {
+	return `{"summary":"Done.","outcome":"no_findings","charter_version":"1","findings":[],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
+}
+
+func findingsResult() string {
+	return `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON(findingPath, 1, 2) + `],"coverage":` + coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
+}
+
+var validResult = noFindingsResult()
 
 func TestParseValidCompleteStream(t *testing.T) {
 	stream, err := Parse([]byte(validStream(validResult)), []byte("private provider diagnostics"))
@@ -33,6 +72,9 @@ func TestParseValidCompleteStream(t *testing.T) {
 	}
 	if stream.ThreadID != "thread-1" || stream.Result.Summary != "Done." || stream.Result.Outcome != "no_findings" || stream.Usage == nil || stream.Usage.CachedInputTokens == nil || *stream.Usage.CachedInputTokens != 3 {
 		t.Fatalf("unexpected stream: %#v", stream)
+	}
+	if stream.Result.CharterVersion != ReviewCharterVersion || stream.Result.VerificationState != "none" || stream.Result.Coverage == nil || len(stream.Result.Coverage.Files) != 1 {
+		t.Fatalf("unexpected charter fields: %#v", stream.Result)
 	}
 	if len(stream.Events) != 3 || stream.Events[0] != (Event{Type: "item.started", ItemID: "tool-1", ItemType: "command_execution"}) {
 		t.Fatalf("unexpected sanitized events: %#v", stream.Events)
@@ -174,14 +216,49 @@ func TestParseUsesLastCompletedMessageAndRequiresItToBeStructured(t *testing.T) 
 
 func TestParseRejectsInvalidStructuredResults(t *testing.T) {
 	invalid := map[string]string{
-		"duplicate key":       `{"summary":"one","summary":"two","outcome":"no_findings","findings":[],"tests":[]}`,
-		"extra field":         `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[],"secret":true}`,
-		"missing finding":     `{"summary":"Done.","outcome":"findings","findings":[],"tests":[]}`,
-		"finding on clean":    `{"summary":"Done.","outcome":"no_findings","findings":[{"path":"a","line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
-		"parent path":         `{"summary":"Done.","outcome":"findings","findings":[{"path":"..","line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
-		"unsafe path":         `{"summary":"Done.","outcome":"findings","findings":[{"path":"../secret","line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
-		"fractional line":     `{"summary":"Done.","outcome":"findings","findings":[{"path":"a.go","line":1.5,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`,
-		"unexpected test key": `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[{"command":"go test ./...","status":"passed","summary":"ok","raw":"private"}]}`,
+		"duplicate key": `{"summary":"one","summary":"two","outcome":"no_findings","findings":[],"tests":[]}`,
+		"extra field":   strings.Replace(noFindingsResult(), `"tests":[]`, `"tests":[],"secret":true`, 1),
+		"missing finding": `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[],"coverage":` +
+			coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`,
+		"finding on clean": `{"summary":"Done.","outcome":"no_findings","charter_version":"1","findings":[` + findingJSON(findingPath, 1, 2) + `],"coverage":` +
+			coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`,
+		"parent path in evidence": `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON("..", 1, 2) + `],"coverage":` +
+			coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`,
+		"unsafe path in evidence": `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON("../secret", 1, 2) + `],"coverage":` +
+			coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`,
+		"fractional evidence line":              strings.Replace(findingsResult(), `"line_end":2,"line_start":1`, `"line_end":2,"line_start":1.5`, 1),
+		"inverted evidence range":               strings.Replace(findingsResult(), `"line_end":2,"line_start":1`, `"line_end":2,"line_start":5`, 1),
+		"evidence wrong snapshot length":        strings.Replace(findingsResult(), `"snapshot":"`+sampleHeadSHA+`"`, `"snapshot":"short"`, 1),
+		"finding evidence empty":                strings.Replace(findingsResult(), `"evidence":[`+evidenceJSON(sampleHeadSHA, findingPath, 1, 2)+`]`, `"evidence":[]`, 1),
+		"unexpected test key":                   `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[{"command":"go test ./...","status":"passed","summary":"ok","raw":"private"}]}`,
+		"missing charter fields":                `{"summary":"Done.","outcome":"no_findings","findings":[],"tests":[]}`,
+		"wrong verification state":              strings.Replace(noFindingsResult(), `"verification_state":"none"`, `"verification_state":"partial"`, 1),
+		"charter forbidden on changes_proposed": strings.Replace(noFindingsResult(), `"outcome":"no_findings"`, `"outcome":"changes_proposed"`, 1),
+		"coverage forbidden on needs_input":     `{"summary":"Done.","outcome":"needs_input","findings":[],"coverage":` + coverageJSON(findingPath) + `,"tests":[]}`,
+		"question with severity": strings.Replace(
+			noFindingsResult(),
+			`"tests":[]`,
+			`"questions":[{"topic":"t","question":"q","why_material":"w","severity":"medium"}],"tests":[]`,
+			1,
+		),
+		"question array too long": strings.Replace(
+			noFindingsResult(),
+			`"tests":[]`,
+			`"questions":[`+strings.TrimRight(strings.Repeat(`{"topic":"t","question":"q","why_material":"w"},`, MaxQuestions+1), ",")+`],"tests":[]`,
+			1,
+		),
+		"unreviewed file without reason": strings.Replace(
+			noFindingsResult(),
+			coverageJSON(findingPath),
+			`{"files":[{"path":"`+findingPath+`","status":"unreviewed"}],"context_gaps":[]}`,
+			1,
+		),
+		"reviewed file with reason": strings.Replace(
+			noFindingsResult(),
+			coverageJSON(findingPath),
+			`{"files":[{"path":"`+findingPath+`","status":"reviewed","reason":"read in full"}],"context_gaps":[]}`,
+			1,
+		),
 	}
 	for name, result := range invalid {
 		t.Run(name, func(t *testing.T) {
@@ -194,23 +271,60 @@ func TestParseRejectsInvalidStructuredResults(t *testing.T) {
 }
 
 func TestParseAcceptsSchemaAuthorizedFindingsAndEnums(t *testing.T) {
-	finding := `{"path":"internal/codex/parser.go","line":1,"side":"RIGHT","severity":"info","explanation":"context","evidence":"evidence"}`
 	for _, outcome := range []string{"findings", "changes_proposed", "incomplete", "needs_input"} {
-		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[` + finding + `],"tests":[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]}`
+		result := `{"summary":"Done.","outcome":"` + outcome + `","findings":[` + findingJSON(findingPath, 1, 2) + `],"tests":[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]}`
+		if outcome == "findings" {
+			result = `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON(findingPath, 1, 2) + `],"coverage":` +
+				coverageJSON(findingPath) + `,"verification_state":"none","tests":[{"command":"go test ./...","status":"error","summary":"infrastructure failed"}]}`
+		}
 		stream, err := Parse([]byte(validStream(result)), nil)
 		if err != nil {
 			t.Fatalf("outcome %q rejected schema-authorized result: %v", outcome, err)
 		}
-		if stream.Result.Findings[0].Severity != "info" || stream.Result.Tests[0].Status != "error" {
+		if stream.Result.Findings[0].Severity != "high" || stream.Result.Tests[0].Status != "error" {
 			t.Fatalf("outcome %q changed result: %#v", outcome, stream.Result)
 		}
 	}
 }
 
-func TestParseRejectsEveryC0ControlInFindingPath(t *testing.T) {
+func TestParseAcceptsIncompleteWithOptionalCoverage(t *testing.T) {
+	result := `{"summary":"Ran out of budget.","outcome":"incomplete","findings":[],"coverage":` + coverageJSON(findingPath) + `,"tests":[]}`
+	stream, err := Parse([]byte(validStream(result)), nil)
+	if err != nil {
+		t.Fatalf("incomplete with coverage rejected: %v", err)
+	}
+	if stream.Result.Coverage == nil || len(stream.Result.Coverage.Files) != 1 {
+		t.Fatalf("incomplete coverage not parsed: %#v", stream.Result)
+	}
+
+	bare := `{"summary":"Ran out of budget.","outcome":"incomplete","findings":[],"tests":[]}`
+	stream, err = Parse([]byte(validStream(bare)), nil)
+	if err != nil || stream.Result.Coverage != nil {
+		t.Fatalf("incomplete without coverage = %#v, err=%v", stream.Result, err)
+	}
+}
+
+func TestParseAcceptsQuestionsWithAndWithoutEvidence(t *testing.T) {
+	withEvidence := strings.Replace(noFindingsResult(), `"tests":[]`,
+		`"questions":[{"topic":"External policy","question":"Does it still apply?","why_material":"It gates the change.","evidence":[`+evidenceJSON(sampleHeadSHA, findingPath, 1, 2)+`]}],"tests":[]`, 1)
+	stream, err := Parse([]byte(validStream(withEvidence)), nil)
+	if err != nil || len(stream.Result.Questions) != 1 || len(stream.Result.Questions[0].Evidence) != 1 {
+		t.Fatalf("question with evidence rejected: %#v err=%v", stream.Result, err)
+	}
+
+	withoutEvidence := strings.Replace(noFindingsResult(), `"tests":[]`,
+		`"questions":[{"topic":"External policy","question":"Does it still apply?","why_material":"It gates the change."}],"tests":[]`, 1)
+	stream, err = Parse([]byte(validStream(withoutEvidence)), nil)
+	if err != nil || len(stream.Result.Questions) != 1 || stream.Result.Questions[0].Evidence != nil {
+		t.Fatalf("question without evidence rejected: %#v err=%v", stream.Result, err)
+	}
+}
+
+func TestParseRejectsEveryC0ControlInEvidencePath(t *testing.T) {
 	for control := rune(0); control <= 0x1f; control++ {
 		name := "src/a" + string(control) + "b.go"
-		result := `{"summary":"Done.","outcome":"findings","findings":[{"path":` + quote(name) + `,"line":1,"side":"RIGHT","severity":"high","explanation":"x","evidence":"y"}],"tests":[]}`
+		result := `{"summary":"Done.","outcome":"findings","charter_version":"1","findings":[` + findingJSON(name, 1, 2) + `],"coverage":` +
+			coverageJSON(findingPath) + `,"verification_state":"none","tests":[]}`
 		if _, err := Parse([]byte(validStream(result)), nil); !errors.Is(err, ErrInvalidResult) {
 			t.Fatalf("control U+%04X path error = %v", control, err)
 		}

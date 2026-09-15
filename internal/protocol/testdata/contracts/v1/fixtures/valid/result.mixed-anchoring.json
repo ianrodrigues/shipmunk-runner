@@ -1,0 +1,67 @@
+{
+  "protocol_version": "1.0",
+  "run_id": "01k4w000000000000000000001",
+  "attempt_id": "01k4w000000000000000000002",
+  "fence": 1,
+  "summary": "Two findings. One sits on a changed line and carries an inline anchor; the other is about a file the change only reads, so it has evidence but no anchor.",
+  "outcome": "findings",
+  "charter_version": "1",
+  "findings": [
+    {
+      "category": "correctness",
+      "severity": "high",
+      "relation": "introduced",
+      "scenario": "A comparison whose file list is empty reaches the matcher, which treats the empty list as allowing every path.",
+      "consequence": "A review publishes inline comments on files outside the frozen review scope.",
+      "action": "Reject an empty rule set before matching instead of defaulting to allow.",
+      "explanation": "The new early return turns an empty rule set into an unconditional allow.",
+      "evidence": [
+        {
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "path": "app/Support/ReviewPathRules.php",
+          "line_start": 33,
+          "line_end": 35
+        }
+      ],
+      "anchor": {
+        "path": "app/Support/ReviewPathRules.php",
+        "line": 34,
+        "side": "RIGHT"
+      }
+    },
+    {
+      "category": "test_adequacy",
+      "severity": "medium",
+      "relation": "preexisting",
+      "scenario": "No test covers a rule set that matches zero patterns, so the behaviour the change relies on is unpinned today.",
+      "consequence": "A later refactor can flip the fail-closed default without any test failing.",
+      "action": "Add a case asserting that an empty rule set refuses every path.",
+      "explanation": "The existing suite only exercises rule sets that match at least one pattern.",
+      "evidence": [
+        {
+          "snapshot": "9999999999999999999999999999999999999999",
+          "path": "tests/Unit/ReviewPathRulesTest.php",
+          "line_start": 1,
+          "line_end": 40
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "files": [
+      {
+        "path": "app/Support/ReviewPathRules.php",
+        "status": "reviewed"
+      },
+      {
+        "path": "app/Services/GitHub/ReviewFindings.php",
+        "status": "reviewed"
+      }
+    ],
+    "context_gaps": []
+  },
+  "verification_state": "none",
+  "patch_artifact": null,
+  "tests": [],
+  "usage": null
+}

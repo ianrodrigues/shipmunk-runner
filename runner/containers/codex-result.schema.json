@@ -16,26 +16,26 @@
         "needs_input"
       ]
     },
+    "charter_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8
+    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024
-          },
-          "line": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
-          },
-          "side": {
+          "category": {
             "type": "string",
             "enum": [
-              "LEFT",
-              "RIGHT"
+              "correctness",
+              "security",
+              "contract",
+              "maintenance",
+              "test_adequacy",
+              "performance",
+              "other"
             ]
           },
           "severity": {
@@ -48,28 +48,235 @@
               "critical"
             ]
           },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "introduced",
+              "modified",
+              "preexisting"
+            ]
+          },
+          "scenario": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "consequence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
           "explanation": {
             "type": "string",
             "minLength": 1,
             "maxLength": 8192
           },
           "evidence": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 8192
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "snapshot": {
+                  "type": "string",
+                  "minLength": 40,
+                  "maxLength": 40
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "line_start": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "line_end": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "snapshot",
+                "path",
+                "line_start",
+                "line_end"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "anchor": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "side": {
+                "type": "string",
+                "enum": [
+                  "LEFT",
+                  "RIGHT"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "line",
+              "side"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "path",
-          "line",
-          "side",
+          "category",
           "severity",
+          "relation",
+          "scenario",
+          "consequence",
+          "action",
           "explanation",
           "evidence"
         ],
         "additionalProperties": false
       },
       "maxItems": 100
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "why_material": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "snapshot": {
+                  "type": "string",
+                  "minLength": 40,
+                  "maxLength": 40
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "line_start": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "line_end": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "snapshot",
+                "path",
+                "line_start",
+                "line_end"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "topic",
+          "question",
+          "why_material"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 20
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "reviewed",
+                  "unreviewed"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "path",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 300
+        },
+        "context_gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "files",
+        "context_gaps"
+      ],
+      "additionalProperties": false
+    },
+    "verification_state": {
+      "type": "string",
+      "enum": [
+        "none"
+      ]
     },
     "tests": {
       "type": "array",

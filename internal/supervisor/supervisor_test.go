@@ -307,7 +307,13 @@ func fixtureClaim(t *testing.T) protocol.Claim {
 }
 func normalizedOutput(t *testing.T, c protocol.Claim, outcome string) []byte {
 	t.Helper()
-	raw, err := json.Marshal(map[string]any{"events": []any{}, "artifacts": []any{}, "result": map[string]any{"protocol_version": protocol.Version, "run_id": c.RunID, "attempt_id": c.AttemptID, "fence": c.Fence, "summary": "Synthetic completion.", "outcome": outcome, "findings": []any{}, "patch_artifact": nil, "tests": []any{}, "usage": nil}})
+	result := map[string]any{"protocol_version": protocol.Version, "run_id": c.RunID, "attempt_id": c.AttemptID, "fence": c.Fence, "summary": "Synthetic completion.", "outcome": outcome, "findings": []any{}, "patch_artifact": nil, "tests": []any{}, "usage": nil}
+	if outcome == "findings" || outcome == "no_findings" {
+		result["charter_version"] = "1"
+		result["coverage"] = map[string]any{"files": []any{}, "context_gaps": []any{}}
+		result["verification_state"] = "none"
+	}
+	raw, err := json.Marshal(map[string]any{"events": []any{}, "artifacts": []any{}, "result": result})
 	if err != nil {
 		t.Fatal(err)
 	}

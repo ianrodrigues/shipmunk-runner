@@ -53,6 +53,13 @@ func DecodeExecution(claim protocol.Claim, exitCode int, output []byte) (Executi
 		result["patch_artifact"] = nil
 		result["tests"] = []any{}
 		result["usage"] = nil
+		// incomplete forbids charter_version/questions/verification_state and
+		// only optionally carries coverage; a native result overwritten here
+		// may still carry the fields its original (pre-failure) outcome required.
+		delete(result, "charter_version")
+		delete(result, "coverage")
+		delete(result, "verification_state")
+		delete(result, "questions")
 	}
 	execution := Execution{Result: result}
 	if raw, exists := envelope["events"]; exists && !failedExit {

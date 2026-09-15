@@ -1,0 +1,62 @@
+{
+  "protocol_version": "1.0",
+  "run_id": "01k4w000000000000000000001",
+  "attempt_id": "01k4w000000000000000000002",
+  "fence": 1,
+  "summary": "The change is behaviourally correct. One maintenance obligation it modifies is now duplicated in two places that must stay in step.",
+  "outcome": "findings",
+  "charter_version": "1",
+  "findings": [
+    {
+      "category": "maintenance",
+      "severity": "low",
+      "relation": "modified",
+      "scenario": "The severity list is now spelled out in both the publisher and the path matcher, so the next severity added to the protocol has to be edited in two files.",
+      "consequence": "A future severity silently fails validation in one of the two copies and the finding is dropped from publication.",
+      "action": "Read the allowed severities from one shared source and cover the mismatch with a test.",
+      "explanation": "Duplicated severity lists diverge quietly because neither copy fails when the other changes.",
+      "evidence": [
+        {
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "path": "app/Services/GitHub/ReviewFindings.php",
+          "line_start": 180,
+          "line_end": 184
+        },
+        {
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "path": "app/Support/ReviewPathRules.php",
+          "line_start": 22,
+          "line_end": 26
+        }
+      ],
+      "anchor": {
+        "path": "app/Services/GitHub/ReviewFindings.php",
+        "line": 182,
+        "side": "RIGHT"
+      }
+    }
+  ],
+  "coverage": {
+    "files": [
+      {
+        "path": "app/Support/ReviewPathRules.php",
+        "status": "reviewed"
+      },
+      {
+        "path": "app/Services/GitHub/ReviewFindings.php",
+        "status": "reviewed"
+      }
+    ],
+    "context_gaps": []
+  },
+  "verification_state": "none",
+  "patch_artifact": null,
+  "tests": [
+    {
+      "command": "vendor/bin/pest --filter=ReviewFindings",
+      "status": "passed",
+      "summary": "Reported by the model; this is not an execution receipt."
+    }
+  ],
+  "usage": null
+}

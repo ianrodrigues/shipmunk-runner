@@ -5,10 +5,18 @@
     "run_id": "01k4w000000000000000000001",
     "attempt_id": "01k4w000000000000000000002",
     "fence": 1,
-    "summary": "No actionable findings.",
-    "outcome": "findings",
+    "summary": "Review assessment.",
+    "outcome": "no_findings",
     "charter_version": "1",
     "findings": [],
+    "questions": [
+      {
+        "topic": "External path-rule requirement",
+        "question": "Does the operator policy still require every rule set to match at least one pattern?",
+        "why_material": "The changed matcher fails closed on that assumption.",
+        "severity": "medium"
+      }
+    ],
     "coverage": {
       "files": [
         {

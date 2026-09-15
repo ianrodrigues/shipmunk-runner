@@ -76,6 +76,7 @@ func TestDockerReviewToolsInspectOnlyAuthorizedSnapshots(t *testing.T) {
 	name := fmt.Sprintf("shipmunk-codex-01k4w000000000000000000066-%d", time.Now().UnixNano()%1000000000000000+1)
 	transport, err := newDockerTransport(TransportConfig{
 		Name: name, ProfileHome: profileHome, Source: sources.head.Name(), Baseline: sources.baselinePath(),
+		BaselineSHA: sampleBaselineSHA, HeadSHA: sampleHeadSHA,
 		sourceHandle: sources.head, baselineHandle: sources.baseline,
 		NativeImage: image, RepositoryImage: image, MaxCommands: 16,
 	}, loggedTestDocker{t})
