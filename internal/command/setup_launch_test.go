@@ -72,7 +72,7 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 	}
 }
 
-// An interrupted attempt is the supervisor's to recover, so only the run path may start with one.
+// Only the supervised run may start with an interrupted attempt; every other command must refuse one.
 func TestInstalledRunRecoversInterruptedAttemptWhileOtherCommandsRefuse(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("installed commands refuse root")

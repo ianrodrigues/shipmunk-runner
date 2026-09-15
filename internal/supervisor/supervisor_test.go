@@ -467,34 +467,40 @@ func TestCompositeRecoveryCarriesDurableProfileBinding(t *testing.T) {
 }
 
 // An attempt whose runner died between the claim and the result leaves a journal
-// but no result, so recovery must report the attempt and release the journal.
+// but no result. Recovery must then report the attempt and release the journal.
 func TestRecoveryReportsInterruptedAttemptThenClearsJournal(t *testing.T) {
-	fenced := &protocol.ControlPlaneError{StatusCode: 409}
+	conflict := &protocol.ControlPlaneError{StatusCode: 409}
 	for name, test := range map[string]struct {
-		stopAfter               int
+		expiredLease            bool
 		ackError, completeError error
 		wantCompletions         int
 		wantJournalKept         bool
 		wantAcknowledged        int
 	}{
-		"live lease":     {wantCompletions: 1, wantAcknowledged: 1},
-		"revoked lease":  {stopAfter: 1, wantCompletions: 0, wantAcknowledged: 1},
-		"fenced out":     {ackError: fenced, wantCompletions: 1, wantAcknowledged: 1},
-		"result refused": {completeError: fenced, wantCompletions: 1, wantAcknowledged: 1},
-		"unreachable":    {ackError: &protocol.ControlPlaneError{StatusCode: 503}, wantCompletions: 1, wantAcknowledged: 1, wantJournalKept: true},
+		"live lease": {wantCompletions: 1, wantAcknowledged: 1},
+		// An expired lease can carry no result, and a refused result cannot be retried into acceptance, so neither holds the attempt.
+		"expired lease":  {expiredLease: true, wantCompletions: 0, wantAcknowledged: 1},
+		"result refused": {completeError: conflict, wantCompletions: 1, wantAcknowledged: 1},
+		// Only the acknowledgement releases the attempt, so its refusal keeps the journal for the next run.
+		"acknowledgement refused": {ackError: conflict, wantCompletions: 1, wantAcknowledged: 1, wantJournalKept: true},
+		"unreachable":             {ackError: &protocol.ControlPlaneError{StatusCode: 503}, wantCompletions: 1, wantAcknowledged: 1, wantJournalKept: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, c, state, _, w, _ := fixtureSupervisor(t)
 			claim := *c.claim
 			profileID := claim.Manifest["profile_id"].(string)
+			lease := claim.LeaseExpiresAt
+			if test.expiredLease {
+				lease = time.Now().Add(-time.Minute)
+			}
 			state.state = &attemptstate.State{
 				RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
-				ProfileID: &profileID, LeaseExpiresAt: claim.LeaseExpiresAt,
+				ProfileID: &profileID, LeaseExpiresAt: lease,
 				Deadline: claim.Deadline, Workspace: w.Path(claim),
 			}
 			executor := &fixtureExecutor{}
 			s.Executor, s.Sandbox, s.Watchdog = executor, nil, nil
-			c.claim, c.stopAfter, c.ackError, c.completeError = nil, test.stopAfter, test.ackError, test.completeError
+			c.claim, c.ackError, c.completeError = nil, test.ackError, test.completeError
 
 			out, err := s.RunOnce(context.Background())
 			if test.wantJournalKept {
