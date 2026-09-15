@@ -92,13 +92,24 @@ func launchRefusal(err error) string {
 func dispatchInstalled(args []string, root string, configuration install.Configuration, stdout, stderr io.Writer) int {
 	base := []string{"--base-url=" + configuration.Identity.BaseURL, "--profiles-dir=" + filepath.Join(root, "profiles"), "--image=" + configuration.ImageID}
 	if args[0] == "run" {
-		if len(args) > 3 || len(args) == 3 && args[2] != "--once" {
-			fmt.Fprintln(stderr, "The runner command accepts only --once.")
+		mode := ""
+		if len(args) >= 3 {
+			mode = args[2]
+		}
+		if len(args) > 4 || (mode != "" && mode != "--once" && mode != "--discard-attempt") ||
+			(len(args) == 4 && (mode != "--discard-attempt" || args[3] != "--yes")) {
+			fmt.Fprintln(stderr, "The runner command accepts only --once, or --discard-attempt with an optional --yes.")
 			return 2
 		}
 		commandArgs := append(base, "--token-file="+filepath.Join(root, "execution.token"), "--state-dir="+filepath.Join(root, "state"), "--driver=codex", "--repository-image="+configuration.ImageID)
-		if len(args) == 3 {
+		switch mode {
+		case "--once":
 			commandArgs = append(commandArgs, "--once")
+		case "--discard-attempt":
+			commandArgs = append(commandArgs, "--discard-attempt")
+			if len(args) == 4 {
+				commandArgs = append(commandArgs, "--yes")
+			}
 		}
 		return setupRunRunner(commandArgs, stdout, stderr)
 	}
