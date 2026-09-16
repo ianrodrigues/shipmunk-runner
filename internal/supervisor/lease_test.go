@@ -34,11 +34,15 @@ type budgetRaceClient struct {
 	*fixtureClient
 	budget  time.Duration
 	entered chan struct{}
+	onEntry func()
 }
 
 func (c *budgetRaceClient) raceBudget(ctx context.Context, endpoint string) error {
 	if c.entered != nil {
 		close(c.entered)
+	}
+	if c.onEntry != nil {
+		c.onEntry()
 	}
 	budgetCtx, cancel := context.WithTimeout(ctx, c.budget)
 	defer cancel()
@@ -58,6 +62,29 @@ func (c *budgetRaceClient) Heartbeat(ctx context.Context, claim protocol.Claim) 
 
 func (c *budgetRaceClient) Complete(ctx context.Context, claim protocol.Claim, _ []byte) error {
 	return c.raceBudget(ctx, "/runner/v1/attempts/"+claim.AttemptID+"/completion")
+}
+
+// Looks live until expired, then reports context.DeadlineExceeded.
+// Lets a test fire the attempt deadline from inside a call, deterministically.
+type deadlineOnEntryContext struct {
+	done chan struct{}
+}
+
+func newDeadlineOnEntryContext() (*deadlineOnEntryContext, func()) {
+	ctx := &deadlineOnEntryContext{done: make(chan struct{})}
+	return ctx, func() { close(ctx.done) }
+}
+
+func (c *deadlineOnEntryContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *deadlineOnEntryContext) Done() <-chan struct{}       { return c.done }
+func (c *deadlineOnEntryContext) Value(any) any               { return nil }
+func (c *deadlineOnEntryContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }
 
 func newTestLeaseGuard(claim protocol.Claim, client Client, deadline time.Time) (*leaseGuard, context.CancelFunc) {
@@ -116,12 +143,13 @@ func TestLeaseHeartbeatTimeoutClassifiesAsHTTPBudgetTimeout(t *testing.T) {
 
 func TestLeaseHeartbeatWithExpiredAttemptContextReadsAsAttemptDeadline(t *testing.T) {
 	claim := fixtureClaim(t)
-	// The attempt deadline is still live when renew starts but expires while
-	// Heartbeat is blocked in it, well before the client's own budget would.
+	// The attempt context is live at the guard's pre-check, then the client
+	// itself fires it once entered, before waiting out its own budget. No
+	// wall-clock race: the client can only fire it after being entered.
+	ctx, expire := newDeadlineOnEntryContext()
 	entered := make(chan struct{})
-	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond, entered: entered}
-	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(80*time.Millisecond))
-	defer cancel()
+	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 50 * time.Millisecond, entered: entered, onEntry: expire}
+	g := &leaseGuard{ctx: ctx, cancel: func() {}, supervisor: &Supervisor{Client: client}, claim: claim, state: attemptstate.State{}, done: make(chan struct{})}
 
 	err := g.renew()
 
@@ -154,12 +182,12 @@ func TestLeaseCompleteTimeoutClassifiesAsHTTPBudgetTimeout(t *testing.T) {
 
 func TestLeaseCompleteWithExpiredAttemptContextReadsAsAttemptDeadline(t *testing.T) {
 	claim := fixtureClaim(t)
-	// The attempt deadline is still live when complete starts but expires
-	// while Complete is blocked in it, well before the client's own budget would.
+	// Same as the heartbeat case above: the client fires the attempt context
+	// itself once entered, so there is no wall-clock race to expire early.
+	ctx, expire := newDeadlineOnEntryContext()
 	entered := make(chan struct{})
-	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond, entered: entered}
-	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(80*time.Millisecond))
-	defer cancel()
+	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 50 * time.Millisecond, entered: entered, onEntry: expire}
+	g := &leaseGuard{ctx: ctx, cancel: func() {}, supervisor: &Supervisor{Client: client}, claim: claim, state: attemptstate.State{}, done: make(chan struct{})}
 
 	err := g.complete([]byte("{}"))
 
