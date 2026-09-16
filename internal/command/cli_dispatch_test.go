@@ -105,8 +105,23 @@ func TestRunCLIDispatchesLauncherAndManualModes(t *testing.T) {
 			wantCode:   2,
 			wantStderr: []string{"Invalid setup options"},
 		},
-		"connect rejects a caller-supplied --operation": {
+		"connect rejects --operation=VALUE": {
 			args:       []string{"connect", "--operation=disconnect"},
+			wantCode:   2,
+			wantStderr: []string{"sets --operation itself"},
+		},
+		"connect rejects --operation VALUE": {
+			args:       []string{"connect", "--operation", "disconnect"},
+			wantCode:   2,
+			wantStderr: []string{"sets --operation itself"},
+		},
+		"probe rejects a caller-supplied --operation": {
+			args:       []string{"probe", "--operation=login"},
+			wantCode:   2,
+			wantStderr: []string{"sets --operation itself"},
+		},
+		"disconnect rejects a caller-supplied --operation": {
+			args:       []string{"disconnect", "--operation=probe"},
 			wantCode:   2,
 			wantStderr: []string{"sets --operation itself"},
 		},
