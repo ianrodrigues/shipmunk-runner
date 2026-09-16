@@ -14,9 +14,10 @@ git init --quiet --initial-branch=main "$fixture"
 cd "$fixture"
 git config user.name 'Hook Fixture'
 git config user.email 'hooks@example.test'
-mkdir .githooks
+mkdir .githooks tools
 cp "$repository"/.githooks/* .githooks/
 cp "$repository/Makefile" Makefile
+cp "$repository/tools/changelog-check.sh" tools/changelog-check.sh
 
 fail() { printf 'FAIL %s\n' "$*" >&2; cat "$temporary/output" >&2 2>/dev/null || true; exit 1; }
 pass() { printf 'PASS %s\n' "$1"; }
@@ -51,7 +52,7 @@ expect_ok 'repeat installation' make hooks
 [[ "$(git config core.hooksPath)" == .githooks ]] || fail 'hook path not installed'
 pass 'installation preserves custom hook paths and existing local hooks'
 
-git add .githooks Makefile
+git add .githooks Makefile tools
 expect_ok 'initial real commit' git commit --quiet -m 'test: install fixture hooks'
 
 checked_path='source with spaces.go'
@@ -172,3 +173,49 @@ expect_ok 'linked real commit' git commit --quiet --allow-empty -m 'test: exerci
 printf 'fix: missing blank line\nBody\n' > "$message"
 expect_failure 'linked real commit message' git commit --quiet --allow-empty -F "$message"
 pass 'linked worktrees share installation and optional local extensions'
+
+# changelog-check: a cmd/ or internal/ change needs an Unreleased line or an
+# explicit changelog: none trailer.
+changelog_base=$(git rev-parse HEAD)
+mkdir -p cmd
+printf 'package main\n' > cmd/example.go
+git add cmd/example.go
+expect_ok 'runner code commit' git commit --quiet -m 'feat: add example command'
+touched_head=$(git rev-parse HEAD)
+expect_failure 'code change without changelog' bash tools/changelog-check.sh "$changelog_base" "$touched_head"
+
+git checkout --quiet -b with-changelog "$changelog_base"
+mkdir -p cmd
+printf 'package main\n' > cmd/example.go
+printf '# Changelog\n\n## Unreleased\n\n### Added\n\n- Add example command.\n' > CHANGELOG.md
+git add cmd/example.go CHANGELOG.md
+expect_ok 'runner code with changelog commit' git commit --quiet -m 'feat: add example command'
+expect_ok 'code change with changelog' bash tools/changelog-check.sh "$changelog_base" HEAD
+
+git checkout --quiet -b with-trailer "$changelog_base"
+mkdir -p cmd
+printf 'package main\n' > cmd/example.go
+git add cmd/example.go
+expect_ok 'runner code with trailer commit' git commit --quiet -m "$(printf 'refactor: rename internal helper\n\nchangelog: none\n')"
+expect_ok 'code change with trailer' bash tools/changelog-check.sh "$changelog_base" HEAD
+
+git checkout --quiet -b docs-only "$changelog_base"
+mkdir -p docs
+printf '# Notes\n' > docs/notes.md
+git add docs/notes.md
+expect_ok 'docs-only commit' git commit --quiet -m 'docs: add notes'
+expect_ok 'docs-only change' bash tools/changelog-check.sh "$changelog_base" HEAD
+pass 'changelog-check enforces an Unreleased line or a changelog: none trailer'
+
+# pre-push wiring: a brand-new branch (no remote object) resolves its base
+# through origin/main, matching the first push of a feature branch.
+git remote add origin "$fixture"
+git fetch --quiet origin main
+push_record_changelog="$temporary/push-changelog"
+printf 'refs/heads/feature %s refs/heads/feature %s\n' "$touched_head" "$zero" > "$push_record_changelog"
+expect_failure 'pre-push blocks code without changelog' .githooks/pre-push < "$push_record_changelog"
+with_changelog_head=$(git rev-parse with-changelog)
+printf 'refs/heads/feature %s refs/heads/feature %s\n' "$with_changelog_head" "$zero" > "$push_record_changelog"
+expect_ok 'pre-push allows code with changelog' .githooks/pre-push < "$push_record_changelog"
+git checkout --quiet linked
+pass 'pre-push wires changelog-check for a new branch push'

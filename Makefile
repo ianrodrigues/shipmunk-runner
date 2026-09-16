@@ -4,7 +4,7 @@ VERSION ?= development
 GO_VERSION_PACKAGE := github.com/ianrodrigues/shipmunk-runner/internal/command
 GO_RELEASE_LDFLAGS := -s -w -X $(GO_VERSION_PACKAGE).Version=$(VERSION)
 
-.PHONY: hooks hooks-check pr-title-check check lint package-check runner-check native-image-check go-check go-build go-runtime-check install-smoke-check install-smoke-host-check
+.PHONY: hooks hooks-check pr-title-check check lint changelog-check package-check runner-check native-image-check go-check go-build go-runtime-check install-smoke-check install-smoke-host-check
 
 check: hooks-check pr-title-check lint package-check runner-check native-image-check go-check go-runtime-check
 
@@ -59,8 +59,11 @@ go-build:
 	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-runner" ./cmd/shipmunk-runner; \
 	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog
 
-lint:
+lint: changelog-check
 	@bash -n tools/publish-release.sh
+
+changelog-check:
+	bash tools/changelog-check.sh origin/main HEAD
 
 package-check:
 	@cmp -s LICENSE runner/LICENSE || { echo 'package-check: LICENSE and runner/LICENSE have drifted; runner/LICENSE is the one that ships in release archives.' >&2; exit 1; }
