@@ -8,8 +8,7 @@ import (
 	"testing"
 )
 
-// canonicalTempDir resolves t.TempDir() to its canonical form.
-// TempDir can sit under a symlink (/var on macOS), which this guard rejects.
+// t.TempDir() can sit under a symlink (/var on macOS), which this guard rejects.
 func canonicalTempDir(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
