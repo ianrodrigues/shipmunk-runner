@@ -107,6 +107,13 @@ type ExecutorLease interface {
 	Renew(protocol.Claim, time.Time) error
 }
 
+// EventLogger records one structured event for the runner log. Implementations
+// must be safe for concurrent use and must never receive secrets, tokens, or
+// repository content in fields.
+type EventLogger interface {
+	Event(event string, fields map[string]any)
+}
+
 type Supervisor struct {
 	Client            Client
 	State             StateStore
@@ -114,9 +121,17 @@ type Supervisor struct {
 	Sandbox           Sandbox
 	Watchdog          Watchdog
 	Executor          Executor
+	Log               EventLogger
 	mu                sync.Mutex
 	blocked           bool
 	heartbeatInterval time.Duration
+}
+
+// log is a nil-safe convenience wrapper so call sites never check s.Log themselves.
+func (s *Supervisor) log(event string, fields map[string]any) {
+	if s.Log != nil {
+		s.Log.Event(event, fields)
+	}
 }
 
 // Outcome is observable only after accepted completion and confirmed cleanup.
@@ -148,17 +163,24 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 		return Outcome{}, err
 	}
 	claim, err := s.Client.Claim(ctx, time.Now())
-	if err != nil || claim == nil {
+	if err != nil {
+		s.log("claim_failed", map[string]any{"error": err.Error()})
 		return Outcome{}, err
+	}
+	if claim == nil {
+		s.log("claim_empty", nil)
+		return Outcome{}, nil
 	}
 	// Validate and detach even injected clients; never mutate the server's manifest.
 	validated, err := protocol.ClaimFromManifest(claim.Manifest, time.Now())
 	if err != nil || validated.RunID != claim.RunID || validated.AttemptID != claim.AttemptID || validated.Fence != claim.Fence {
+		s.log("claim_invalid", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "fence": claim.Fence})
 		s.blocked = true
 		return Outcome{}, errors.New("claimed identity is invalid")
 	}
 	validated.LeaseExpiresAt = claim.LeaseExpiresAt
 	claim = &validated
+	s.log("claim", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "fence": claim.Fence, "deadline": claim.Deadline, "lease_expires_at": claim.LeaseExpiresAt})
 	path := s.Workspaces.Path(*claim)
 	state := attemptstate.State{RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, LeaseExpiresAt: claim.LeaseExpiresAt, Deadline: claim.Deadline, Workspace: path}
 	if profile, ok := claim.Manifest["profile_id"].(string); ok {
@@ -166,6 +188,7 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	if err := s.State.Save(state); err != nil {
 		s.blocked = true
+		s.log("claim_persist_failed", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "error": err.Error()})
 		ackCtx, cancel := context.WithTimeout(context.Background(), protocol.HTTPTimeoutSeconds*time.Second)
 		ackErr := s.Client.AcknowledgeStopped(ackCtx, *claim)
 		cancel()
@@ -177,6 +200,7 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	guard, err := newLeaseGuard(ctx, s, *claim, state)
 	if err != nil {
+		s.log("lease_guard_failed", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "error": err.Error()})
 		if cleanupErr := s.cleanup(*claim, state, nil); cleanupErr != nil {
 			return Outcome{}, cleanupErr
 		}
@@ -189,12 +213,14 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 		if executionErr == nil {
 			executionErr = errors.New("sandbox creation outcome is not confirmed")
 		}
+		s.log("cleanup_unconfirmed", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "error": executionErr.Error()})
 		return Outcome{}, fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, executionErr)
 	}
 	if err := s.cleanup(*claim, state, watchdog); err != nil {
 		return Outcome{}, err
 	}
 	if executionErr != nil {
+		s.log("attempt_failed", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "error": executionErr.Error()})
 		return Outcome{}, executionErr
 	}
 	return Outcome{Worked: true, RunID: claim.RunID, AttemptID: claim.AttemptID, Result: result}, nil
@@ -315,18 +341,23 @@ func legacyContainerID(id string) bool {
 }
 
 func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, error) {
+	s.log("workspace_prepare_start", map[string]any{"attempt_id": claim.AttemptID})
 	path, err := s.Workspaces.Prepare(g.ctx, claim, s.Client)
 	if err != nil {
+		s.log("workspace_prepare_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		return "", err
 	}
 	if path != s.Workspaces.Path(claim) {
 		return "", errors.New("prepared workspace does not match attempt")
 	}
+	s.log("workspace_prepare_done", map[string]any{"attempt_id": claim.AttemptID})
 	if s.Executor != nil {
 		execution, err := s.Executor.Execute(g.ctx, claim, workspace.Sanitize(claim.Manifest), path)
 		if err != nil {
+			s.log("executor_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 			return "", err
 		}
+		s.log("executor_exit", map[string]any{"attempt_id": claim.AttemptID})
 		if err := g.ctx.Err(); err != nil {
 			return "", err
 		}
@@ -337,13 +368,17 @@ func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, erro
 		return "", err
 	}
 	if err := g.reserve(name); err != nil {
+		s.log("sandbox_reserve_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		return "", g.finishWithoutCreate(err)
 	}
 	if err := g.createStarted(); err != nil {
+		s.log("sandbox_create_start_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		return "", g.finishWithoutCreate(err)
 	}
+	s.log("sandbox_create_started", map[string]any{"attempt_id": claim.AttemptID, "name": name})
 	process, err := s.Sandbox.Create(g.ctx, claim, workspace.Sanitize(claim.Manifest), path)
 	if err != nil {
+		s.log("sandbox_create_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		if errors.Is(err, sandbox.ErrCreateUncertain) {
 			return "", err
 		}
@@ -355,21 +390,26 @@ func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, erro
 	if err := g.created(process.ContainerID()); err != nil {
 		return "", err
 	}
+	s.log("sandbox_created", map[string]any{"attempt_id": claim.AttemptID, "container_id": process.ContainerID()})
 	if err := g.ctx.Err(); err != nil {
 		return "", err
 	}
 	if err := process.Start(g.ctx); err != nil {
+		s.log("sandbox_start_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		return "", err
 	}
 	exitCode, output, err := process.Wait(g.ctx)
 	if err != nil {
+		s.log("sandbox_wait_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		return "", err
 	}
+	s.log("sandbox_exit", map[string]any{"attempt_id": claim.AttemptID, "exit_code": exitCode})
 	if err := g.ctx.Err(); err != nil {
 		return "", err
 	}
 	execution, err := DecodeExecution(claim, exitCode, output)
 	if err != nil {
+		s.log("execution_decode_failed", map[string]any{"attempt_id": claim.AttemptID, "error": err.Error()})
 		return "", err
 	}
 	return s.publishExecution(g, claim, execution)
@@ -378,6 +418,9 @@ func (s *Supervisor) runClaim(g *leaseGuard, claim protocol.Claim) (string, erro
 func (s *Supervisor) publishExecution(g *leaseGuard, claim protocol.Claim, execution Execution) (string, error) {
 	if execution.Result == nil {
 		return "", errors.New("native execution returned no result")
+	}
+	if execution.FailureReason != "" {
+		s.log("classified_failure", map[string]any{"attempt_id": claim.AttemptID, "reason": execution.FailureReason})
 	}
 	for start := 0; start < len(execution.Events); start += 100 {
 		end := min(start+100, len(execution.Events))
@@ -410,35 +453,45 @@ func (s *Supervisor) publishExecution(g *leaseGuard, claim protocol.Claim, execu
 	if err := g.complete(raw); err != nil {
 		return "", err
 	}
-	return execution.Result["outcome"].(string), nil
+	outcome := execution.Result["outcome"].(string)
+	s.log("result_delivered", map[string]any{"attempt_id": claim.AttemptID, "outcome": outcome})
+	return outcome, nil
 }
 
 func (s *Supervisor) cleanup(claim protocol.Claim, state attemptstate.State, watchdog WatchdogLease) error {
+	s.log("cleanup_start", map[string]any{"attempt_id": claim.AttemptID})
 	// Revoked execution authority cannot cancel mandatory cleanup.
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	if s.Executor != nil {
 		if err := s.Executor.Cleanup(ctx, claim); err != nil {
+			s.log("cleanup_failed", map[string]any{"attempt_id": claim.AttemptID, "step": "executor", "error": err.Error()})
 			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 		}
 	} else if state.SandboxID != nil {
 		if err := s.Sandbox.Reconcile(ctx, *state.SandboxID); err != nil {
+			s.log("cleanup_failed", map[string]any{"attempt_id": claim.AttemptID, "step": "sandbox", "error": err.Error()})
 			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 		}
 	}
 	if watchdog != nil {
 		if err := watchdog.Disarm(); err != nil {
+			s.log("cleanup_failed", map[string]any{"attempt_id": claim.AttemptID, "step": "watchdog", "error": err.Error()})
 			return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 		}
 	}
 	if err := s.Workspaces.Remove(state.Workspace); err != nil {
+		s.log("cleanup_failed", map[string]any{"attempt_id": claim.AttemptID, "step": "workspace", "error": err.Error()})
 		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 	}
 	if err := s.Client.AcknowledgeStopped(ctx, claim); err != nil {
+		s.log("cleanup_failed", map[string]any{"attempt_id": claim.AttemptID, "step": "acknowledge", "error": err.Error()})
 		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 	}
 	if err := s.State.Clear(); err != nil {
+		s.log("cleanup_failed", map[string]any{"attempt_id": claim.AttemptID, "step": "state_clear", "error": err.Error()})
 		return fmt.Errorf("%w: %w", ErrCleanupUnconfirmed, err)
 	}
+	s.log("cleanup_done", map[string]any{"attempt_id": claim.AttemptID})
 	return nil
 }

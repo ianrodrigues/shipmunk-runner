@@ -45,7 +45,7 @@ func TestSupervisedOnceExitAndSafeOutput(t *testing.T) {
 		t.Run(test.outcome, func(t *testing.T) {
 			worker := &scriptedRunner{results: []supervisor.Outcome{{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: test.outcome}}}
 			var stdout, stderr bytes.Buffer
-			code := runSupervised(context.Background(), worker, true, &stdout, &stderr)
+			code := runSupervised(context.Background(), worker, true, &stdout, &stderr, "")
 			if code != test.code || worker.calls != 1 || stderr.Len() != 0 || !strings.Contains(stdout.String(), test.outcome) {
 				t.Fatalf("code=%d calls=%d stdout=%q stderr=%q", code, worker.calls, stdout.String(), stderr.String())
 			}
@@ -56,7 +56,7 @@ func TestSupervisedOnceExitAndSafeOutput(t *testing.T) {
 func TestSupervisedIdleAndContinuousPolling(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	worker := &scriptedRunner{}
-	if code := runSupervised(context.Background(), worker, true, &stdout, &stderr); code != 0 || worker.calls != 1 || !strings.Contains(stdout.String(), "No eligible queued work") {
+	if code := runSupervised(context.Background(), worker, true, &stdout, &stderr, ""); code != 0 || worker.calls != 1 || !strings.Contains(stdout.String(), "No eligible queued work") {
 		t.Fatalf("idle code=%d stdout=%q", code, stdout.String())
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -64,7 +64,7 @@ func TestSupervisedIdleAndContinuousPolling(t *testing.T) {
 	worker = &scriptedRunner{results: []supervisor.Outcome{{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "incomplete"}, {Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "no_findings"}}, cancel: cancel}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSupervised(ctx, worker, false, &stdout, &stderr); code != 1 || worker.calls != 3 || !strings.Contains(stdout.String(), "incomplete") || !strings.Contains(stdout.String(), "no_findings") {
+	if code := runSupervised(ctx, worker, false, &stdout, &stderr, ""); code != 1 || worker.calls != 3 || !strings.Contains(stdout.String(), "incomplete") || !strings.Contains(stdout.String(), "no_findings") {
 		t.Fatalf("continuous code=%d calls=%d stdout=%q", code, worker.calls, stdout.String())
 	}
 }
@@ -72,7 +72,7 @@ func TestSupervisedIdleAndContinuousPolling(t *testing.T) {
 func TestSupervisedErrorsNeverExposeRawMessages(t *testing.T) {
 	for _, failure := range []error{errors.New("SYNTHETIC_SECRET: raw native output"), &protocol.ControlPlaneError{StatusCode: 403}, supervisor.ErrCleanupUnconfirmed} {
 		var stdout, stderr bytes.Buffer
-		if code := runSupervised(context.Background(), &scriptedRunner{err: failure}, true, &stdout, &stderr); code != 1 || stdout.Len() != 0 || strings.Contains(stderr.String(), "SYNTHETIC_SECRET") || stderr.Len() == 0 {
+		if code := runSupervised(context.Background(), &scriptedRunner{err: failure}, true, &stdout, &stderr, ""); code != 1 || stdout.Len() != 0 || strings.Contains(stderr.String(), "SYNTHETIC_SECRET") || stderr.Len() == 0 {
 			t.Fatalf("unsafe error code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 		}
 	}
@@ -93,11 +93,52 @@ func TestSupervisedFailuresNameTheirCondition(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := runSupervised(context.Background(), &scriptedRunner{err: test.failure}, true, &stdout, &stderr)
+			code := runSupervised(context.Background(), &scriptedRunner{err: test.failure}, true, &stdout, &stderr, "")
 			if code != 1 || !strings.Contains(stderr.String(), test.expect) || strings.Contains(stderr.String(), "SYNTHETIC_SECRET") {
 				t.Fatalf("code=%d stderr=%q", code, stderr.String())
 			}
 		})
+	}
+}
+
+func TestSupervisionFailurePointsAtLogPath(t *testing.T) {
+	message := supervisionFailure(supervisor.ErrCleanupUnconfirmed, "/state/logs/runner.log")
+	if !strings.Contains(message, "could not confirm sandbox cleanup") || !strings.Contains(message, "/state/logs/runner.log") {
+		t.Fatalf("expected the log path to be named alongside the condition: %q", message)
+	}
+	if without := supervisionFailure(supervisor.ErrCleanupUnconfirmed, ""); strings.Contains(without, "runner log") {
+		t.Fatalf("expected no log pointer without a log path: %q", without)
+	}
+}
+
+func TestRunSupervisedPointsAtLogPathOnFailure(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), &scriptedRunner{err: supervisor.ErrLeaseExpired}, true, &stdout, &stderr, "/state/logs/runner.log")
+	if code != 1 || !strings.Contains(stderr.String(), "/state/logs/runner.log") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunnerSetupFailureNamesLogPathAndRecordsStep(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := RunRunner([]string{"--base-url=https://runner.example", "--token-file=" + filepath.Join(stateDir, "missing.token"), "--state-dir=" + stateDir, "--image=fixture"}, &stdout, &stderr)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q", code, stdout.String())
+	}
+	logPath := filepath.Join(stateDir, "logs", "runner.log")
+	if !strings.Contains(stderr.String(), "Runner setup failed") || !strings.Contains(stderr.String(), logPath) {
+		t.Fatalf("stderr does not name the runner log: %q", stderr.String())
+	}
+	contents, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected a runner log at %s: %v", logPath, err)
+	}
+	if !strings.Contains(string(contents), "setup_failed") || !strings.Contains(string(contents), "read_token") {
+		t.Fatalf("expected the log to record the failing step: %s", contents)
 	}
 }
 

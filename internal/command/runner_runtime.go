@@ -17,6 +17,7 @@ import (
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/attemptstate"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+	"github.com/ianrodrigues/shipmunk-runner/internal/runlog"
 	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 	"github.com/ianrodrigues/shipmunk-runner/internal/supervisor"
 	"github.com/ianrodrigues/shipmunk-runner/internal/workspace"
@@ -29,21 +30,28 @@ func runFixtureRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Run the runner as a dedicated non-root account with Docker access.")
 		return 1
 	}
+	// A log directory that cannot be opened must not block the runner; supervision proceeds without an event log.
+	logger, _ := runlog.Open(options.StateDir)
+	defer logger.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	worker, closeState, err := prepareFixtureRunner(ctx, options)
+	worker, closeState, err := prepareFixtureRunner(ctx, options, logger)
 	if err != nil {
-		fmt.Fprintln(stderr, "Runner setup failed. Check the private token, state directory, Docker engine, image, and adjacent shipmunk-watchdog executable.")
+		fmt.Fprintln(stderr, setupFailure("Check the private token, state directory, Docker engine, image, and adjacent shipmunk-watchdog executable.", logger))
 		return 1
 	}
 	defer closeState()
-	return runSupervised(ctx, worker, options.Once, stdout, stderr)
+	return runSupervised(ctx, worker, options.Once, stdout, stderr, logger.Path())
 }
 
-func prepareFixtureRunner(ctx context.Context, options RunnerOptions) (*supervisor.Supervisor, func() error, error) {
+func prepareFixtureRunner(ctx context.Context, options RunnerOptions, logger *runlog.Logger) (*supervisor.Supervisor, func() error, error) {
+	fail := func(err error, step string) (*supervisor.Supervisor, func() error, error) {
+		logger.Event("setup_failed", map[string]any{"step": step, "error": err.Error()})
+		return nil, nil, err
+	}
 	store, err := attemptstate.Open(filepath.Join(options.StateDir, "active-attempt.json"))
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "attempt_state")
 	}
 	ready := false
 	defer func() {
@@ -54,59 +62,59 @@ func prepareFixtureRunner(ctx context.Context, options RunnerOptions) (*supervis
 	runnerStartupAfterAttemptLock()
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "read_token")
 	}
 	client, err := protocol.NewHTTPClient(options.BaseURL, token, nil)
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "http_client")
 	}
 	executable, err := os.Executable()
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "executable_path")
 	}
 	executable, err = filepath.EvalSymlinks(executable)
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "executable_path")
 	}
 	watchdog := filepath.Join(filepath.Dir(executable), "shipmunk-watchdog")
 	info, err := os.Lstat(watchdog)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Mode().Perm()&0022 != 0 {
-		return nil, nil, errors.New("independent watchdog executable is unavailable or unsafe")
+		return fail(errors.New("independent watchdog executable is unavailable or unsafe"), "watchdog_executable")
 	}
 	dockerExecutable, err := exec.LookPath("docker")
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "docker_lookup")
 	}
 	platform, err := dockerPreflight(ctx, dockerExecutable, "version", "--format", "{{.Server.Os}}")
 	if err != nil || platform != "linux" {
-		return nil, nil, errors.New("a Linux Docker engine is required")
+		return fail(errors.New("a Linux Docker engine is required"), "docker_platform")
 	}
 	image, err := dockerPreflight(ctx, dockerExecutable, "image", "inspect", "--format", "{{.Id}}", "--", options.Image)
 	if err != nil || !regexp.MustCompile(`^sha256:[a-f0-9]{64}$`).MatchString(image) {
-		return nil, nil, errors.New("runtime image must exist locally")
+		return fail(errors.New("runtime image must exist locally"), "docker_image")
 	}
 	config := sandbox.Config{Image: image, DockerExecutable: dockerExecutable, WatchdogExecutable: watchdog}
 	docker, err := sandbox.New(config)
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "sandbox_init")
 	}
 	workspaces, err := workspace.New(filepath.Join(options.StateDir, "workspaces"))
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "workspace_init")
 	}
 	ready = true
-	return &supervisor.Supervisor{Client: client, State: store, Workspaces: workspaces, Sandbox: supervisor.DockerBackend{Docker: docker}, Watchdog: supervisor.HostWatchdog{Watchdog: sandbox.NewWatchdog(config)}}, store.Close, nil
+	return &supervisor.Supervisor{Client: client, State: store, Workspaces: workspaces, Sandbox: supervisor.DockerBackend{Docker: docker}, Watchdog: supervisor.HostWatchdog{Watchdog: sandbox.NewWatchdog(config)}, Log: logger}, store.Close, nil
 }
 
 type attemptRunner interface {
 	RunOnce(context.Context) (supervisor.Outcome, error)
 }
 
-func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout, stderr io.Writer) int {
+func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout, stderr io.Writer, logPath string) int {
 	for {
 		outcome, err := worker.RunOnce(ctx)
 		if err != nil {
-			fmt.Fprintln(stderr, supervisionFailure(err))
+			fmt.Fprintln(stderr, supervisionFailure(err, logPath))
 			return 1
 		}
 		code := 0
@@ -138,28 +146,46 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 	}
 }
 
-// supervisionFailure names the condition that ended supervision, without repeating an internal error.
-func supervisionFailure(err error) string {
+// supervisionFailure names the condition that ended supervision, without
+// repeating an internal error, and points at the runner log where the
+// classified reason and surrounding events are recorded.
+func supervisionFailure(err error, logPath string) string {
 	var requestError *protocol.ControlPlaneError
 	var refused *supervisor.RefusedStoppedError
+	var message string
 	switch {
 	case errors.As(err, &refused):
-		return fmt.Sprintf("The application refused the stopped acknowledgement (%d of %d); the attempt journal is kept for recovery and clears on its own once that bound is reached. Run 'run --discard-attempt' to discard the local journal immediately instead; the application's own capacity reservation is released separately.", refused.Count, refused.Threshold)
+		message = fmt.Sprintf("The application refused the stopped acknowledgement (%d of %d); the attempt journal is kept for recovery and clears on its own once that bound is reached. Run 'run --discard-attempt' to discard the local journal immediately instead; the application's own capacity reservation is released separately.", refused.Count, refused.Threshold)
 	case errors.Is(err, supervisor.ErrCleanupUnconfirmed):
-		return "Runner could not confirm sandbox cleanup, so the attempt journal is kept for recovery. Check the Docker engine and the application."
+		message = "Runner could not confirm sandbox cleanup, so the attempt journal is kept for recovery. Check the Docker engine and the application."
 	case errors.Is(err, supervisor.ErrLeaseExpired):
-		return "Runner attempt lease expired before a result could be reported."
+		message = "Runner attempt lease expired before a result could be reported."
 	case errors.Is(err, supervisor.ErrStopped):
-		return "The application revoked this attempt before it completed."
+		message = "The application revoked this attempt before it completed."
 	case errors.As(err, &requestError):
-		return fmt.Sprintf("Runner request failed with HTTP %d. Check the runner connection and authorization.", requestError.StatusCode)
+		message = fmt.Sprintf("Runner request failed with HTTP %d. Check the runner connection and authorization.", requestError.StatusCode)
 	case errors.Is(err, context.Canceled):
-		return "Runner stopped on request before an attempt completed."
+		message = "Runner stopped on request before an attempt completed."
 	case errors.Is(err, context.DeadlineExceeded):
-		return "Runner attempt passed its deadline before a result could be reported."
+		message = "Runner attempt passed its deadline before a result could be reported."
 	default:
-		return "Runner stopped before a completed result could be reported. Check the application run and runner configuration."
+		message = "Runner stopped before a completed result could be reported. Check the application run and runner configuration."
 	}
+	return withLogPointer(message, logPath)
+}
+
+// setupFailure names the generic setup boundary that failed, without
+// repeating the internal error (setup happens before the token and
+// connection are trusted), and points at the runner log for the recorded step.
+func setupFailure(hint string, logger *runlog.Logger) string {
+	return withLogPointer("Runner setup failed. "+hint, logger.Path())
+}
+
+func withLogPointer(message, logPath string) string {
+	if logPath == "" {
+		return message
+	}
+	return fmt.Sprintf("%s Check the runner log for the recorded condition: %s", message, logPath)
 }
 
 type preflightBuffer struct{ bytes.Buffer }

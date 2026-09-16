@@ -38,9 +38,9 @@ func TestRunnerLocksAttemptStateBeforeReadingActivationGuardedToken(t *testing.T
 			go func() {
 				var prepareErr error
 				if driver == "fixture" {
-					_, _, prepareErr = prepareFixtureRunner(context.Background(), options)
+					_, _, prepareErr = prepareFixtureRunner(context.Background(), options, nil)
 				} else {
-					_, _, prepareErr = prepareCodexRunner(context.Background(), options)
+					_, _, prepareErr = prepareCodexRunner(context.Background(), options, nil)
 				}
 				result <- prepareErr
 			}()
