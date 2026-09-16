@@ -32,6 +32,9 @@ const (
 
 // sensitiveFieldPattern redacts a field by name as a safety net; callers must
 // still never pass secrets, tokens, or repository content as field values.
+// "key" and "session" are broad on purpose: a future field such as
+// cache_key, sandbox_key, or session_id redacts by default rather than
+// silently slipping past the net.
 var sensitiveFieldPattern = regexp.MustCompile(`(?i)token|secret|password|credential|authoriz|key|bearer|jwt|cookie|session|signature|signed_url`)
 
 // secretShapePattern catches a bearer-prefixed or JWT-shaped value even under
@@ -131,10 +134,21 @@ func (l *Logger) Event(event string, fields map[string]any) {
 		return
 	}
 	line = append(line, '\n')
+	if int64(len(line)) > maxFileBytes {
+		// A record larger than a whole generation can never fit after
+		// rotation; writing it would break the per-file and total size
+		// bounds, so drop it, matching the best-effort contract.
+		return
+	}
 	if err := l.rotateIfNeeded(int64(len(line))); err != nil {
 		return
 	}
-	if n, err := l.file.Write(line); err == nil {
+	if n, err := l.file.Write(line); err != nil {
+		// A write error leaves the fd in an unknown state; drop it so the
+		// next Event reopens (and can emit the give-up notice) instead of
+		// silently discarding every subsequent event through a dead file.
+		l.file = nil
+	} else {
 		l.size += int64(n)
 	}
 }
@@ -181,10 +195,11 @@ func (l *Logger) rotateIfNeeded(next int64) error {
 	if l.file == nil || l.size+next <= maxFileBytes {
 		return nil
 	}
-	if err := l.file.Close(); err != nil {
-		return err
-	}
+	closeErr := l.file.Close()
 	l.file = nil
+	if closeErr != nil {
+		return closeErr
+	}
 	for generation := maxGenerations - 1; generation >= 1; generation-- {
 		src := l.generationPath(generation)
 		if _, err := os.Stat(src); err == nil {
