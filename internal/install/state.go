@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -305,7 +306,7 @@ func (guard Guard) ActivateLaunchers(config, profileToken, executionToken []byte
 		return fmt.Errorf("execution token is invalid: %w", err)
 	}
 	values := map[string][]byte{"config.json": config, "profile.token": profileToken, "execution.token": executionToken}
-	for _, name := range []string{"run", "connect"} {
+	for _, name := range launcherNames {
 		value, ok := launchers[name]
 		if launchers != nil && (!ok || len(value) == 0 || len(value) > maxConfigBytes) {
 			return errors.New("runner launcher is invalid")
@@ -332,11 +333,18 @@ type activationJournal struct {
 
 var activationOrder = []string{"profile.token", "execution.token", "config.json"}
 
+// launcherNames lists the installed thin-wrapper scripts, one per operator subcommand that needs an install root.
+var launcherNames = []string{"run", "connect", "probe"}
+
 func activationNames(withLaunchers bool) []string {
-	if withLaunchers {
-		return []string{"profile.token", "execution.token", "run", "connect", "config.json"}
+	if !withLaunchers {
+		return activationOrder
 	}
-	return activationOrder
+	names := make([]string, 0, len(launcherNames)+3)
+	names = append(names, "profile.token", "execution.token")
+	names = append(names, launcherNames...)
+	names = append(names, "config.json")
+	return names
 }
 
 func (guard Guard) withLocks(operation func(*attemptstate.Store) error) error {
@@ -447,11 +455,12 @@ func (guard Guard) recover() error {
 		return errors.New("activation recovery journal is invalid")
 	}
 	files, ok := object["files"].(map[string]any)
-	if !ok || (len(files) != 3 && len(files) != 5) {
+	withLauncherCount, withoutLauncherCount := len(activationNames(true)), len(activationOrder)
+	if !ok || (len(files) != withoutLauncherCount && len(files) != withLauncherCount) {
 		return errors.New("activation recovery journal is invalid")
 	}
 	names := activationOrder
-	if len(files) == 5 {
+	if len(files) == withLauncherCount {
 		names = activationNames(true)
 	}
 	for _, name := range names {
@@ -551,14 +560,14 @@ func (guard Guard) removePreparation() error {
 }
 
 func readActivatedFile(path, name string) ([]byte, error) {
-	if name != "run" && name != "connect" {
+	if !slices.Contains(launcherNames, name) {
 		return readPrivateFile(path, maxConfigBytes)
 	}
 	return readExecutableFile(path, maxConfigBytes)
 }
 
 func writeActivatedFile(path, name string, raw []byte) error {
-	if name == "run" || name == "connect" {
+	if slices.Contains(launcherNames, name) {
 		return writeExecutableExclusive(path, raw)
 	}
 	return writePrivateExclusive(path, raw)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -513,15 +514,16 @@ func TestActivateRollsBackEveryPriorFileAfterInjectedFailure(t *testing.T) {
 
 func TestActivateLaunchersPreservesModesAndRollsBackEveryRename(t *testing.T) {
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	for failure := 1; failure <= 5; failure++ {
+	for failure := 1; failure <= 6; failure++ {
 		t.Run(fmt.Sprintf("rename-%d", failure), func(t *testing.T) {
 			root := installation(t)
 			previous := map[string][]byte{
 				"config.json": configuration(root, identity, "v1.2.3-old"), "profile.token": []byte("old-profile"),
-				"execution.token": []byte("old-execution"), "run": []byte("#!/bin/sh\nold-run\n"), "connect": []byte("#!/bin/sh\nold-connect\n"),
+				"execution.token": []byte("old-execution"), "run": []byte("#!/bin/sh\nold-run\n"),
+				"connect": []byte("#!/bin/sh\nold-connect\n"), "probe": []byte("#!/bin/sh\nold-probe\n"),
 			}
 			for name, raw := range previous {
-				if name == "run" || name == "connect" {
+				if slices.Contains(launcherNames, name) {
 					if err := os.WriteFile(filepath.Join(root, name), raw, 0700); err != nil {
 						t.Fatal(err)
 					}
@@ -538,7 +540,7 @@ func TestActivateLaunchersPreservesModesAndRollsBackEveryRename(t *testing.T) {
 				return os.Rename(old, new)
 			}}
 			err := guard.ActivateLaunchers(configuration(root, identity, "v1.2.3-new"), []byte("new-profile"), []byte("new-execution"), map[string][]byte{
-				"run": []byte("#!/bin/sh\nnew-run\n"), "connect": []byte("#!/bin/sh\nnew-connect\n"),
+				"run": []byte("#!/bin/sh\nnew-run\n"), "connect": []byte("#!/bin/sh\nnew-connect\n"), "probe": []byte("#!/bin/sh\nnew-probe\n"),
 			})
 			if err == nil {
 				t.Fatal("injected failure was ignored")
@@ -549,7 +551,7 @@ func TestActivateLaunchersPreservesModesAndRollsBackEveryRename(t *testing.T) {
 					t.Fatalf("%s = %q, %v", name, raw, readErr)
 				}
 				mode := os.FileMode(0600)
-				if name == "run" || name == "connect" {
+				if slices.Contains(launcherNames, name) {
 					mode = 0700
 				}
 				if info, statErr := os.Stat(filepath.Join(root, name)); statErr != nil || info.Mode().Perm() != mode {
