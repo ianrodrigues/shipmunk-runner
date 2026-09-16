@@ -75,9 +75,12 @@ func (g *leaseGuard) renew() error {
 	if err := g.ctx.Err(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(g.ctx, 5*time.Second)
-	defer cancel()
-	lease, stop, err := g.supervisor.Client.Heartbeat(ctx, g.claim)
+	// No per-call timeout here: the client already enforces its own budget,
+	// and a caller deadline set to the same value would race it and always
+	// lose (created first), surfacing a bare context.DeadlineExceeded
+	// instead of *protocol.HTTPTimeoutError. g.ctx carries the attempt's
+	// own deadline, which is what a caller context should still mean here.
+	lease, stop, err := g.supervisor.Client.Heartbeat(g.ctx, g.claim)
 	if err != nil {
 		g.supervisor.log("heartbeat_failed", map[string]any{"attempt_id": g.claim.AttemptID, "error": err.Error()})
 		return err
@@ -216,9 +219,8 @@ func (g *leaseGuard) complete(raw []byte) error {
 	if err := g.ctx.Err(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(g.ctx, 5*time.Second)
-	defer cancel()
-	if err := g.supervisor.Client.Complete(ctx, g.claim, raw); err != nil {
+	// No per-call timeout here: same reasoning as renew above.
+	if err := g.supervisor.Client.Complete(g.ctx, g.claim, raw); err != nil {
 		return err
 	}
 	// Do not send another active heartbeat after accepted completion.
