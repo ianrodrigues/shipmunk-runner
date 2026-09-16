@@ -34,8 +34,6 @@ var setupImageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // wrapped error's text IS the reason, and errors.Is still classifies it.
 var errUnsafeSetupFile = errors.New("")
 
-// setupFileMessage appends a readPublicSetupFile guard reason to prefix, or
-// returns prefix unchanged for any other error.
 func setupFileMessage(prefix string, err error) string {
 	if !errors.Is(err, errUnsafeSetupFile) {
 		return prefix
