@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 	"github.com/ianrodrigues/shipmunk-runner/internal/supervisor"
 )
 
@@ -110,19 +111,29 @@ func TestSupervisedIdlePollsDoNotResetTheConsecutiveCount(t *testing.T) {
 
 func TestSupervisedExcludesServerAndTransportCausesFromCleanupCount(t *testing.T) {
 	networkErr := &net.DNSError{Err: "no such host", Name: "runner.example", IsTimeout: true}
-	for name, failure := range map[string]error{
-		"refused stopped ack": fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &supervisor.RefusedStoppedError{Count: 1, Threshold: 3}),
-		"control plane error": fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503}),
-		"network error":       fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, networkErr),
+	// Each cause is retested across four identical polls with once=false, so
+	// the assertion actually proves the cause is never counted across polls
+	// rather than merely on a single call. A refused stopped acknowledgement
+	// never retries in-process (see retryableCleanupFailure), so it exits
+	// after its one call; the other causes retry until sequencedRunner's
+	// steps are exhausted, at which point the unretryable exhaustion
+	// sentinel ends the loop on the fifth call.
+	for name, testCase := range map[string]struct {
+		failure error
+		calls   int
+	}{
+		"refused stopped ack": {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &supervisor.RefusedStoppedError{Count: 1, Threshold: 3}), 1},
+		"control plane error": {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503}), 5},
+		"network error":       {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, networkErr), 5},
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner := &sequencedRunner{steps: []sequencedStep{
-				{err: failure}, {err: failure}, {err: failure}, {err: failure},
+				{err: testCase.failure}, {err: testCase.failure}, {err: testCase.failure}, {err: testCase.failure},
 			}}
 			var stdout, stderr bytes.Buffer
-			code := runSupervised(context.Background(), runner, true, &stdout, &stderr, "")
-			if code != 1 {
-				t.Fatalf("code=%d", code)
+			code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+			if code != 1 || runner.calls != testCase.calls {
+				t.Fatalf("code=%d calls=%d want %d, stderr=%q", code, runner.calls, testCase.calls, stderr.String())
 			}
 			if strings.Contains(stderr.String(), "consecutive runner-classified failures") {
 				t.Fatalf("server/transport cause must never count toward the runner-defect bound: %q", stderr.String())
@@ -151,6 +162,19 @@ func TestSupervisedNeverRetriesInProcessOnARefusedStoppedAcknowledgement(t *test
 	}
 	if !strings.Contains(stderr.String(), "refused the stopped acknowledgement (1 of 3)") {
 		t.Fatalf("expected the refused-stopped message to survive: %q", stderr.String())
+	}
+}
+
+func TestSupervisedNeverRetriesInProcessOnAnUncertainSandboxCreate(t *testing.T) {
+	uncertain := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, sandbox.ErrCreateUncertain)
+	runner := &sequencedRunner{steps: []sequencedStep{{err: uncertain}, {err: uncertain}}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 1 {
+		t.Fatalf("expected an uncertain sandbox create to end supervision without an in-process retry: code=%d calls=%d", code, runner.calls)
+	}
+	if !strings.Contains(stderr.String(), "could not confirm sandbox cleanup") {
+		t.Fatalf("expected supervisionFailure to be printed: %q", stderr.String())
 	}
 }
 
