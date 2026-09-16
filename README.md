@@ -4,6 +4,8 @@ The standalone execution host for Shipmunk. The Go runner runs Codex work in iso
 
 The initial version is `v0.1.0-alpha.1`. Runner versions and release tags are independent of application versions; each deployment pins a specific published tag from its own `runner-release.json`. Every tag remains a prerelease until noted otherwise: offline checks establish the tested behavior, not live subscription compatibility or full product release readiness.
 
+See the [releases page](https://github.com/ianrodrigues/shipmunk-runner/releases) for the current prerelease tag; this document never hardcodes one.
+
 ## Install and connect
 
 Use **Connections → Runners & Codex** in your Shipmunk application to register a runner and download its short-lived setup file. The dashboard also shows a hosted bootstrap command for the dedicated execution host; running it downloads the exact public Go release pinned by the application, verifies the platform archive's SHA-256 digest against the digests recorded in the release manifest and `SHA256SUMS`, and runs the verified `shipmunk-runner setup` subcommand from that archive. No PHP, Go toolchain, application checkout or database access is needed on the runner host — only `curl`, `tar`, `sha256sum`/`shasum`, Bash and a reachable Linux Docker engine (Docker Desktop on macOS can provide it). Run as the designated non-root account.
@@ -79,6 +81,6 @@ Publishing either a stable release or a prerelease triggers the workflow. Draft 
 
 ## Source relationship and license
 
-This repository is the public source for runner releases. Runner source and native checks live here. The application consumes the pinned public release for setup and does not retain a tracked runner source copy. Runner-coupled application tests are temporarily disabled until a separate cross-repository integration strategy is implemented. [source-snapshot.json](source-snapshot.json) records the initial snapshot's origin and file hashes without copying private repository history. Future runner changes should be reviewed here, released under an independent version, and then adopted through an explicit application release-pin update.
+This repository is the public source for runner releases. Runner source and native checks live here. The application consumes the pinned public release for setup and does not retain a tracked runner source copy. Runner-coupled application tests are skipped in the server's default `make check` run and are run end to end against the exact pinned release by `make published-runner-check`. [source-snapshot.json](source-snapshot.json) records the initial snapshot's origin and file hashes without copying private repository history. Future runner changes should be reviewed here, released under an independent version, and then adopted through an explicit application release-pin update.
 
 Copyright (C) 2026 Ian Rodrigues. The runner is licensed under AGPL-3.0-only. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); see [CONTRIBUTING.md](CONTRIBUTING.md) for contribution terms. Native clients and container dependencies retain their own licenses; they are downloaded from their official distributions rather than committed here.
