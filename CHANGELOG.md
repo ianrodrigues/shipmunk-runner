@@ -14,12 +14,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `shipmunk-setup` and `shipmunk-profile` are merged into one `shipmunk-runner` binary exposing `setup`, `connect`, `probe`, `run` and `disconnect` subcommands. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
 - Added a `disconnect` subcommand, and `connect`/`probe`/`disconnect` now print readable terminal status ("Runner is ready.") instead of only machine-readable output; pass `--json` for scripts. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
 
 ### Changed
 
+- `shipmunk-setup` and `shipmunk-profile` are merged into one `shipmunk-runner` binary exposing `setup`, `connect`, `probe`, `run` and `disconnect` subcommands. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
 - Guided setup now ends by actually running `connect` (unless `--skip-connect` is passed) instead of only activating configuration. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
+- `setup` now exits `0` when installed and connected (or when the confirmation prompt is declined), `3` when installed but the connect step did not finish, and `1` for every other setup failure. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
+- `connect`, `probe` and `disconnect` now reject a caller-supplied `--operation`, since the subcommand itself sets it; a failed `--json` operation now always emits `{"health":"error","reason":"operation_failed"}` with exit `1`. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
+
+### Removed
+
+- Removed the separate `shipmunk-setup` and `shipmunk-profile` binaries and the old `connect probe` trailing-argument form; only the merged `shipmunk-runner` subcommands are supported. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
+- An alpha.15-era `.activation.json` recovery journal is now rejected outright with no migration path; reinstall from a current release instead. ([#66](https://github.com/ianrodrigues/shipmunk-runner/pull/66))
 
 ### Fixed
 
@@ -68,7 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## v0.1.0-alpha.12 - 2026-09-15
 
-### Changed
+### Removed
 
 - Removed the legacy PHP runner implementation and its guided-setup path; the Go release binaries are now the only supported runner. ([#36](https://github.com/ianrodrigues/shipmunk-runner/pull/36))
 

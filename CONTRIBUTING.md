@@ -14,7 +14,7 @@ The commit-message hook in `.githooks/commit-msg` warns, without rejecting, on a
 
 ## Changelog
 
-A pull request that touches `cmd/` or `internal/` must add an operator-facing line under `CHANGELOG.md`'s `## Unreleased` section, or carry a `changelog: none` commit trailer when the change has no operator-visible effect; `make lint` and the pre-push hook enforce this.
+A pull request that touches `cmd/`, `internal/`, `containers/` or `runner/containers/` must also touch `CHANGELOG.md`, typically adding an operator-facing line under `Unreleased`; `make lint` and the pre-push hook only check that the file changed, not where. The escape hatch is a `changelog: none` commit trailer for a change with no operator-visible effect; one such trailer anywhere in the pushed range exempts the whole range, so it does not need to sit on every commit.
 
 ## Before opening a pull request
 
