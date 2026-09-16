@@ -40,9 +40,15 @@ func (err *ControlPlaneError) Unwrap() error {
 	return nil
 }
 
-// budgetedClient pairs an *http.Client with the fixed budget it was
-// constructed with, so a timeout from that client can be reported with the
-// budget that caused it.
+// The budgets are package variables only so tests can shrink them; every
+// request derives a context with its client's budget from these.
+var (
+	standardHTTPBudget = HTTPTimeoutSeconds * time.Second
+	claimHTTPBudget    = ClaimHTTPTimeoutSeconds * time.Second
+)
+
+// budgetedClient pairs an *http.Client with the budget each of its requests
+// runs under, so a timeout from that budget can be reported with its value.
 type budgetedClient struct {
 	http   *http.Client
 	budget time.Duration
@@ -94,8 +100,8 @@ func NewHTTPClient(baseURL, token string, transport http.RoundTripper) (*HTTPCli
 	checkRedirect := func(request *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	standardBudget := HTTPTimeoutSeconds * time.Second
-	claimBudget := ClaimHTTPTimeoutSeconds * time.Second
+	standardBudget := standardHTTPBudget
+	claimBudget := claimHTTPBudget
 	return &HTTPClient{
 		baseURL: parsed,
 		token:   token,
@@ -325,7 +331,9 @@ func (client *HTTPClient) jsonWith(ctx context.Context, httpClient budgetedClien
 
 func (client *HTTPClient) request(ctx context.Context, httpClient budgetedClient, method, path, body, accept string, maxBytes int) (response, error) {
 	endpoint := client.baseURL.JoinPath(path)
-	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), bytes.NewBufferString(body))
+	callCtx, cancel := context.WithTimeout(ctx, httpClient.budget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, method, endpoint.String(), bytes.NewBufferString(body))
 	if err != nil {
 		return response{}, err
 	}
@@ -337,7 +345,7 @@ func (client *HTTPClient) request(ctx context.Context, httpClient budgetedClient
 	req.Header.Set("X-Shipmunk-Protocol", Version)
 	res, err := httpClient.http.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(ctx, path, httpClient.budget, err))
+		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(callCtx, ctx, path, httpClient.budget, err))
 	}
 	defer res.Body.Close()
 	bytes, err := io.ReadAll(io.LimitReader(res.Body, int64(maxBytes)+1))
@@ -352,7 +360,9 @@ func (client *HTTPClient) request(ctx context.Context, httpClient budgetedClient
 
 func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash string, fence int64, body []byte) (response, error) {
 	endpoint := client.baseURL.JoinPath(path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	callCtx, cancel := context.WithTimeout(ctx, client.client.budget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
 		return response{}, err
 	}
@@ -366,7 +376,7 @@ func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash 
 	req.Header.Set("X-Protocol-Version", Version)
 	res, err := client.client.http.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(ctx, path, client.client.budget, err))
+		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(callCtx, ctx, path, client.client.budget, err))
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(res.Body, int64(ManifestMaxBytes)+1))
@@ -379,14 +389,14 @@ func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash 
 	return response{StatusCode: res.StatusCode, Header: res.Header.Clone(), Body: data}, nil
 }
 
-// httpCallError reports an HTTP call's own timeout as HTTPTimeoutError
-// instead of a bare context.DeadlineExceeded, but only when the caller's own
-// context is still live. If ctx already expired, Do's DeadlineExceeded came
-// from the caller's own deadline (e.g. the attempt's lease-bound context)
-// firing first, not this call's budget, so it must still read as the
-// attempt passing its deadline.
-func httpCallError(ctx context.Context, endpoint string, budget time.Duration, err error) error {
-	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+// httpCallError reports a timeout as HTTPTimeoutError only when the
+// request's own budget context expired while the caller's context was still
+// live. A transport may return a context.DeadlineExceeded of its own before
+// any budget elapsed, and an already-expired caller context (the attempt's
+// lease-bound context) must still read as the attempt passing its deadline,
+// so neither the error's shape nor the caller's context alone decides.
+func httpCallError(callCtx, ctx context.Context, endpoint string, budget time.Duration, err error) error {
+	if errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		return &HTTPTimeoutError{Endpoint: endpoint, Budget: budget}
 	}
 	return err
