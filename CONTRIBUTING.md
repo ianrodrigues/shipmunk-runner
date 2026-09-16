@@ -12,6 +12,10 @@ git commit -s
 
 The commit-message hook in `.githooks/commit-msg` warns, without rejecting, on a missing `Signed-off-by` trailer. This is a manual warning-only state; a maintainer will change the hook to reject missing trailers once the first external contribution lands, rather than the hook enforcing that transition itself.
 
+## Changelog
+
+A pull request that touches `cmd/` or `internal/` must add an operator-facing line under `CHANGELOG.md`'s `## Unreleased` section, or carry a `changelog: none` commit trailer when the change has no operator-visible effect; `make lint` and the pre-push hook enforce this.
+
 ## Before opening a pull request
 
 Run `make hooks` once to enable the tracked git hooks, then `make check`. See [README.md](README.md) for the full local-development and validation workflow.
