@@ -79,6 +79,22 @@ func TestAcknowledgeStoppedTimeoutUsesTheStandardBudget(t *testing.T) {
 	}
 }
 
+func TestCompleteTimeoutUsesTheStandardBudget(t *testing.T) {
+	shrinkBudgets(t)
+	client, err := NewHTTPClient("https://control.example", "synthetic-token", testRoundTripper(stalledTransport))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.Complete(context.Background(), testClaim(), readContractFixture(t, "result"))
+	var timeout *HTTPTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("expected an HTTPTimeoutError, got %v", err)
+	}
+	if timeout.Endpoint != "/runner/v1/attempts/"+testClaim().AttemptID+"/completion" || timeout.Budget != standardHTTPBudget {
+		t.Fatalf("unexpected timeout error: %+v", timeout)
+	}
+}
+
 // A transport's own DeadlineExceeded arrives before any budget elapsed, so
 // it must pass through untouched rather than claim a budget that never ran out.
 func TestTransportDeadlineErrorIsNotReportedAsABudgetTimeout(t *testing.T) {

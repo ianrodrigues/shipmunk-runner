@@ -10,9 +10,8 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
 
-// contextCapturingClient records the exact context each call received, so
-// tests can assert the lease guard hands the client its own attempt
-// context unwrapped rather than a shorter per-call deadline of its own.
+// Records the context each call received.
+// Confirms the guard passes its own attempt context through unwrapped.
 type contextCapturingClient struct {
 	*fixtureClient
 	heartbeatCtx, completeCtx context.Context
@@ -28,11 +27,9 @@ func (c *contextCapturingClient) Complete(ctx context.Context, _ protocol.Claim,
 	return nil
 }
 
-// budgetRaceClient reproduces protocol.HTTPClient's own budget-context
-// derivation (see internal/protocol/http.go's httpCallError) without a real
-// transport: it waits out its own budget against the caller's context and
-// only reports HTTPTimeoutError when the caller's context was still live
-// when the budget elapsed.
+// Reproduces the budget-context derivation in http.go's httpCallError, without a real transport.
+// Waits out its own budget against the caller's context.
+// Reports HTTPTimeoutError only if the caller's context was still live when the budget elapsed.
 type budgetRaceClient struct {
 	*fixtureClient
 	budget time.Duration
@@ -115,8 +112,10 @@ func TestLeaseHeartbeatTimeoutClassifiesAsHTTPBudgetTimeout(t *testing.T) {
 
 func TestLeaseHeartbeatWithExpiredAttemptContextReadsAsAttemptDeadline(t *testing.T) {
 	claim := fixtureClaim(t)
-	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 20 * time.Millisecond}
-	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(-time.Minute))
+	// The attempt deadline is still live when renew starts but expires while
+	// Heartbeat is blocked in it, well before the client's own budget would.
+	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond}
+	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(80*time.Millisecond))
 	defer cancel()
 
 	err := g.renew()
@@ -149,8 +148,10 @@ func TestLeaseCompleteTimeoutClassifiesAsHTTPBudgetTimeout(t *testing.T) {
 
 func TestLeaseCompleteWithExpiredAttemptContextReadsAsAttemptDeadline(t *testing.T) {
 	claim := fixtureClaim(t)
-	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 20 * time.Millisecond}
-	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(-time.Minute))
+	// The attempt deadline is still live when complete starts but expires
+	// while Complete is blocked in it, well before the client's own budget would.
+	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond}
+	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(80*time.Millisecond))
 	defer cancel()
 
 	err := g.complete([]byte("{}"))
