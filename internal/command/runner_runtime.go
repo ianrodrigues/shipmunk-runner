@@ -198,6 +198,11 @@ func retryableCleanupFailure(err error) bool {
 // sleepOrDone waits out the supervised loop's idle backoff, reporting false
 // if the context ended first so the caller can stop instead of continuing.
 func sleepOrDone(ctx context.Context, backoff time.Duration) bool {
+	// A context that ended before the wait must win even when the backoff is
+	// zero, or select could pick the expired timer and poll once more.
+	if ctx.Err() != nil {
+		return false
+	}
 	timer := time.NewTimer(backoff)
 	defer timer.Stop()
 	select {
