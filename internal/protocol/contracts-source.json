@@ -6,6 +6,26 @@
       "source": "contracts/v1/event-batch.schema.json",
       "sha256": "2efef78e09c12a6ecb5b3da106bc872f8076b3be6c2a2fc4c48a3455790658a8"
     },
+    "contracts/v1/manifest.schema.json": {
+      "source": "contracts/v1/manifest.schema.json",
+      "sha256": "700689cb081991a2a91a6da533679029de6722695f0abd25120ed57eabfb28f3"
+    },
+    "contracts/v1/patch-artifact.schema.json": {
+      "source": "contracts/v1/patch-artifact.schema.json",
+      "sha256": "aa3005f8bc81865efd2a9d980c09686c259c17a3392c88044885374c87a0a651"
+    },
+    "contracts/v1/result.schema.json": {
+      "source": "contracts/v1/result.schema.json",
+      "sha256": "c98adc6e223fe4228af39dbc5c187fdcdac2e4a7b751fd0d634312c900763779"
+    },
+    "contracts/v1/run-input.schema.json": {
+      "source": "contracts/v1/run-input.schema.json",
+      "sha256": "27e624ed03e071236a33b7116be53b7f4b3fc356a0deebb8208e1b80a79c0a11"
+    },
+    "contracts/v1/worker-event.schema.json": {
+      "source": "contracts/v1/worker-event.schema.json",
+      "sha256": "6e2d4a7b34c15947226e0002f096b9a129cd05eb471dc3e551d223c7f7912c4f"
+    },
     "testdata/contracts/v1/fixtures/invalid/coverage-on-needs-input.json": {
       "source": "contracts/v1/fixtures/invalid/coverage-on-needs-input.json",
       "sha256": "471ca1b80ff72e94f672c20ec82065937ef8c1da30e711592951034f4baf6386"
@@ -157,26 +177,6 @@
     "testdata/contracts/v1/fixtures/valid/worker-event.json": {
       "source": "contracts/v1/fixtures/valid/worker-event.json",
       "sha256": "659c56dcc3441974e4c148e1674227d1f5446b3fe18bee539219ed8678460d06"
-    },
-    "contracts/v1/manifest.schema.json": {
-      "source": "contracts/v1/manifest.schema.json",
-      "sha256": "700689cb081991a2a91a6da533679029de6722695f0abd25120ed57eabfb28f3"
-    },
-    "contracts/v1/patch-artifact.schema.json": {
-      "source": "contracts/v1/patch-artifact.schema.json",
-      "sha256": "aa3005f8bc81865efd2a9d980c09686c259c17a3392c88044885374c87a0a651"
-    },
-    "contracts/v1/result.schema.json": {
-      "source": "contracts/v1/result.schema.json",
-      "sha256": "c98adc6e223fe4228af39dbc5c187fdcdac2e4a7b751fd0d634312c900763779"
-    },
-    "contracts/v1/run-input.schema.json": {
-      "source": "contracts/v1/run-input.schema.json",
-      "sha256": "27e624ed03e071236a33b7116be53b7f4b3fc356a0deebb8208e1b80a79c0a11"
-    },
-    "contracts/v1/worker-event.schema.json": {
-      "source": "contracts/v1/worker-event.schema.json",
-      "sha256": "6e2d4a7b34c15947226e0002f096b9a129cd05eb471dc3e551d223c7f7912c4f"
     }
   }
 }

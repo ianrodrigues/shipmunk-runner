@@ -714,10 +714,18 @@ func parseFinding(value any) (Finding, bool) {
 	return Finding{Category: category, Title: title, Severity: severity, Relation: relation, Scenario: scenario, Consequence: consequence, Action: action, Explanation: explanation, Evidence: evidence, Anchor: anchor}, valid
 }
 
-// singleLineTitle counts characters, not bytes, so it agrees with the contract's minLength/maxLength.
+// Counts runes, not bytes, to match the contract's minLength/maxLength.
 func singleLineTitle(title string) bool {
 	count := utf8.RuneCountInString(title)
-	return count >= MinFindingTitleChars && count <= MaxFindingTitleChars && !strings.ContainsAny(title, "\r\n")
+	if count < MinFindingTitleChars || count > MaxFindingTitleChars || strings.TrimSpace(title) == "" {
+		return false
+	}
+	for _, r := range title {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == '\u2028' || r == '\u2029' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseEvidenceRef(value any) (EvidenceRef, bool) {

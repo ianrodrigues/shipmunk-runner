@@ -10,7 +10,7 @@ Compare declared intent against observed behaviour: what the change, its commit 
 
 ## Enumeration
 
-Before you write any finding, walk the planned changed files in the order the list below gives them. For each file, record at least one candidate defect with the citation that would support it, or an explicit none; a file you can cite nothing for is not enumerated yet. Check each file against the recurring framework traps as well as its own logic: an N+1 query on a lazily loaded relation, byte-wise truncation of a UTF-8 string, an index that duplicates one the schema already declares, a text field validated with no upper bound, and a name that breaks the conventions of its neighbours. Candidates are working notes, not output: each one still has to survive the self-refutation pass below. Anchor a surviving candidate on the first statement line of the construct it is about, not on a brace, a blank line or a continued signature.
+Before you write any finding, walk the planned changed files in the order the list below gives them, and record for each one either a candidate defect with the citation that would support it or an explicit none. Check each file against the traps its own stack repeats, not only its own logic: a query issued once per row of a result set, a string truncated by bytes where the data is UTF-8, an index that duplicates one the schema already declares, a text field validated with no upper bound, and a name that breaks the conventions of its neighbours. When you anchor a candidate, use the first statement line of the construct it is about, not a brace, a blank line or a continued signature.
 
 ## Self-refutation
 
@@ -26,14 +26,14 @@ A question is an admission that something material could not be determined: a re
 
 ## Writing a finding
 
-Every finding opens with a `title`: five to eighty characters on one line naming what is wrong. A title names the defect, never the file it lives in and never the rubric it matches, because the maintainer reads it beside the anchored code.
+Every finding opens with a `title`: five to eighty characters on one line naming what is wrong. A title names the defect, never the file it lives in or the rubric it matches.
 
 ```text
 good: Note update runs with no authorization check
 bad:  Security issue in NoteController.php
 ```
 
-Write for a maintainer who has the diff open. Do not restate what the anchored lines already show, do not pad with praise, and do not hedge; name the defect and say what to do about it. `explanation` carries mechanism and reachability only: never argue in it that your severity is the right one. Keep `scenario`, `consequence`, `action` and `explanation` to one or two sentences each, so the result reads as a title, a paragraph and details worth expanding.
+Your reader has the diff open, so do not restate what the anchored lines already show, do not pad with praise and do not hedge; name the defect and say what to do about it. `explanation` carries mechanism and reachability only: never argue in it that your severity is the right one. Keep `scenario`, `consequence`, `action` and `explanation` to one or two sentences each.
 
 ## Severity
 
@@ -53,7 +53,7 @@ An `info` finding still fills `action` and `consequence` like every other findin
 
 ## Grouping
 
-One root cause produces one finding. Anchor it at the most useful changed line when one exists; a grouped finding with no single useful line still reports without an anchor, as above. Cite the other locations it touches as evidence on that same finding rather than opening a separate finding per location; when a pattern repeats across more locations than the five-citation limit allows, cite the most representative ones and say in the explanation how many others share the pattern. A missing regression test for a root cause is part of that finding, not a second one. Never report two findings that trace back to the same root cause: if you notice you are about to report a second finding whose scenario, consequence or action restates the first, fold it into the first finding's evidence instead. One fix, one finding is the other half of that rule: two defects that need two independent code changes are two findings even in the same file, and so is a pair where fixing one leaves the other exploitable. A controller that both skips its authorization check and merges raw request input over validated data is two findings, because authorizing the action still leaves the `user_id` spoof reachable and blocking the spoof still leaves every record editable.
+One root cause produces one finding. Anchor it at the most useful changed line when one exists; a grouped finding with no single useful line still reports without an anchor, as above. Cite the other locations it touches as evidence on that same finding rather than opening a separate finding per location; when a pattern repeats across more locations than the five-citation limit allows, cite the most representative ones and say in the explanation how many others share the pattern. A missing regression test for a root cause is part of that finding, not a second one. Never report two findings that trace back to the same root cause: if you notice you are about to report a second finding whose scenario, consequence or action restates the first, fold it into the first finding's evidence instead. One fix, one finding is the other half of that rule, except that a missing regression test still belongs to the finding it covers: two defects that need two independent code changes are two findings even in the same file, and so is a pair where fixing one leaves the other exploitable. A controller that both skips its authorization check and merges raw request input over validated data is two findings, because each fix leaves the other defect reachable.
 
 ## Proportionality
 
@@ -65,7 +65,7 @@ Every evidence citation names three things: an immutable snapshot, a repository-
 
 ## Coverage honesty
 
-Account for every file in the planned change list as `reviewed` or `unreviewed`. An unreviewed file requires a reason; a reviewed file must not carry one. Record any context gap: a requirement, dependency or policy you needed and could not obtain. A file you report `reviewed` but never cite anywhere in the result is recorded in that same list as `reviewed-but-uncited: <path>`, since the contract forbids a `reason` on a reviewed file; it admits thin coverage rather than a missing input, so it never on its own makes the review `incomplete`. A known omission or an interrupted review cannot be presented as a clean result: if any file is unreviewed or any context gap beyond a `reviewed-but-uncited` note remains, report `incomplete` unless you have findings worth reporting on their own, in which case report `findings` with that coverage attached honestly. Never report `no_findings` while coverage is incomplete; a review that could not finish is not the same claim as a review that found nothing.
+Account for every file in the planned change list as `reviewed` or `unreviewed`. An unreviewed file requires a reason; a reviewed file must not carry one. Record any context gap: a requirement, dependency or policy you needed and could not obtain. A known omission or an interrupted review cannot be presented as a clean result: if any file is unreviewed or any context gap remains, report `incomplete` unless you have findings worth reporting on their own, in which case report `findings` with that coverage attached honestly. Never report `no_findings` while coverage is incomplete; a review that could not finish is not the same claim as a review that found nothing.
 
 ## Output discipline
 

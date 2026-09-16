@@ -279,11 +279,6 @@ func TestParseClassifiesTheLastReportedErrorWhenNoResultFollows(t *testing.T) {
 
 // A non-fatal progress error's free-form message can legitimately contain the
 // same words a fatal turn.failed message match looks for ("rate limit",
-// "unauthorized"): ordinary diagnostic prose composed by the CLI or the
-// model, not a classification signal. If the stream then ends without a
-// result, the last reported message must not be misread as the reason.
-// A non-fatal progress error's free-form message can legitimately contain the
-// same words a fatal turn.failed message match looks for ("rate limit",
 // "unauthorized"), so it is never classified from prose. Whether the stream
 // still ends with a result matters too: an unclassified progress error
 // against the pinned CLI (which never sends a code on ErrorItem/TurnError) is
@@ -632,6 +627,8 @@ func TestParseEnforcesLimitsTheOutputSchemaCannotDeclare(t *testing.T) {
 		"title under five":      strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"`+text(4)+`"`, 1),
 		"title over eighty":     strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"`+text(81)+`"`, 1),
 		"multi-line title":      strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"A finding\ntitle."`, 1),
+		"whitespace-only title": strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"      "`, 1),
+		"carriage return title": strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"A finding\rtitle."`, 1),
 		"empty scenario":        strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":""`, 1),
 		"scenario too long":     strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":"`+text(2001)+`"`, 1),
 		"explanation too long":  strings.Replace(findingsResult(), `"explanation":"An explanation."`, `"explanation":"`+text(8193)+`"`, 1),
@@ -687,6 +684,26 @@ func TestParseClassifiesBackendSchemaRejectionHoweverTheCLIWrapsIt(t *testing.T)
 				if !errors.As(err, &failure) || failure.Reason != FailureInvalidOutputSchema {
 					t.Fatalf("schema rejection = %#v (%v)", failure, err)
 				}
+			}
+		})
+	}
+}
+
+func TestParseAcceptsAMultibyteTitleAtTheRuneCeiling(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		runes  int
+		accept bool
+	}{
+		{name: "at the ceiling", runes: MaxFindingTitleChars, accept: true},
+		{name: "one rune over", runes: MaxFindingTitleChars + 1, accept: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			title := strings.Repeat("\u00e9", test.runes)
+			result := strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"`+title+`"`, 1)
+			_, err := Parse([]byte(validStream(result)), nil)
+			if test.accept != (err == nil) {
+				t.Fatalf("%d-rune title: err = %v", test.runes, err)
 			}
 		})
 	}
