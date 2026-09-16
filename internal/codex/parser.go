@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	// Sized to one command_execution.aggregated_output or mcp_tool_call.result.content entry, not to the fields the parser reads.
+	// MaxOutputBytes and MaxLineBytes are both sized to one command_execution.aggregated_output or mcp_tool_call.result.content entry, not to the parsed fields.
 	MaxOutputBytes = 16 * 1024 * 1024
 	MaxLineBytes   = 1024 * 1024
 	MaxEvents      = 10_000
@@ -182,7 +182,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	state := "initial"
 	items := make(map[string]itemState)
 	var finalMessage string
-	// Warnings, notices and retried errors surface as error items but the turn still completes; an error is terminal only when no result follows.
+	// Warnings, notices and retried errors surface as error items while the turn continues; an error is terminal only without a result.
 	var reportedFailure *ClassifiedFailure
 	for i := 0; i < lineCount; i++ {
 		var line []byte
@@ -295,7 +295,8 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	return stream, nil
 }
 
-// Allows a duplicate key, matching encoding/json's own last-value-wins behavior, because codex-rs's #[serde(flatten)] can legally repeat an item id; every other document in this package still goes through protocol.Decode, which rejects duplicates.
+// Allows a duplicate key, matching encoding/json's last-value-wins rule, because codex-rs's #[serde(flatten)] can legally repeat an item id.
+// For a web_search item, Event.ItemID reports the action id, not the item id, by design; ItemID is bookkeeping, never a lookup key.
 func decodeStreamEvent(line []byte, maxBytes int) (map[string]any, error) {
 	value, err := protocol.DecodeAllowingDuplicateKeys(line, maxBytes)
 	if err != nil {
@@ -369,7 +370,7 @@ func containsAny(text string, candidates ...string) bool {
 	return false
 }
 
-// Searches for the JSON error object instead of parsing the whole message, since the CLI may wrap it in a prefix or trailing text.
+// Searches for the JSON error object instead of parsing the whole message, since the CLI may wrap it in extra text.
 func backendErrorEnvelope(message string) (map[string]any, bool) {
 	start := strings.IndexByte(message, '{')
 	if start < 0 {
@@ -388,7 +389,7 @@ func backendErrorEnvelope(message string) (map[string]any, bool) {
 	return nested, nestedOK
 }
 
-// relayedErrorEnvelope accepts only the provider's own envelope shape: type, error, and status, nothing else. A looser diagnostic that merely carries a code stays unclassified.
+// Accepts only the provider's own envelope shape (type, error, status); a diagnostic that merely carries a code stays unclassified.
 func relayedErrorEnvelope(body map[string]any) bool {
 	for key := range body {
 		switch key {
@@ -475,7 +476,7 @@ func parseUsage(value any) (*Usage, error) {
 	return &Usage{InputTokens: input, CachedInputTokens: cached, OutputTokens: output}, nil
 }
 
-// Turns the schema's nullable stand-ins back into absent fields, since strict structured outputs can't omit a property; a null array element stays, since it's an emitted value, not an omitted field.
+// Turns the schema's nullable stand-ins back into absent fields, because strict structured outputs cannot omit a property.
 func dropNullMembers(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
