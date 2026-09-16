@@ -46,6 +46,7 @@
           },
           "title": {
             "type": "string",
+            "pattern": "^[^\\r\\n]+$",
             "description": "Between 5 and 80 characters, on one line, never empty."
           },
           "severity": {

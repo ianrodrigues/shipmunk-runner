@@ -33,7 +33,7 @@ func cleanCoverage() Coverage {
 
 func cleanFinding() Finding {
 	return Finding{
-		Category: "correctness", Severity: "high", Relation: "introduced",
+		Category: "correctness", Title: "A finding title.", Severity: "high", Relation: "introduced",
 		Scenario: "s", Consequence: "c", Action: "a", Explanation: "e",
 		Evidence: []EvidenceRef{{Snapshot: sampleHeadSHA, Path: "b.go", LineStart: 1, LineEnd: 1}},
 	}
