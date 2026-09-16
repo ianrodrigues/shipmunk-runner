@@ -141,19 +141,13 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	setupPath := fixture + "/bin/shipmunk-runner"
 	pathEnv := "PATH=" + fixture + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	// No --skip-connect here: guided setup must run its connect step as a
-	// real subprocess of the installed shipmunk-runner, not the transient
-	// bootstrap binary. The fake docker script and stub control plane can't
-	// carry a real login to readiness, so it fails after reaching the
-	// network (asserted below); a bug that broke the exec'd connect step
-	// before that point (e.g. an unresolved adjacent shipmunk-watchdog)
-	// would fail earlier and never reach the control plane at all.
+	// No --skip-connect: the connect step must reach the stub control plane from the installed binary (asserted below).
 	output, exitCode := runExpect(t, 90*time.Second,
 		"docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container,
 		setupPath, "setup", fixture+"/setup.json",
 		"--release-manifest", fixture+"/runner-release.json",
 		"--release-archive", fixture+"/"+platform.Archive.Name)
-	if exitCode != 1 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") || !strings.Contains(output, "connecting did not complete") {
+	if exitCode != 3 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") || !strings.Contains(output, "connecting did not complete") {
 		t.Fatalf("guided setup did not complete its install-then-connect sequence cleanly (exit %d): %s", exitCode, output)
 	}
 	assertUpstubReceived(t, ctx, container, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
@@ -344,8 +338,6 @@ func assertInstalledConfiguration(t *testing.T, ctx context.Context, container, 
 	}
 }
 
-// assertLauncher checks the launcher is private and owner-executable.
-// It must invoke the installed shipmunk-runner, not the transient bootstrap path.
 func assertLauncher(t *testing.T, ctx context.Context, container, home, root, name string) {
 	t.Helper()
 	permissions := dockerExecAs(t, ctx, 10*time.Second, container, smokeUser, "sh", "-c", "stat -c '%a' "+root+"/"+name)

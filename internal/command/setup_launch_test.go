@@ -166,7 +166,6 @@ func TestInstalledConnectionRequiresThreeTerminalDescriptors(t *testing.T) {
 	}
 }
 
-// A scripted probe is the one case --json is meant to unblock without a TTY.
 func TestInstalledProbeJSONSkipsTheTerminalGate(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("installed commands refuse root")
@@ -397,7 +396,7 @@ func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
 		},
 		"connects and reports what remains": {
 			connectCode:  1,
-			wantCode:     1,
+			wantCode:     exitInstalledNotConnected,
 			sentence:     "Runner is not ready: native_login_required.",
 			wantMessages: []string{"Setup did not start queued work.", "Runner is not ready: native_login_required.", "connecting did not complete", "Commands for this runner"},
 			wantMissing:  []string{"Run to work through the queue"},
@@ -431,9 +430,6 @@ func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
 			setupCheckServer = func(string) error { return nil }
 			setupBuildImage = func(string, string) (string, error) { return "sha256:" + strings.Repeat("c", 64), nil }
 			calls := 0
-			// setupExecConnect stands in for exec.Command(root+"/connect").
-			// It writes the same sentence the real subprocess would, without
-			// actually spawning one.
 			var gotRoot string
 			setupExecConnect = func(root string, _ io.Reader, stdout, _ io.Writer) int {
 				calls++

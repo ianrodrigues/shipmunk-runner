@@ -229,7 +229,6 @@ func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 	}{
 		{health: profile.Health{Health: profile.HealthReady}, code: 0, sentence: "Runner is ready.\n", jsonOutput: `{"health":"ready","reason":null}` + "\n"},
 		{health: profile.Health{Health: profile.HealthRateLimited, Reason: profile.ReasonRateLimited}, code: 1, sentence: "Runner is not ready: rate_limited.\n", jsonOutput: `{"health":"rate_limited","reason":"rate_limited"}` + "\n"},
-		// disconnected exits 0, the same as ready: the sentence must not say "not ready".
 		{health: profile.Health{Health: "disconnected", Reason: "disconnected"}, code: 0, sentence: "Runner is disconnected.\n", jsonOutput: `{"health":"disconnected","reason":"disconnected"}` + "\n"},
 	} {
 		runNativeProfile = func(ProfileOptions, io.Writer) (profile.Health, error) { return test.health, nil }
@@ -253,8 +252,6 @@ func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	// A script watching stdout for --json must always get a health object,
-	// even when the operation failed before producing one.
 	wantErrorJSON := `{"health":"error","reason":"operation_failed"}` + "\n"
 	if code := RunProfile(append(slices.Clone(arguments), "--json"), &stdout, &stderr); code != 1 || stdout.String() != wantErrorJSON || strings.Contains(stderr.String(), "SYNTHETIC") {
 		t.Fatalf("unsafe profile error --json = %d, %q, %q", code, stdout.String(), stderr.String())
@@ -381,9 +378,6 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 
 	stdout.Reset()
 	setupRuntime.stdin = strings.NewReader("y\n")
-	// --skip-connect: this test covers the confirmation/summary flow, not the
-	// connect step, which execs the installed binary as a real subprocess
-	// (see TestGuidedSetupRunsConnectUnlessSkipped for that behavior).
 	confirmArgs := append(setupCommandArgs(validSetupFile, manifest, archive), "--skip-connect")
 	if code := RunSetup(confirmArgs, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Installed the verified runner release") {
 		t.Fatalf("confirmed setup handoff = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -29,6 +30,8 @@ var setupCheckServer = checkSetupServer
 var setupBuildImage = buildSetupImage
 var setupExecConnect = execConnectLauncher
 var setupImageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+const exitInstalledNotConnected = 3
 
 // errUnsafeSetupFile marks a readPublicSetupFile guard failure. It carries no
 // message of its own: fmt.Errorf wraps it with the guard's reason, so the
@@ -353,25 +356,24 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	if code := setupExecConnect(root, setupRuntime.stdin, stdout, stderr); code != 0 {
 		fmt.Fprintln(stdout, "\nSetup finished, but connecting did not complete; run the commands below.")
 		printNextSteps()
-		return 1
+		return exitInstalledNotConnected
 	}
 	fmt.Fprintf(stdout, "\nRun to work through the queue:\n  Run: %s\n", filepath.Join(root, "run"))
 	return 0
 }
 
-// execConnectLauncher runs the just-activated connect launcher as a real
-// child process with inherited stdio, so the connect step is a manual
-// connect run against the installed binary: adjacent shipmunk-watchdog,
-// installed Version, and its own real *os.File terminal gate, not the
-// bootstrap binary's transient path or in-process state.
 func execConnectLauncher(root string, stdin io.Reader, stdout, stderr io.Writer) int {
 	command := exec.Command(filepath.Join(root, "connect"))
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
-	if err := command.Run(); err != nil {
+	signal.Ignore(os.Interrupt)
+	err := command.Run()
+	signal.Reset(os.Interrupt)
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
+		fmt.Fprintln(stderr, "Could not start the connect launcher.")
 		return 1
 	}
 	return 0
