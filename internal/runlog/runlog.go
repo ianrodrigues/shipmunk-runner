@@ -1,6 +1,11 @@
 // Package runlog writes the installed runner's structured event log: one
 // redacted JSON line per event, under the runner's private state directory,
 // rotated once it grows past a size cap.
+//
+// Event holds the Logger's mutex across the file write, and a caller such as
+// leaseGuard.renew logs while holding its own lock; a stalled filesystem can
+// therefore delay lease renewal. This is an accepted tradeoff since the log
+// write is normally fast and losing an event is worse than never trying.
 package runlog
 
 import (
@@ -15,8 +20,8 @@ import (
 	"time"
 )
 
-// FileName is the current log file's name; rotated generations append ".N".
-const FileName = "runner.log"
+// fileName is the current log file's name; rotated generations append ".N".
+const fileName = "runner.log"
 
 // maxFileBytes and maxGenerations bound the log's total footprint on disk:
 // the current file plus its rotated backups.
@@ -27,7 +32,11 @@ const (
 
 // sensitiveFieldPattern redacts a field by name as a safety net; callers must
 // still never pass secrets, tokens, or repository content as field values.
-var sensitiveFieldPattern = regexp.MustCompile(`(?i)token|secret|password|credential|authoriz`)
+var sensitiveFieldPattern = regexp.MustCompile(`(?i)token|secret|password|credential|authoriz|key|bearer|jwt|cookie|session|signature|signed_url`)
+
+// secretShapePattern catches a bearer-prefixed or JWT-shaped value even under
+// a field name the key pattern above misses.
+var secretShapePattern = regexp.MustCompile(`(?i)^bearer\s+\S+$|^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$`)
 
 const redacted = "[redacted]"
 
@@ -35,10 +44,11 @@ const redacted = "[redacted]"
 // safe for concurrent use and for a nil receiver, so an unconfigured Logger
 // can be wired in without call sites checking for one.
 type Logger struct {
-	mu   sync.Mutex
-	path string
-	file *os.File
-	size int64
+	mu           sync.Mutex
+	path         string
+	file         *os.File
+	size         int64
+	gaveUpNotice bool
 }
 
 // Open creates (or reuses) the log directory under stateDir and opens the
@@ -51,7 +61,11 @@ func Open(stateDir string) (*Logger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create runner log directory: %w", err)
 	}
-	logger := &Logger{path: filepath.Join(dir, FileName)}
+	// MkdirAll leaves an already-existing, more permissive directory as-is; tighten it.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("secure runner log directory: %w", err)
+	}
+	logger := &Logger{path: filepath.Join(dir, fileName)}
 	if err := logger.openFile(); err != nil {
 		return nil, err
 	}
@@ -62,6 +76,11 @@ func (l *Logger) openFile() error {
 	file, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open runner log: %w", err)
+	}
+	// O_CREATE's mode only applies when the file is new; tighten an already-existing, more permissive file.
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("secure runner log: %w", err)
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -92,15 +111,18 @@ func (l *Logger) Event(event string, fields map[string]any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.file == nil {
-		return
+		if err := l.openFile(); err != nil {
+			if !l.gaveUpNotice {
+				fmt.Fprintf(os.Stderr, "runner: giving up on the event log at %s: %v\n", l.path, err)
+				l.gaveUpNotice = true
+			}
+			return
+		}
+		l.gaveUpNotice = false
 	}
 	record := make(map[string]any, len(fields)+2)
 	for key, value := range fields {
-		if sensitiveFieldPattern.MatchString(key) {
-			record[key] = redacted
-			continue
-		}
-		record[key] = value
+		record[key] = sanitizeValue(key, value)
 	}
 	record["time"] = time.Now().UTC().Format(time.RFC3339Nano)
 	record["event"] = event
@@ -114,6 +136,42 @@ func (l *Logger) Event(event string, fields map[string]any) {
 	}
 	if n, err := l.file.Write(line); err == nil {
 		l.size += int64(n)
+	}
+}
+
+// sanitizeValue redacts by field name, recurses into nested maps so a
+// secret cannot hide a level down, and stringifies anything that is not a
+// scalar or a map before checking its shape, since an unredacted struct or
+// slice could otherwise carry arbitrary content into the log verbatim.
+func sanitizeValue(key string, value any) any {
+	if sensitiveFieldPattern.MatchString(key) {
+		return redacted
+	}
+	if nested, ok := value.(map[string]any); ok {
+		sanitized := make(map[string]any, len(nested))
+		for nestedKey, nestedValue := range nested {
+			sanitized[nestedKey] = sanitizeValue(nestedKey, nestedValue)
+		}
+		return sanitized
+	}
+	if !isScalar(value) {
+		value = fmt.Sprintf("%v", value)
+	}
+	if text, ok := value.(string); ok && secretShapePattern.MatchString(strings.TrimSpace(text)) {
+		return redacted
+	}
+	return value
+}
+
+func isScalar(value any) bool {
+	switch value.(type) {
+	case nil, bool, string,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return true
+	default:
+		return false
 	}
 }
 
