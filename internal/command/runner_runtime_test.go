@@ -305,6 +305,7 @@ func TestSupervisedFailuresNameTheirCondition(t *testing.T) {
 		"revoked attempt":     {supervisor.ErrStopped, "revoked this attempt"},
 		"rejected request":    {&protocol.ControlPlaneError{StatusCode: 409}, "HTTP 409"},
 		"operator stop":       {context.Canceled, "stopped on request"},
+		"claim timeout":       {&protocol.HTTPTimeoutError{Endpoint: "/runner/v1/claims", Budget: 30 * time.Second}, "/runner/v1/claims"},
 		"unclassified":        {errors.New("SYNTHETIC_SECRET"), "before a completed result"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -314,6 +315,25 @@ func TestSupervisedFailuresNameTheirCondition(t *testing.T) {
 				t.Fatalf("code=%d stderr=%q", code, stderr.String())
 			}
 		})
+	}
+}
+
+func TestSupervisionFailureNeverMapsAnHTTPTimeoutToTheAttemptDeadlineMessage(t *testing.T) {
+	message := supervisionFailure(&protocol.HTTPTimeoutError{Endpoint: "/runner/v1/claims", Budget: 30 * time.Second}, "")
+	if strings.Contains(message, "attempt passed its deadline") {
+		t.Fatalf("an HTTP call's own timeout must never read as the attempt deadline: %q", message)
+	}
+	if !strings.Contains(message, "/runner/v1/claims") || !strings.Contains(message, "30s") {
+		t.Fatalf("expected the endpoint and budget to be named: %q", message)
+	}
+	// errors.Is(err, context.DeadlineExceeded) still holds through Unwrap, so
+	// this guards specifically against the naive mapping the issue was filed against.
+	if !errors.Is(&protocol.HTTPTimeoutError{Endpoint: "/runner/v1/claims", Budget: 30 * time.Second}, context.DeadlineExceeded) {
+		t.Fatal("test setup: HTTPTimeoutError must satisfy errors.Is(err, context.DeadlineExceeded)")
+	}
+	deadline := supervisionFailure(context.DeadlineExceeded, "")
+	if !strings.Contains(deadline, "attempt passed its deadline") {
+		t.Fatalf("a genuine attempt-deadline context.DeadlineExceeded should still read that way: %q", deadline)
 	}
 }
 

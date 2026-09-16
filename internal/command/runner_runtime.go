@@ -255,6 +255,7 @@ func consecutiveRunnerFailureMessage(reason string, count int, logPath string) s
 func supervisionFailure(err error, logPath string) string {
 	var requestError *protocol.ControlPlaneError
 	var refused *supervisor.RefusedStoppedError
+	var timeout *protocol.HTTPTimeoutError
 	var message string
 	switch {
 	case errors.As(err, &refused):
@@ -267,6 +268,11 @@ func supervisionFailure(err error, logPath string) string {
 		message = "The application revoked this attempt before it completed."
 	case errors.As(err, &requestError):
 		message = fmt.Sprintf("Runner request failed with HTTP %d. Check the runner connection and authorization.", requestError.StatusCode)
+	// This case must precede the bare context.DeadlineExceeded case below:
+	// HTTPTimeoutError unwraps to context.DeadlineExceeded so an HTTP call's
+	// own budget elapsing is never reported as the attempt's deadline.
+	case errors.As(err, &timeout):
+		message = fmt.Sprintf("Runner request to %s exceeded its %s budget before a response was received.", timeout.Endpoint, timeout.Budget)
 	case errors.Is(err, context.Canceled):
 		message = "Runner stopped on request before an attempt completed."
 	case errors.Is(err, context.DeadlineExceeded):
