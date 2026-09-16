@@ -65,6 +65,30 @@ func TestAcknowledgeStoppedTimeoutUsesTheStandardBudget(t *testing.T) {
 	}
 }
 
+// TestAlreadyExpiredContextIsNeverReportedAsAnHTTPTimeout guards the case the
+// issue was filed against in the other direction: when the caller's own
+// context (for example leaseGuard's attempt-deadline context) has already
+// expired before the HTTP round trip even starts, net/http.Client.Do still
+// returns a context.DeadlineExceeded-satisfying error, but it must not be
+// renamed to HTTPTimeoutError, since the request's own fixed budget never
+// elapsed — the attempt's deadline did.
+func TestAlreadyExpiredContextIsNeverReportedAsAnHTTPTimeout(t *testing.T) {
+	client, err := NewHTTPClient("https://control.example", "synthetic-token", testRoundTripper(deadlineExceededTransport))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Minute))
+	defer cancel()
+	_, _, err = client.Heartbeat(expired, testClaim())
+	var timeout *HTTPTimeoutError
+	if errors.As(err, &timeout) {
+		t.Fatalf("an already-expired caller context must not be reported as the request's own timeout: %+v", timeout)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the bare context.DeadlineExceeded to survive so the attempt-deadline message still applies: %v", err)
+	}
+}
+
 func TestClaimAndStandardBudgetsAreDistinctAndOrdered(t *testing.T) {
 	if ClaimHTTPTimeoutSeconds <= HTTPTimeoutSeconds {
 		t.Fatalf("the claim budget (%ds) must be larger than the standard budget (%ds)", ClaimHTTPTimeoutSeconds, HTTPTimeoutSeconds)

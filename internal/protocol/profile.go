@@ -40,8 +40,8 @@ func (client *HTTPClient) ProfileRequest(
 		return nil, fmt.Errorf("profile request exceeded its byte limit")
 	}
 	response, err := client.request(
-		client.client,
 		ctx,
+		client.client,
 		http.MethodPost,
 		"/runner/v1/profiles/"+profileID+"/"+suffix,
 		string(encoded),

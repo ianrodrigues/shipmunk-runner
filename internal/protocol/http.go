@@ -114,7 +114,7 @@ func NewHTTPClient(baseURL, token string, transport http.RoundTripper) (*HTTPCli
 // caller must persist the lease. It uses the claim endpoint's own, larger
 // budget (see ClaimHTTPTimeoutSeconds) rather than the standard one.
 func (client *HTTPClient) Claim(ctx context.Context, now time.Time) (*Claim, error) {
-	response, err := client.jsonWith(client.claimClient, ctx, http.MethodPost, "/runner/v1/claims", map[string]any{"protocol_version": Version}, ManifestMaxBytes)
+	response, err := client.jsonWith(ctx, client.claimClient, http.MethodPost, "/runner/v1/claims", map[string]any{"protocol_version": Version}, ManifestMaxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +211,7 @@ func (client *HTTPClient) SendEvents(ctx context.Context, claim Claim, raw []byt
 			return err
 		}
 	}
-	response, err := client.request(client.client, ctx, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/events", string(raw), "application/json", ManifestMaxBytes)
+	response, err := client.request(ctx, client.client, http.MethodPost, "/runner/v1/attempts/"+claim.AttemptID+"/events", string(raw), "application/json", ManifestMaxBytes)
 	if err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func (client *HTTPClient) DownloadArtifact(ctx context.Context, claim Claim, art
 	if !ulidPattern.MatchString(artifactID) || !sha256Pattern.MatchString(expectedSHA256) {
 		return nil, fmt.Errorf("artifact identifier or hash is invalid")
 	}
-	response, err := client.request(client.client, ctx, http.MethodGet, "/runner/v1/attempts/"+claim.AttemptID+"/input-artifacts/"+artifactID, "", "application/octet-stream", InputArtifactMaxBytes)
+	response, err := client.request(ctx, client.client, http.MethodGet, "/runner/v1/attempts/"+claim.AttemptID+"/input-artifacts/"+artifactID, "", "application/octet-stream", InputArtifactMaxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -307,12 +307,12 @@ type response struct {
 }
 
 func (client *HTTPClient) json(ctx context.Context, method, path string, payload any, maxBytes int) (response, error) {
-	return client.jsonWith(client.client, ctx, method, path, payload, maxBytes)
+	return client.jsonWith(ctx, client.client, method, path, payload, maxBytes)
 }
 
 // jsonWith lets Claim use the claim endpoint's own budget while every other
 // caller keeps the standard one via json above.
-func (client *HTTPClient) jsonWith(httpClient budgetedClient, ctx context.Context, method, path string, payload any, maxBytes int) (response, error) {
+func (client *HTTPClient) jsonWith(ctx context.Context, httpClient budgetedClient, method, path string, payload any, maxBytes int) (response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return response{}, err
@@ -320,10 +320,10 @@ func (client *HTTPClient) jsonWith(httpClient budgetedClient, ctx context.Contex
 	if len(body) > maxBytes {
 		return response{}, fmt.Errorf("control-plane request exceeded its byte limit")
 	}
-	return client.request(httpClient, ctx, method, path, string(body), "application/json", maxBytes)
+	return client.request(ctx, httpClient, method, path, string(body), "application/json", maxBytes)
 }
 
-func (client *HTTPClient) request(httpClient budgetedClient, ctx context.Context, method, path, body, accept string, maxBytes int) (response, error) {
+func (client *HTTPClient) request(ctx context.Context, httpClient budgetedClient, method, path, body, accept string, maxBytes int) (response, error) {
 	endpoint := client.baseURL.JoinPath(path)
 	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), bytes.NewBufferString(body))
 	if err != nil {
@@ -337,7 +337,7 @@ func (client *HTTPClient) request(httpClient budgetedClient, ctx context.Context
 	req.Header.Set("X-Shipmunk-Protocol", Version)
 	res, err := httpClient.http.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(path, httpClient.budget, err))
+		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(ctx, path, httpClient.budget, err))
 	}
 	defer res.Body.Close()
 	bytes, err := io.ReadAll(io.LimitReader(res.Body, int64(maxBytes)+1))
@@ -366,7 +366,7 @@ func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash 
 	req.Header.Set("X-Protocol-Version", Version)
 	res, err := client.client.http.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(path, client.client.budget, err))
+		return response{}, fmt.Errorf("control-plane request failed: %w", httpCallError(ctx, path, client.client.budget, err))
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(res.Body, int64(ManifestMaxBytes)+1))
@@ -382,9 +382,14 @@ func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash 
 // httpCallError reports an HTTP call's own timeout as a named HTTPTimeoutError
 // instead of leaving it as a bare context.DeadlineExceeded, so a caller can
 // never confuse "this request's budget elapsed" with "the attempt's deadline
-// elapsed" merely by checking errors.Is(err, context.DeadlineExceeded).
-func httpCallError(endpoint string, budget time.Duration, err error) error {
-	if errors.Is(err, context.DeadlineExceeded) {
+// elapsed" merely by checking errors.Is(err, context.DeadlineExceeded). It
+// only does so when the caller's own context is still live: if ctx has
+// already expired, the client's Do returned context.DeadlineExceeded because
+// the caller's deadline (for example the attempt's lease-bound context) fired
+// first, not because this call's own fixed budget elapsed, and that must
+// still read as the attempt passing its deadline.
+func httpCallError(ctx context.Context, endpoint string, budget time.Duration, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		return &HTTPTimeoutError{Endpoint: endpoint, Budget: budget}
 	}
 	return err
