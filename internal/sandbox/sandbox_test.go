@@ -314,6 +314,16 @@ func TestWorkspaceArchiveRejectsSymlinkAndCopiesRegularFile(t *testing.T) {
 	}
 }
 
+func TestCommandErrorOmitsStderrFromItsMessage(t *testing.T) {
+	err := &commandError{argument: "exec", stderr: "SECRET-CONTAINER-OUTPUT", cause: errors.New("exit status 1")}
+	if strings.Contains(err.Error(), "SECRET-CONTAINER-OUTPUT") {
+		t.Fatalf("commandError.Error() = %q, must not embed stderr", err.Error())
+	}
+	if err.Error() != "docker exec failed: exit status 1" {
+		t.Fatalf("commandError.Error() = %q", err.Error())
+	}
+}
+
 func TestIndependentWatchdogSubprocessGetsRenewalAndDisarmWithoutCredentials(t *testing.T) {
 	fixture := newFakeDocker(t, false, false)
 	watchdogExecutable := filepath.Join(t.TempDir(), "watchdog-fixture")
