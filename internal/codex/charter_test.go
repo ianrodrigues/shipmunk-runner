@@ -22,6 +22,31 @@ func TestReviewCharterDefinesSeverityGroupingAndProportionality(t *testing.T) {
 		clauses []string
 	}{
 		{
+			name: "Enumeration",
+			clauses: []string{
+				"walk the planned changed files in the order the list below gives them",
+				"record at least one candidate defect with the citation that would support it, or an explicit none",
+				"N+1 query on a lazily loaded relation",
+				"byte-wise truncation of a UTF-8 string",
+				"an index that duplicates one the schema already declares",
+				"a text field validated with no upper bound",
+				"a name that breaks the conventions of its neighbours",
+				"Anchor a surviving candidate on the first statement line",
+			},
+		},
+		{
+			name: "Writing a finding",
+			clauses: []string{
+				"five to eighty characters on one line naming what is wrong",
+				"never the file it lives in and never the rubric it matches",
+				"good: Note update runs with no authorization check",
+				"bad:  Security issue in NoteController.php",
+				"Do not restate what the anchored lines already show",
+				"never argue in it that your severity is the right one",
+				"one or two sentences each",
+			},
+		},
+		{
 			name: "Severity",
 			clauses: []string{
 				"Pick the lowest severity level whose definition is fully met",
@@ -42,6 +67,8 @@ func TestReviewCharterDefinesSeverityGroupingAndProportionality(t *testing.T) {
 				"cite the most representative ones and say in the explanation how many others share the pattern",
 				"A missing regression test for a root cause is part of that finding, not a second one.",
 				"Never report two findings that trace back to the same root cause",
+				"One fix, one finding is the other half of that rule",
+				"still leaves the `user_id` spoof reachable",
 			},
 		},
 		{
@@ -73,6 +100,18 @@ func TestReviewCharterDefinesSeverityGroupingAndProportionality(t *testing.T) {
 			if !strings.Contains(sectionText, clause) {
 				t.Errorf("%s section is missing %q", section.name, clause)
 			}
+		}
+	}
+}
+
+func TestReviewCharterRecordsReviewedButUncitedFilesWithoutForcingIncomplete(t *testing.T) {
+	for _, clause := range []string{
+		"`reviewed-but-uncited: <path>`",
+		"it admits thin coverage rather than a missing input, so it never on its own makes the review `incomplete`",
+		"any context gap beyond a `reviewed-but-uncited` note remains",
+	} {
+		if !strings.Contains(reviewCharterText, clause) {
+			t.Errorf("Coverage honesty section is missing %q", clause)
 		}
 	}
 }
