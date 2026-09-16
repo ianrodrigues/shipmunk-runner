@@ -14,16 +14,11 @@ import (
 )
 
 const (
-	// A single command_execution.aggregated_output or mcp_tool_call.result.content
-	// entry can legally hold a whole review_read window or command log; both
-	// budgets are sized to that, not to the handful of fields the parser reads.
+	// Sized to one command_execution.aggregated_output or mcp_tool_call.result.content entry, not to the fields the parser reads.
 	MaxOutputBytes = 16 * 1024 * 1024
 	MaxLineBytes   = 1024 * 1024
 	MaxEvents      = 10_000
-	// MaxResultBytes bounds only the final structured agent_message text.
-	// It stays at the original 64 KiB: growing MaxLineBytes for a large
-	// tool-call payload must not also grow what a structured result is
-	// allowed to weigh.
+	// Bounds only the final structured agent_message text; independent of MaxLineBytes so a larger tool-call payload doesn't grow this too.
 	MaxResultBytes = 64 * 1024
 
 	// Mirror internal/protocol/contracts/v1/result.schema.json exactly.
@@ -176,11 +171,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 		return Stream{}, ErrMalformedOutput
 	}
 
-	// Scanned as slices of the original stdout buffer rather than converted to
-	// a string and re-split: with the output budget in the tens of megabytes,
-	// an extra full-buffer copy (and another per line) is worth avoiding. The
-	// line count mirrors strings.Split's: N separators make N+1 records, the
-	// last of which is empty when stdout ends with a run of newlines.
+	// Scanned as byte slices, not string-split, to avoid copying tens of MB; line count mirrors strings.Split's N+1-records rule.
 	body := stdout[:len(stdout)-1]
 	lineCount := bytes.Count(body, []byte{'\n'}) + 1
 	if lineCount > MaxEvents {
@@ -191,8 +182,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	state := "initial"
 	items := make(map[string]itemState)
 	var finalMessage string
-	// The pinned CLI reports warnings, notices and retried backend errors as error items or events, then still completes the turn.
-	// An error is therefore terminal only when no result follows.
+	// Warnings, notices and retried errors surface as error items but the turn still completes; an error is terminal only when no result follows.
 	var reportedFailure *ClassifiedFailure
 	for i := 0; i < lineCount; i++ {
 		var line []byte
@@ -231,15 +221,12 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 				return Stream{}, ErrMalformedOutput
 			}
 			id, idOK := boundedString(item["id"], 128)
-			// The CLI source can add an item type (collab_tool_call today) ahead
-			// of any parser update; an unrecognized kind is still recorded as an
-			// event, with its payload otherwise ignored below.
+			// An unrecognized item type is still recorded as an event; only its payload is ignored.
 			kind, kindOK := boundedString(item["type"], 128)
 			if !idOK || !kindOK {
 				return Stream{}, ErrMalformedOutput
 			}
-			// Codex may report a completed startup error after allocating a
-			// thread but before a turn starts. No other pre-turn item is valid.
+			// A completed startup error can arrive after thread allocation but before turn start; no other pre-turn item is valid.
 			if state == "thread" && typeName == "item.completed" && kind == "error" {
 				stream.Events = append(stream.Events, Event{Type: typeName, ItemID: id, ItemType: kind})
 				if failure := progressFailure(item); failure != nil {
@@ -308,18 +295,7 @@ func Parse(stdout, stderr []byte) (Stream, error) {
 	return stream, nil
 }
 
-// decodeStreamEvent decodes one exec stream line the way encoding/json's
-// default decoder does on a duplicate key: last value wins. codex-rs's
-// #[serde(flatten)] can legally emit an item object with a field (id) repeated
-// at the same level (ThreadItemDetails, exec_events.rs L97-102), and serde
-// resolves that the same way. Every other document this package decodes,
-// including the final structured result, still goes through protocol.Decode,
-// which keeps rejecting a duplicate key. One consequence: a web_search item
-// writes its own item id first and its inner action's id second, so
-// Event.ItemID for that item type ends up reporting the action id, not the
-// item id. Event.ItemID is sanitized bookkeeping metadata only, never used to
-// look anything up outside this stream, so this is a naming quirk, not a
-// correctness gap.
+// Allows a duplicate key, matching encoding/json's own last-value-wins behavior, because codex-rs's #[serde(flatten)] can legally repeat an item id; every other document in this package still goes through protocol.Decode, which rejects duplicates.
 func decodeStreamEvent(line []byte, maxBytes int) (map[string]any, error) {
 	value, err := protocol.DecodeAllowingDuplicateKeys(line, maxBytes)
 	if err != nil {
@@ -332,9 +308,7 @@ func decodeStreamEvent(line []byte, maxBytes int) (map[string]any, error) {
 	return object, nil
 }
 
-// nativeFailure classifies the one terminal failure a stream can end on: the
-// error object of a turn.failed event. Free-form message substring matching
-// is scoped to this path deliberately (see messageFailureReason).
+// Classifies the terminal turn.failed error; free-form message substring matching is scoped to this path only.
 func nativeFailure(value map[string]any) error {
 	if reason, ok := failureCode(value["code"]); ok {
 		return &ClassifiedFailure{Reason: reason}
@@ -352,24 +326,8 @@ func nativeFailure(value map[string]any) error {
 	return ErrNativeFailure
 }
 
-// progressFailure classifies a non-fatal error item or event: a completed
-// pre-turn error item, an in-turn error item, or a top-level error event.
-// These are reported while the turn keeps running (ConfigWarning, Warning,
-// DeprecationNotice, ModelRerouted, a retried transient backend error), so
-// only an explicit machine-readable code classifies them here; unlike
-// nativeFailure, this never falls back to messageFailureReason's substring
-// match. That prose is ordinary diagnostic text the model or CLI can compose
-// freely (a warning, a deprecation notice), and can legitimately contain the
-// same words a fatal-message search looks for ("rate limit", "unauthorized").
-// nil means nothing classified: against the pinned CLI, ErrorItem and
-// TurnError carry no code at all, so this is the common case, and the caller
-// must not record it as "the" reported failure. If it did, and the stream
-// then ended without a structured result, Parse would return the resulting
-// bare ErrNativeFailure, which matches none of the executor's errors.Is
-// branches and would be reported as a runner fault rather than a published
-// missing_result outcome, exactly what PR #49 fixed. Treating an
-// unclassified progress error as no report at all keeps that truncation on
-// the ErrMissingResult path instead.
+// progressFailure classifies a non-fatal error item or event by explicit code only, never by messageFailureReason's substring match, since its free-form text can share words with a fatal message.
+// nil means unclassified; the caller must not record that as "the" reported failure, or a truncated stream misreports ErrNativeFailure instead of ErrMissingResult.
 func progressFailure(value map[string]any) *ClassifiedFailure {
 	if reason, ok := failureCode(value["code"]); ok {
 		return &ClassifiedFailure{Reason: reason}
@@ -383,12 +341,7 @@ func progressFailure(value map[string]any) *ClassifiedFailure {
 	return nil
 }
 
-// messageFailureReason is best-effort. TurnError and ErrorItem carry no
-// machine-readable code, and protocol/src/error.rs's extract_error_message
-// unwraps the backend's own JSON envelope into a bare string before the CLI
-// ever writes it to the stream, so the only thing left to classify against is
-// prose the CLI may wrap in a prefix or trailing detail. Matching is therefore
-// a case-insensitive substring, not equality.
+// Best-effort: TurnError/ErrorItem carry no code, so this matches a case-insensitive substring against the CLI's free-form message text.
 func messageFailureReason(message string) (FailureReason, bool) {
 	lower := strings.ToLower(message)
 	switch {
@@ -416,10 +369,7 @@ func containsAny(text string, candidates ...string) bool {
 	return false
 }
 
-// backendErrorEnvelope locates the one error object the pinned CLI copies out of
-// a backend rejection. The CLI may add a prefix or trailing text around the body,
-// so this searches for it instead of parsing the whole message. The located
-// object is still decoded strictly.
+// Searches for the JSON error object instead of parsing the whole message, since the CLI may wrap it in a prefix or trailing text.
 func backendErrorEnvelope(message string) (map[string]any, bool) {
 	start := strings.IndexByte(message, '{')
 	if start < 0 {
@@ -450,12 +400,7 @@ func relayedErrorEnvelope(body map[string]any) bool {
 	return true
 }
 
-// failureCode matches an explicit machine-readable code field. codex-rs's
-// TurnError and ErrorItem carry only message today, so this path is not known
-// to fire against the pinned CLI; it stays as defense in depth for a future
-// build that adds one. messageFailureReason (above, used only from
-// nativeFailure) is the path that actually classifies a turn.failed message
-// today, including the unverified invalid_json_schema literal.
+// Matches an explicit code field; kept as defense in depth since the pinned CLI's TurnError/ErrorItem carry only message today.
 func failureCode(value any) (FailureReason, bool) {
 	code, ok := value.(string)
 	if !ok {
@@ -508,17 +453,14 @@ func parseUsage(value any) (*Usage, error) {
 		return nil, ErrMalformedOutput
 	}
 	var cached *int64
-	// codex itself clamps cached_input_tokens to input_tokens (protocol.rs), but
-	// that clamp is provider-side; a provider can still report cached > input, and
-	// the contract carries no field that would reject it, so it is not rejected here.
+	// Provider-side clamping of cached <= input is not guaranteed here; the contract has no field to reject a violation.
 	if raw, exists := object["cached_input_tokens"]; exists {
 		cached, ok = nullableNonnegativeInteger(raw)
 		if !ok {
 			return nil, ErrMalformedOutput
 		}
 	}
-	// reasoning_output_tokens and cache_write_input_tokens are validated when
-	// present but carry no contract field, so both are dropped after validation.
+	// Validated when present but dropped: neither has a contract field.
 	if raw, exists := object["reasoning_output_tokens"]; exists {
 		if _, ok := nonnegativeInteger(raw); !ok {
 			return nil, ErrMalformedOutput
@@ -533,10 +475,7 @@ func parseUsage(value any) (*Usage, error) {
 	return &Usage{InputTokens: input, CachedInputTokens: cached, OutputTokens: output}, nil
 }
 
-// dropNullMembers turns the strict output schema's nullable stand-ins back into
-// the absent fields contracts/v1/result.schema.json expects, because strict
-// structured outputs cannot omit a property. A null array element stays, since
-// an element is a value the model chose to emit, not an omitted field.
+// Turns the schema's nullable stand-ins back into absent fields, since strict structured outputs can't omit a property; a null array element stays, since it's an emitted value, not an omitted field.
 func dropNullMembers(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -554,10 +493,7 @@ func dropNullMembers(value any) {
 	}
 }
 
-// parseResult's allowed-keys-by-outcome mirrors result.schema.json's allOf
-// conditionals. findings and no_findings require charter_version, coverage,
-// and verification_state, plus optional questions. incomplete permits
-// coverage alone, and every other outcome permits none of the four.
+// allowed-keys-by-outcome mirrors result.schema.json's allOf conditionals.
 func parseResult(raw []byte) (Result, error) {
 	value, err := protocol.Decode(raw, MaxResultBytes)
 	if err != nil {
@@ -756,8 +692,7 @@ func parseAnchor(value any) (Anchor, bool) {
 	return Anchor{Path: name, Line: line, Side: side}, validPath && lineOK && validSide
 }
 
-// parseQuestion requires an exact key set per evidence presence, which
-// structurally forbids any extra property such as an invented "severity".
+// Exact key set per evidence presence structurally forbids an extra property like an invented "severity".
 func parseQuestion(value any) (Question, bool) {
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -825,8 +760,7 @@ func parseCoverage(value any) (Coverage, bool) {
 	return coverage, true
 }
 
-// parseCoverageFile enforces the schema's conditional exactly: reason is
-// required when status is unreviewed and forbidden otherwise.
+// reason is required when status is unreviewed, forbidden otherwise.
 func parseCoverageFile(value any) (CoverageFile, bool) {
 	object, ok := value.(map[string]any)
 	if !ok {

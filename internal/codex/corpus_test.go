@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// TestParseCorpus replays the recorded and constructed Codex 0.154.0 streams
-// under testdata/stream/0.154.0 (see that directory's README for which is
-// which) so a version bump's replacement corpus is checked by the same test.
 func TestParseCorpus(t *testing.T) {
 	tests := map[string]struct {
 		file    string
@@ -91,11 +88,6 @@ func TestParseCorpusTurnFailedClassifiesTheBareMessage(t *testing.T) {
 	}
 }
 
-// TestParseCorpusTolerantShapesExercisesEveryAdditiveTolerance is the
-// regression anchor for every shape this PR started tolerating: an unknown
-// item type (collab_tool_call), a duplicate key inside a flattened item
-// (web_search), an item.updated event, a reasoning item, an unrecognized
-// turn usage key, and cached_input_tokens above input_tokens.
 func TestParseCorpusTolerantShapesExercisesEveryAdditiveTolerance(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "stream", "0.154.0", "tolerant-shapes.jsonl"))
 	if err != nil {
