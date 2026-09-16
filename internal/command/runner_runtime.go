@@ -112,10 +112,31 @@ type attemptRunner interface {
 	RunOnce(context.Context) (supervisor.Outcome, error)
 }
 
+// consecutiveRunnerFailureBound stops the supervised loop from polling
+// forever against a defect in the runner itself (see runnerClassifiedFailure).
+const consecutiveRunnerFailureBound = 3
+
 func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout, stderr io.Writer, logPath string) int {
+	consecutiveRunnerFailures := 0
 	for {
 		outcome, err := worker.RunOnce(ctx)
+		reason, classified := runnerClassifiedFailure(outcome, err)
+		if classified {
+			consecutiveRunnerFailures++
+		} else {
+			consecutiveRunnerFailures = 0
+		}
+		if classified && consecutiveRunnerFailures >= consecutiveRunnerFailureBound {
+			fmt.Fprintln(stderr, consecutiveRunnerFailureMessage(reason, consecutiveRunnerFailures, logPath))
+			return 1
+		}
 		if err != nil {
+			if classified && !once {
+				if !sleepOrDone(ctx, 2*time.Second) {
+					return 1
+				}
+				continue
+			}
 			fmt.Fprintln(stderr, supervisionFailure(err, logPath))
 			return 1
 		}
@@ -137,15 +158,55 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 			return code
 		}
 		if !outcome.Worked {
-			timer := time.NewTimer(2 * time.Second)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
+			if !sleepOrDone(ctx, 2*time.Second) {
 				return 1
-			case <-timer.C:
 			}
 		}
 	}
+}
+
+// sleepOrDone waits out the supervised loop's idle backoff, reporting false
+// if the context ended first so the caller can stop instead of continuing.
+func sleepOrDone(ctx context.Context, backoff time.Duration) bool {
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// runnerClassifiedFailure reports whether an attempt ended in one of the
+// four conditions #99 identifies as the runner's own defect rather than the
+// queued work's: three classifications the executor reports as a completed,
+// non-error outcome (malformed_output, missing_result, invalid_result), and
+// one the supervisor reports as an error because cleanup itself could not be
+// confirmed. A successful attempt or a provider-classified failure (for
+// example auth_expired or rate_limited) is not runner-classified and resets
+// the caller's consecutive count.
+func runnerClassifiedFailure(outcome supervisor.Outcome, err error) (string, bool) {
+	if err != nil {
+		if errors.Is(err, supervisor.ErrCleanupUnconfirmed) {
+			return "cleanup_unconfirmed", true
+		}
+		return "", false
+	}
+	if outcome.Worked {
+		switch outcome.FailureReason {
+		case "malformed_output", "missing_result", "invalid_result":
+			return outcome.FailureReason, true
+		}
+	}
+	return "", false
+}
+
+// consecutiveRunnerFailureMessage names the bound and the last reason that
+// tripped it, and points at the runner log the same way supervisionFailure does.
+func consecutiveRunnerFailureMessage(reason string, count int, logPath string) string {
+	message := fmt.Sprintf("Runner stopped polling after %d consecutive runner-classified failures (last reason: %s); this looks like a defect in the runner itself, not the queued work.", count, reason)
+	return withLogPointer(message, logPath)
 }
 
 // supervisionFailure names the condition that ended supervision, without

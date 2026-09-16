@@ -37,6 +37,106 @@ func (runner *scriptedRunner) RunOnce(ctx context.Context) (supervisor.Outcome, 
 	return supervisor.Outcome{}, runner.err
 }
 
+// sequencedStep is one scripted RunOnce return for sequencedRunner: exactly
+// one of outcome or err, used by the consecutive-failure breaker tests where
+// scriptedRunner's cancel-on-exhaustion behavior would get in the way.
+type sequencedStep struct {
+	outcome supervisor.Outcome
+	err     error
+}
+
+type sequencedRunner struct {
+	steps []sequencedStep
+	calls int
+}
+
+func (runner *sequencedRunner) RunOnce(context.Context) (supervisor.Outcome, error) {
+	if runner.calls >= len(runner.steps) {
+		runner.calls++
+		return supervisor.Outcome{}, errors.New("sequencedRunner exhausted its scripted steps")
+	}
+	step := runner.steps[runner.calls]
+	runner.calls++
+	return step.outcome, step.err
+}
+
+func malformedOutputOutcome() supervisor.Outcome {
+	return supervisor.Outcome{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "incomplete", FailureReason: "malformed_output"}
+}
+
+func TestSupervisedStopsPollingAfterThreeConsecutiveRunnerClassifiedFailures(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{outcome: malformedOutputOutcome()},
+		{err: supervisor.ErrCleanupUnconfirmed},
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()}, // must not be reached
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "/state/logs/runner.log")
+	if code != 1 || runner.calls != 3 {
+		t.Fatalf("code=%d calls=%d stderr=%q", code, runner.calls, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "3 consecutive runner-classified failures") || !strings.Contains(stderr.String(), "malformed_output") || !strings.Contains(stderr.String(), "/state/logs/runner.log") {
+		t.Fatalf("breaker message missing bound, reason, or log path: %q", stderr.String())
+	}
+}
+
+func TestSupervisedResetsConsecutiveCountOnSuccess(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()},
+		{outcome: supervisor.Outcome{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "no_findings"}},
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()},
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "/state/logs/runner.log")
+	if code != 1 || runner.calls != 6 {
+		t.Fatalf("expected the success on call 3 to reset the count: code=%d calls=%d stderr=%q", code, runner.calls, stderr.String())
+	}
+}
+
+func TestSupervisedResetsConsecutiveCountOnProviderClassifiedFailure(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()},
+		{outcome: supervisor.Outcome{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "incomplete", FailureReason: "auth_expired"}},
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()},
+		{outcome: malformedOutputOutcome()},
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "/state/logs/runner.log")
+	if code != 1 || runner.calls != 6 {
+		t.Fatalf("expected the provider-classified failure on call 3 to reset the count: code=%d calls=%d", code, runner.calls)
+	}
+}
+
+func TestSupervisedOnceStillReportsASingleRunnerClassifiedFailure(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{{outcome: malformedOutputOutcome()}}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, true, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 1 {
+		t.Fatalf("code=%d calls=%d", code, runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "incomplete") {
+		t.Fatalf("expected the single attempt's outcome on stdout: %q", stdout.String())
+	}
+}
+
+func TestSupervisedOnceStillExitsBeforeReachingTheBreakerBound(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{{err: supervisor.ErrCleanupUnconfirmed}}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, true, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 1 {
+		t.Fatalf("code=%d calls=%d", code, runner.calls)
+	}
+	if strings.Contains(stderr.String(), "consecutive runner-classified failures") {
+		t.Fatalf("once mode should not report the breaker on a single failure: %q", stderr.String())
+	}
+}
+
 func TestSupervisedOnceExitAndSafeOutput(t *testing.T) {
 	for _, test := range []struct {
 		outcome string
