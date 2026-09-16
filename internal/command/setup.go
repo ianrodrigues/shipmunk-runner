@@ -29,6 +29,19 @@ var setupCheckServer = checkSetupServer
 var setupBuildImage = buildSetupImage
 var setupImageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
+type setupFileError struct {
+	message string
+	reason  string
+}
+
+func (e *setupFileError) Error() string {
+	return e.message
+}
+
+func (e *setupFileError) Reason() string {
+	return e.reason
+}
+
 const (
 	setupBundleMaxBytes   = 16 * 1024
 	setupManifestMaxBytes = 128 * 1024
@@ -244,7 +257,11 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	manifestRaw, err := readPublicSetupFile(options.ReleaseManifest, setupManifestMaxBytes)
 	if err != nil {
-		fmt.Fprintln(stderr, "Runner release manifest is unsafe or invalid.")
+		msg := "Runner release manifest is unsafe or invalid."
+		if fileErr, ok := err.(*setupFileError); ok && fileErr.Reason() != "" {
+			msg += " " + fileErr.Reason() + "."
+		}
+		fmt.Fprintln(stderr, msg)
 		return 1
 	}
 	manifest, err := install.ParseManifest(manifestRaw)
@@ -286,7 +303,11 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	archive, err := readPublicSetupFile(options.ReleaseArchive, int(platform.Archive.Size))
 	if err != nil {
-		fmt.Fprintln(stderr, "Runner release archive is unsafe or invalid.")
+		msg := "Runner release archive is unsafe or invalid."
+		if fileErr, ok := err.(*setupFileError); ok && fileErr.Reason() != "" {
+			msg += " " + fileErr.Reason() + "."
+		}
+		fmt.Fprintln(stderr, msg)
 		return 1
 	}
 	releasePath, err := install.Install(bytes.NewReader(archive), releases, platform)
@@ -449,27 +470,50 @@ func readPublicSetupFile(path string, limit int) ([]byte, error) {
 		return nil, errors.New("release file size is invalid")
 	}
 	abs, err := filepath.Abs(path)
-	if err != nil || setupPathHasSymlink(abs) {
-		return nil, errors.New("release file path is unsafe")
+	if err != nil {
+		return nil, &setupFileError{message: "release file path is unsafe", reason: ""}
+	}
+	if setupPathHasSymlink(abs) {
+		symlinkPath := setupFindSymlinkComponent(abs)
+		reason := symlinkPath
+		if reason == "" {
+			reason = "symlink component"
+		}
+		return nil, &setupFileError{message: "release file path is unsafe", reason: reason}
 	}
 	expected, err := os.Lstat(abs)
-	if err != nil || !expected.Mode().IsRegular() || expected.Mode()&os.ModeSymlink != 0 || setupFileNlink(expected) != 1 {
-		return nil, errors.New("release file is unsafe")
+	if err != nil {
+		return nil, &setupFileError{message: "release file is unsafe", reason: ""}
+	}
+	if !expected.Mode().IsRegular() {
+		return nil, &setupFileError{message: "release file is unsafe", reason: "not a regular file"}
+	}
+	if expected.Mode()&os.ModeSymlink != 0 {
+		return nil, &setupFileError{message: "release file is unsafe", reason: abs}
+	}
+	if setupFileNlink(expected) != 1 {
+		return nil, &setupFileError{message: "release file is unsafe", reason: "hard-linked"}
 	}
 	file, err := os.Open(abs)
 	if err != nil {
-		return nil, errors.New("release file cannot be opened")
+		return nil, &setupFileError{message: "release file cannot be opened", reason: ""}
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(expected, opened) || setupFileNlink(opened) != 1 {
-		return nil, errors.New("release file changed while opening")
+	if err != nil || !opened.Mode().IsRegular() || setupFileNlink(opened) != 1 {
+		return nil, &setupFileError{message: "release file changed while opening", reason: "changed while opening"}
+	}
+	if !os.SameFile(expected, opened) {
+		return nil, &setupFileError{message: "release file changed while opening", reason: "changed while opening"}
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	afterOpen, openErr := file.Stat()
 	afterPath, pathErr := os.Lstat(abs)
 	if err != nil || len(raw) > limit || openErr != nil || pathErr != nil || !os.SameFile(afterOpen, afterPath) || setupFileNlink(afterOpen) != 1 {
-		return nil, errors.New("release file changed or exceeds its limit")
+		if err != nil || len(raw) > limit {
+			return nil, &setupFileError{message: "release file changed or exceeds its limit", reason: "exceeds its limit"}
+		}
+		return nil, &setupFileError{message: "release file changed or exceeds its limit", reason: "changed after reading"}
 	}
 	return raw, nil
 }
@@ -513,6 +557,18 @@ func setupPathHasSymlink(path string) bool {
 		}
 	}
 	return false
+}
+
+func setupFindSymlinkComponent(path string) string {
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return current
+		}
+	}
+	return ""
 }
 
 func validateSetupURL(value string) error {
