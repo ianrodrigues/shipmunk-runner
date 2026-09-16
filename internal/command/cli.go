@@ -102,12 +102,10 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "setup":
 		return RunSetup(args[1:], stdout, stderr)
-	case "run", "connect", "probe":
+	case "run", "connect", "probe", "disconnect":
 		if len(args) >= 2 && !strings.HasPrefix(args[1], "-") {
 			return runInstalledSetup(args, stdout, stderr)
 		}
-		return runManualCommand(args[0], args[1:], stdout, stderr)
-	case "disconnect":
 		return runManualCommand(args[0], args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "Unknown command. Run shipmunk-runner --help for usage.")

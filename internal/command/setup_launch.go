@@ -24,7 +24,7 @@ func runInstalledSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Run commands as the dedicated non-root runner account.")
 		return 1
 	}
-	if len(args) < 2 || (args[0] != "run" && args[0] != "connect" && args[0] != "probe") {
+	if len(args) < 2 || (args[0] != "run" && args[0] != "connect" && args[0] != "probe" && args[0] != "disconnect") {
 		fmt.Fprintln(stderr, "Invalid installed runner command.")
 		return 2
 	}
@@ -125,10 +125,7 @@ func dispatchInstalled(args []string, root string, configuration install.Configu
 			fmt.Fprintf(stderr, "The %s command accepts only --json.\n", args[0])
 			return 2
 		}
-		operation := "probe"
-		if args[0] == "connect" {
-			operation = "login"
-		}
+		operation := map[string]string{"connect": "login", "probe": "probe", "disconnect": "disconnect"}[args[0]]
 		if requiresTerminal(operation, jsonOutput) &&
 			(!setupRuntime.isTerminal(setupRuntime.stdin) || !setupRuntime.isTerminal(stdout) || !setupRuntime.isTerminal(stderr)) {
 			fmt.Fprintln(stderr, "Native connection operations require an operator terminal.")
@@ -167,8 +164,8 @@ func newOperationID(now time.Time) (string, error) {
 }
 
 func setupLaunchers(setupBinary, root string) map[string][]byte {
-	launchers := make(map[string][]byte, 3)
-	for _, name := range []string{"run", "connect", "probe"} {
+	launchers := make(map[string][]byte, 4)
+	for _, name := range []string{"run", "connect", "probe", "disconnect"} {
 		launchers[name] = []byte("#!/bin/sh\nexec " + shellQuote(setupBinary) + " " + name + " " + shellQuote(root) + " \"$@\"\n")
 	}
 	return launchers

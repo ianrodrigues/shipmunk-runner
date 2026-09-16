@@ -333,7 +333,7 @@ type activationJournal struct {
 
 var activationOrder = []string{"profile.token", "execution.token", "config.json"}
 
-var launcherNames = []string{"run", "connect", "probe"}
+var launcherNames = []string{"run", "connect", "probe", "disconnect"}
 
 func activationNames(withLaunchers bool) []string {
 	if !withLaunchers {

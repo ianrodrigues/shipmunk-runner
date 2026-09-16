@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	setupPath := fixture + "/bin/shipmunk-runner"
 	pathEnv := "PATH=" + fixture + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	beforeConnect := upstubRequestCount(t, ctx, container)
 	// No --skip-connect: the connect step must reach the stub control plane from the installed binary (asserted below).
 	output, exitCode := runExpect(t, 90*time.Second,
 		"docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container,
@@ -150,7 +152,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	if exitCode != 3 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") || !strings.Contains(output, "connecting did not complete") {
 		t.Fatalf("guided setup did not complete its install-then-connect sequence cleanly (exit %d): %s", exitCode, output)
 	}
-	assertUpstubReceived(t, ctx, container, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
+	assertUpstubReceivedAfter(t, ctx, container, beforeConnect, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
 
 	root := home + "/.shipmunk/runners/" + smokeRunnerID
 	assertInstalledConfiguration(t, ctx, container, root, manifest.Version, platformKey)
@@ -179,6 +181,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	// exec.LookPath("docker") still runs before probe's network call. Give
 	// probe the fixture's docker script too, so the lookup succeeds.
+	beforeProbe := upstubRequestCount(t, ctx, container)
 	probeOutput, probeExit := runExpect(t, 30*time.Second, "docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container, root+"/probe")
 	if probeExit != 1 {
 		t.Fatalf("probe against a stub control plane should fail cleanly with exit 1, got %d: %s", probeExit, probeOutput)
@@ -186,7 +189,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	if strings.Contains(probeOutput, "no such file or directory") || strings.Contains(strings.ToLower(probeOutput), "exec format error") {
 		t.Fatalf("probe failed for an environment reason rather than a control-plane reason: %s", probeOutput)
 	}
-	assertUpstubReceived(t, ctx, container, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
+	assertUpstubReceivedAfter(t, ctx, container, beforeProbe, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
 	assertAbsent(t, ctx, container, root+"/state/active-attempt.json")
 
 	t.Logf("clean-container install smoke passed for %s using image %s", platformKey, image)
@@ -375,6 +378,33 @@ func assertUpstubReceived(t *testing.T, ctx context.Context, container, want str
 		}
 	}
 	t.Fatalf("up-stub never received exactly %q; log:\n%s", want, result.output)
+}
+
+func upstubRequestCount(t *testing.T, ctx context.Context, container string) int {
+	t.Helper()
+	result := dockerExecAs(t, ctx, 10*time.Second, container, smokeUser, "sh", "-c", "cat "+upstubRequestLog+" 2>/dev/null | wc -l")
+	if result.exitCode != 0 {
+		t.Fatalf("count up-stub requests: %s", result.output)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(result.output))
+	if err != nil {
+		t.Fatalf("parse up-stub request count %q: %v", result.output, err)
+	}
+	return count
+}
+
+func assertUpstubReceivedAfter(t *testing.T, ctx context.Context, container string, baseline int, want string) {
+	t.Helper()
+	result := dockerExecAs(t, ctx, 10*time.Second, container, smokeUser, "sh", "-c", "tail -n +"+strconv.Itoa(baseline+1)+" "+upstubRequestLog+" 2>/dev/null")
+	if result.exitCode != 0 {
+		t.Fatalf("read up-stub request log after line %d: %s", baseline, result.output)
+	}
+	for _, line := range strings.Split(result.output, "\n") {
+		if line == want {
+			return
+		}
+	}
+	t.Fatalf("up-stub never received exactly %q after request %d; log tail:\n%s", want, baseline, result.output)
 }
 
 type execResult struct {
