@@ -9,6 +9,7 @@
   "findings": [
     {
       "category": "maintenance",
+      "title": "Duplicated severity list can diverge unnoticed",
       "severity": "low",
       "relation": "modified",
       "scenario": "The severity list is now spelled out in both the publisher and the path matcher, so the next severity added to the protocol has to be edited in two files.",

@@ -9,6 +9,7 @@
   "findings": [
     {
       "category": "contract",
+      "title": "Acceptance and publication disagree on binary sides",
       "severity": "medium",
       "relation": "modified",
       "scenario": "The publisher now accepts a side value the frozen comparison never produces for a binary file.",

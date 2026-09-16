@@ -9,6 +9,7 @@
   "findings": [
     {
       "category": "correctness",
+      "title": "Empty rule set now allows every path",
       "severity": "high",
       "relation": "introduced",
       "scenario": "A comparison whose file list is empty reaches the matcher, which treats the empty list as allowing every path.",
@@ -31,6 +32,7 @@
     },
     {
       "category": "test_adequacy",
+      "title": "No test covers a rule set that matches nothing",
       "severity": "medium",
       "relation": "preexisting",
       "scenario": "No test covers a rule set that matches zero patterns, so the behaviour the change relies on is unpinned today.",

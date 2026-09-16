@@ -19,6 +19,8 @@ func TestParseCorpus(t *testing.T) {
 		"turn failed":                  {"turn-failed.jsonl", func(err error) bool { return errors.Is(err, ErrNativeFailure) }},
 		"transient error then success": {"transient-error-then-success.jsonl", func(err error) bool { return err == nil }},
 		"tolerant shapes":              {"tolerant-shapes.jsonl", func(err error) bool { return err == nil }},
+		"split findings":               {"split-findings.jsonl", func(err error) bool { return err == nil }},
+		"missing finding title":        {"missing-finding-title.jsonl", func(err error) bool { return errors.Is(err, ErrInvalidResult) }},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -118,5 +120,26 @@ func TestParseCorpusTolerantShapesExercisesEveryAdditiveTolerance(t *testing.T) 
 	}
 	if stream.Usage == nil || stream.Usage.CachedInputTokens == nil || stream.Usage.InputTokens == nil || *stream.Usage.CachedInputTokens <= *stream.Usage.InputTokens {
 		t.Fatalf("cached_input_tokens over input_tokens was not preserved: %#v", stream.Usage)
+	}
+}
+
+func TestParseCorpusSplitFindingsKeepsTwoIndependentFixesSeparate(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "stream", "0.154.0", "split-findings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := Parse(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.Result.Findings) != 2 {
+		t.Fatalf("result = %#v", stream.Result)
+	}
+	first, second := stream.Result.Findings[0], stream.Result.Findings[1]
+	if first.Title == "" || second.Title == "" || first.Title == second.Title {
+		t.Fatalf("split findings do not carry distinct titles: %q and %q", first.Title, second.Title)
+	}
+	if first.Action == second.Action {
+		t.Fatalf("split findings share one action: %q", first.Action)
 	}
 }

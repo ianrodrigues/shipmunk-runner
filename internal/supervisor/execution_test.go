@@ -90,7 +90,7 @@ func TestDecodeExecutionDropsFindingsForFailedExit(t *testing.T) {
 	}
 	result := envelope["result"].(map[string]any)
 	result["findings"] = []any{map[string]any{
-		"category": "correctness", "severity": "high", "relation": "introduced",
+		"category": "correctness", "title": "A finding title.", "severity": "high", "relation": "introduced",
 		"scenario": "s", "consequence": "c", "action": "a", "explanation": "e",
 		"evidence": []any{map[string]any{"snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "path": "a.go", "line_start": 1, "line_end": 1}},
 	}}

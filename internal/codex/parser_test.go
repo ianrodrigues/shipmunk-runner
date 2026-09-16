@@ -34,7 +34,7 @@ const (
 // minus the envelope fields normalizeExecution adds.
 
 func findingJSON(path string, lineStart, lineEnd int64) string {
-	return `{"category":"correctness","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` + evidenceJSON(sampleHeadSHA, path, lineStart, lineEnd) + `]}`
+	return `{"category":"correctness","title":"A finding title.","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` + evidenceJSON(sampleHeadSHA, path, lineStart, lineEnd) + `]}`
 }
 
 func evidenceJSON(snapshot, path string, lineStart, lineEnd int64) string {
@@ -552,7 +552,7 @@ func TestParseRejectsEveryC0ControlInEvidencePath(t *testing.T) {
 // strictFindingJSON is the wire shape the strict output schema forces: anchor is
 // always present because strict mode cannot omit a property.
 func strictFindingJSON(anchor string) string {
-	return `{"category":"correctness","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` +
+	return `{"category":"correctness","title":"A finding title.","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` +
 		evidenceJSON(sampleHeadSHA, findingPath, 1, 2) + `],"anchor":` + anchor + `}`
 }
 
@@ -627,6 +627,11 @@ func TestParseEnforcesLimitsTheOutputSchemaCannotDeclare(t *testing.T) {
 	for name, result := range map[string]string{
 		"empty summary":         strings.Replace(noFindingsResult(), `"summary":"Done."`, `"summary":""`, 1),
 		"summary too long":      strings.Replace(noFindingsResult(), `"summary":"Done."`, `"summary":"`+text(16_385)+`"`, 1),
+		"missing title":         strings.Replace(findingsResult(), `"title":"A finding title.",`, ``, 1),
+		"empty title":           strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":""`, 1),
+		"title under five":      strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"`+text(4)+`"`, 1),
+		"title over eighty":     strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"`+text(81)+`"`, 1),
+		"multi-line title":      strings.Replace(findingsResult(), `"title":"A finding title."`, `"title":"A finding\ntitle."`, 1),
 		"empty scenario":        strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":""`, 1),
 		"scenario too long":     strings.Replace(findingsResult(), `"scenario":"A scenario."`, `"scenario":"`+text(2001)+`"`, 1),
 		"explanation too long":  strings.Replace(findingsResult(), `"explanation":"An explanation."`, `"explanation":"`+text(8193)+`"`, 1),
