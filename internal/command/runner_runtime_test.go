@@ -222,10 +222,8 @@ func TestTransportBackoffEscalatesAndCaps(t *testing.T) {
 	}
 }
 
-// TestTransportBackoffKeysOnCauseNotMessage guards against pacing keyed on
-// the rendered message: a control-plane error's message carries its status
-// code, so a flapping 503-then-504 outage must still read as one repeated
-// cause instead of resetting the streak (and the pause) on every attempt.
+// TestTransportBackoffKeysOnCauseNotMessage proves a flapping 503-then-504
+// outage reads as one repeated cause instead of resetting on every attempt.
 func TestTransportBackoffKeysOnCauseNotMessage(t *testing.T) {
 	backoff := transportBackoff{}
 	first := backoff.report("control plane rejected the request (503)", failureCause(&protocol.ControlPlaneError{StatusCode: 503}), "/log")
@@ -242,10 +240,7 @@ func TestTransportBackoffKeysOnCauseNotMessage(t *testing.T) {
 }
 
 // TestFailureCauseGroupsControlPlaneAndNetworkAsTransport proves a
-// 503-caused and a network-caused retryable cleanup failure share the same
-// streak key: an outage can flap between the two without an operator seeing
-// it as a different condition, or the streak (and the growing pause)
-// resetting on every attempt.
+// 503-caused and a network-caused failure share the same streak key.
 func TestFailureCauseGroupsControlPlaneAndNetworkAsTransport(t *testing.T) {
 	controlPlane := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503})
 	network := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &net.DNSError{Err: "no such host", Name: "runner.example", IsTimeout: true})

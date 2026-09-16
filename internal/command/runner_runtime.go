@@ -296,17 +296,18 @@ func runnerClassifiedFailure(outcome supervisor.Outcome, err error) (string, boo
 	return "", false
 }
 
-// failureCause buckets a retryable cleanup-unconfirmed error by its
-// underlying cause, using the same discriminators as runnerClassifiedFailure.
-// transportBackoff keys its streak on this instead of the rendered message,
-// since a control-plane error's message varies with its status code and a
-// flapping outage can alternate between a control-plane and a network cause
-// without that being a different condition to an operator.
+// failureCause buckets a retryable cleanup failure by cause, with the same
+// discriminators as runnerClassifiedFailure. transportBackoff keys its
+// streak on the cause, not the rendered message: a message can vary with a
+// status code, and a flapping outage can alternate between control-plane
+// and network causes.
 func failureCause(err error) string {
 	var refused *supervisor.RefusedStoppedError
 	var controlPlaneErr *protocol.ControlPlaneError
 	var networkErr net.Error
 	switch {
+	// retryableCleanupFailure never passes a refused error here; this case
+	// only keeps the precedence identical to runnerClassifiedFailure's.
 	case errors.As(err, &refused):
 		return "refused"
 	case errors.As(err, &controlPlaneErr), errors.As(err, &networkErr):
