@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+zero=0000000000000000000000000000000000000000
+repository=$(git rev-parse --show-toplevel)
+
 # Git supplies local-ref local-object remote-ref remote-object on stdin.
 while read -r local_ref local_object remote_ref remote_object extra || [[ -n "$local_ref$local_object$remote_ref$remote_object$extra" ]]; do
     if [[ -z "$local_ref" || -z "$local_object" || -z "$remote_ref" || -z "$remote_object" || -n "$extra" ]]; then
@@ -10,5 +13,16 @@ while read -r local_ref local_object remote_ref remote_object extra || [[ -n "$l
     if [[ "$remote_ref" == refs/heads/main ]]; then
         echo 'pre-push: push a feature branch and merge a reviewed PR; direct updates or deletion of main are blocked.' >&2
         exit 1
+    fi
+    if [[ "$local_object" != "$zero" && "$local_ref" == refs/heads/* ]]; then
+        base=$remote_object
+        if [[ "$base" == "$zero" ]]; then
+            # A brand-new branch has no remote object to diff against; fall
+            # back to where it forked from the trunk, when that is known.
+            base=$(git merge-base origin/main "$local_object" 2> /dev/null) || base=""
+        fi
+        if [[ -n "$base" ]]; then
+            bash "$repository/tools/changelog-check.sh" "$base" "$local_object"
+        fi
     fi
 done
