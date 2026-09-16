@@ -34,6 +34,8 @@ var setupImageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // wrapped error's text IS the reason, and errors.Is still classifies it.
 var errUnsafeSetupFile = errors.New("")
 
+// setupFileMessage appends an unsafe-file guard reason to prefix. Other errors
+// leave prefix unchanged.
 func setupFileMessage(prefix string, err error) string {
 	if !errors.Is(err, errUnsafeSetupFile) {
 		return prefix
@@ -219,6 +221,9 @@ func ParseSetupBundle(raw []byte, serverURLOverride string, now time.Time) (Setu
 	}, nil
 }
 
+// RunSetup handles guided installation and the installed run and connect
+// subcommands, writing terminal output to the supplied writers and returning a
+// process exit code.
 func RunSetup(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "run" || args[0] == "connect") {
 		return runInstalledSetup(args, stdout, stderr)
@@ -456,6 +461,10 @@ func readProtectedSetupFile(path string, effectiveUID int) ([]byte, error) {
 	return raw, nil
 }
 
+// readPublicSetupFile reads a bounded release file after rejecting linked or
+// non-regular files and identity changes during access. Guard failures wrap
+// errUnsafeSetupFile with an operator-facing reason; a nonpositive limit
+// returns a separate validation error.
 func readPublicSetupFile(path string, limit int) ([]byte, error) {
 	if limit < 1 {
 		return nil, errors.New("release file size is invalid")
@@ -533,10 +542,9 @@ func prepareSetupDirectories(home, runnerID string, effectiveUID int) (string, s
 	return root, filepath.Join(shipmunk, "releases"), nil
 }
 
-// setupUnsafePathComponent Lstats path component by component from the
-// root. unsafe is true when a component is a symlink or cannot be Lstat'd;
-// isSymlink distinguishes the two so callers don't blame a missing path on a
-// symlink.
+// setupUnsafePathComponent returns the first path component that is a symlink
+// or cannot be inspected. isSymlink distinguishes those conditions; unsafe is
+// false when every component is accessible and link-free.
 func setupUnsafePathComponent(path string) (component string, isSymlink, unsafe bool) {
 	current := string(filepath.Separator)
 	for _, part := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
@@ -552,6 +560,8 @@ func setupUnsafePathComponent(path string) (component string, isSymlink, unsafe 
 	return "", false, false
 }
 
+// setupPathHasSymlink reports whether any path component is a symlink or cannot
+// be inspected.
 func setupPathHasSymlink(path string) bool {
 	_, _, unsafe := setupUnsafePathComponent(path)
 	return unsafe
