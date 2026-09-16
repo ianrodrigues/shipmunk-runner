@@ -108,10 +108,16 @@ func writeProfileHealth(output io.Writer, health profile.Health, jsonOutput bool
 	return err
 }
 
-// readinessSentence gives an operator terminal one sentence instead of the raw health object; --json keeps the object for scripts.
+// readinessSentence gives an operator terminal one sentence instead of the raw health object.
+// --json keeps the object for scripts.
 func readinessSentence(health profile.Health) string {
-	if health.Health == profile.HealthReady {
+	switch health.Health {
+	case profile.HealthReady:
 		return "Runner is ready."
+	case "disconnected":
+		// Exits 0, same as ready: disconnected is the expected outcome of a
+		// successful disconnect, not a failure to reach readiness.
+		return "Runner is disconnected."
 	}
 	reason := health.Reason
 	if reason == "" {

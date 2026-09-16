@@ -174,7 +174,7 @@ func TestRunnerAndProfileCommandsRemainFailClosedAndSafe(t *testing.T) {
 		t.Fatalf("profile help = %d, stdout %q, stderr %q", exitCode, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
-	if exitCode := RunProfile([]string{"--version"}, &stdout, &stderr); exitCode != 0 || stdout.String() != "shipmunk-profile development\n" {
+	if exitCode := RunProfile([]string{"--version"}, &stdout, &stderr); exitCode != 0 || stdout.String() != "shipmunk-runner development\n" {
 		t.Fatalf("profile version = %d, %q", exitCode, stdout.String())
 	}
 	stdout.Reset()
@@ -193,23 +193,20 @@ func TestCommandsReportInjectedReleaseVersion(t *testing.T) {
 	Version = "v1.2.3-alpha.4"
 	t.Cleanup(func() { Version = original })
 
-	for name, run := range map[string]func(*bytes.Buffer, *bytes.Buffer) int{
-		"shipmunk-runner": func(stdout, stderr *bytes.Buffer) int {
-			return RunRunner([]string{"--version"}, stdout, stderr)
-		},
-		"shipmunk-profile": func(stdout, stderr *bytes.Buffer) int {
-			return RunProfile([]string{"--version"}, stdout, stderr)
-		},
-		"shipmunk-setup": func(stdout, stderr *bytes.Buffer) int {
-			return RunSetup([]string{"--version"}, stdout, stderr)
-		},
-		"shipmunk-watchdog": func(stdout, stderr *bytes.Buffer) int {
+	for name, test := range map[string]struct {
+		run  func(*bytes.Buffer, *bytes.Buffer) int
+		want string
+	}{
+		"shipmunk-runner run":     {func(stdout, stderr *bytes.Buffer) int { return RunRunner([]string{"--version"}, stdout, stderr) }, "shipmunk-runner v1.2.3-alpha.4\n"},
+		"shipmunk-runner connect": {func(stdout, stderr *bytes.Buffer) int { return RunProfile([]string{"--version"}, stdout, stderr) }, "shipmunk-runner v1.2.3-alpha.4\n"},
+		"shipmunk-runner setup":   {func(stdout, stderr *bytes.Buffer) int { return RunSetup([]string{"--version"}, stdout, stderr) }, "shipmunk-runner v1.2.3-alpha.4\n"},
+		"shipmunk-watchdog": {func(stdout, stderr *bytes.Buffer) int {
 			return RunWatchdog([]string{"--version"}, strings.NewReader(""), stdout, stderr)
-		},
+		}, "shipmunk-watchdog v1.2.3-alpha.4\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			if code := run(&stdout, &stderr); code != 0 || stdout.String() != name+" v1.2.3-alpha.4\n" || stderr.Len() != 0 {
+			if code := test.run(&stdout, &stderr); code != 0 || stdout.String() != test.want || stderr.Len() != 0 {
 				t.Fatalf("version = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 			}
 		})
@@ -232,6 +229,8 @@ func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 	}{
 		{health: profile.Health{Health: profile.HealthReady}, code: 0, sentence: "Runner is ready.\n", jsonOutput: `{"health":"ready","reason":null}` + "\n"},
 		{health: profile.Health{Health: profile.HealthRateLimited, Reason: profile.ReasonRateLimited}, code: 1, sentence: "Runner is not ready: rate_limited.\n", jsonOutput: `{"health":"rate_limited","reason":"rate_limited"}` + "\n"},
+		// disconnected exits 0, the same as ready: the sentence must not say "not ready".
+		{health: profile.Health{Health: "disconnected", Reason: "disconnected"}, code: 0, sentence: "Runner is disconnected.\n", jsonOutput: `{"health":"disconnected","reason":"disconnected"}` + "\n"},
 	} {
 		runNativeProfile = func(ProfileOptions, io.Writer) (profile.Health, error) { return test.health, nil }
 		var stdout, stderr bytes.Buffer
@@ -251,6 +250,14 @@ func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := RunProfile(arguments, &stdout, &stderr); code != 1 || stdout.Len() != 0 || strings.Contains(stderr.String(), "SYNTHETIC") {
 		t.Fatalf("unsafe profile error = %d, %q, %q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	// A script watching stdout for --json must always get a health object,
+	// even when the operation failed before producing one.
+	wantErrorJSON := `{"health":"error","reason":"operation_failed"}` + "\n"
+	if code := RunProfile(append(slices.Clone(arguments), "--json"), &stdout, &stderr); code != 1 || stdout.String() != wantErrorJSON || strings.Contains(stderr.String(), "SYNTHETIC") {
+		t.Fatalf("unsafe profile error --json = %d, %q, %q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -335,7 +342,7 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 		t.Fatalf("setup help = %d, stdout %q, stderr %q", exitCode, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
-	if exitCode := RunSetup([]string{"--version"}, &stdout, &stderr); exitCode != 0 || stdout.String() != "shipmunk-setup development\n" {
+	if exitCode := RunSetup([]string{"--version"}, &stdout, &stderr); exitCode != 0 || stdout.String() != "shipmunk-runner development\n" {
 		t.Fatalf("setup version = %d, %q", exitCode, stdout.String())
 	}
 	stdout.Reset()
@@ -374,7 +381,11 @@ func TestRunSetupProtectsSummarizesAndRequiresConfirmation(t *testing.T) {
 
 	stdout.Reset()
 	setupRuntime.stdin = strings.NewReader("y\n")
-	if code := RunSetup(setupCommandArgs(validSetupFile, manifest, archive), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Installed the verified runner release") {
+	// --skip-connect: this test covers the confirmation/summary flow, not the
+	// connect step, which execs the installed binary as a real subprocess
+	// (see TestGuidedSetupRunsConnectUnlessSkipped for that behavior).
+	confirmArgs := append(setupCommandArgs(validSetupFile, manifest, archive), "--skip-connect")
+	if code := RunSetup(confirmArgs, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Installed the verified runner release") {
 		t.Fatalf("confirmed setup handoff = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 }

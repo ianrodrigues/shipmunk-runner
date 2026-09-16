@@ -27,6 +27,7 @@ import (
 
 var setupCheckServer = checkSetupServer
 var setupBuildImage = buildSetupImage
+var setupExecConnect = execConnectLauncher
 var setupImageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // errUnsafeSetupFile marks a readPublicSetupFile guard failure. It carries no
@@ -225,15 +226,15 @@ func ParseSetupBundle(raw []byte, serverURLOverride string, now time.Time) (Setu
 func RunSetup(args []string, stdout, stderr io.Writer) int {
 	options, err := ParseSetupOptions(args)
 	if err != nil {
-		fmt.Fprintln(stderr, "Invalid setup options. Run shipmunk-setup --help for usage.")
+		fmt.Fprintln(stderr, "Invalid setup options. Run shipmunk-runner setup --help for usage.")
 		return 2
 	}
 	if options.Help {
-		writeUsage(stdout, "shipmunk-setup")
+		writeUsage(stdout, "setup")
 		return 0
 	}
 	if options.Version {
-		fmt.Fprintln(stdout, "shipmunk-setup "+Version)
+		fmt.Fprintln(stdout, "shipmunk-runner "+Version)
 		return 0
 	}
 	if setupRuntime.effectiveUID() == 0 {
@@ -349,11 +350,30 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		printNextSteps()
 		return 0
 	}
-	if code := runInstalledSetup([]string{"connect", root}, stdout, stderr); code != 0 {
+	if code := setupExecConnect(root, setupRuntime.stdin, stdout, stderr); code != 0 {
+		fmt.Fprintln(stdout, "\nSetup finished, but connecting did not complete; run the commands below.")
 		printNextSteps()
-		return 0
+		return 1
 	}
 	fmt.Fprintf(stdout, "\nRun to work through the queue:\n  Run: %s\n", filepath.Join(root, "run"))
+	return 0
+}
+
+// execConnectLauncher runs the just-activated connect launcher as a real
+// child process with inherited stdio, so the connect step is a manual
+// connect run against the installed binary: adjacent shipmunk-watchdog,
+// installed Version, and its own real *os.File terminal gate, not the
+// bootstrap binary's transient path or in-process state.
+func execConnectLauncher(root string, stdin io.Reader, stdout, stderr io.Writer) int {
+	command := exec.Command(filepath.Join(root, "connect"))
+	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
+	if err := command.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		return 1
+	}
 	return 0
 }
 

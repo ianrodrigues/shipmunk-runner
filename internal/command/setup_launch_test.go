@@ -383,26 +383,30 @@ func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
 	for name, test := range map[string]struct {
 		skipConnect  bool
 		connectCode  int
+		wantCode     int
 		sentence     string
 		wantMessages []string
 		wantMissing  []string
 	}{
 		"connects and reports readiness": {
 			connectCode:  0,
+			wantCode:     0,
 			sentence:     "Runner is ready.",
 			wantMessages: []string{"Setup did not start queued work.", "Runner is ready.", "Run to work through the queue"},
-			wantMissing:  []string{"Commands for this runner"},
+			wantMissing:  []string{"Commands for this runner", "did not complete"},
 		},
 		"connects and reports what remains": {
 			connectCode:  1,
+			wantCode:     1,
 			sentence:     "Runner is not ready: native_login_required.",
-			wantMessages: []string{"Setup did not start queued work.", "Runner is not ready: native_login_required.", "Commands for this runner"},
+			wantMessages: []string{"Setup did not start queued work.", "Runner is not ready: native_login_required.", "connecting did not complete", "Commands for this runner"},
 			wantMissing:  []string{"Run to work through the queue"},
 		},
 		"skips connect entirely": {
 			skipConnect:  true,
+			wantCode:     0,
 			wantMessages: []string{"Setup did not start queued work.", "Commands for this runner"},
-			wantMissing:  []string{"Runner is ready.", "Runner is not ready"},
+			wantMissing:  []string{"Runner is ready.", "Runner is not ready", "did not complete"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -415,13 +419,10 @@ func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
 				t.Fatal(err)
 			}
 			manifest, archive := setupReleaseFixture(t, home)
-			originalRuntime, originalCheck, originalBuild, originalProfile, originalVersion := setupRuntime, setupCheckServer, setupBuildImage, setupRunProfile, Version
+			originalRuntime, originalCheck, originalBuild, originalConnect := setupRuntime, setupCheckServer, setupBuildImage, setupExecConnect
 			t.Cleanup(func() {
-				setupRuntime, setupCheckServer, setupBuildImage, setupRunProfile, Version = originalRuntime, originalCheck, originalBuild, originalProfile, originalVersion
+				setupRuntime, setupCheckServer, setupBuildImage, setupExecConnect = originalRuntime, originalCheck, originalBuild, originalConnect
 			})
-			// setupReleaseFixture always builds manifest version v1.2.3; the installed
-			// dispatch refuses to run unless this launcher's Version matches it.
-			Version = "v1.2.3"
 			setupRuntime = setupRuntimeHooks{
 				effectiveUID: os.Geteuid, stdin: strings.NewReader("y\n"), isTerminal: func(any) bool { return true },
 				now:     func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) },
@@ -430,14 +431,13 @@ func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
 			setupCheckServer = func(string) error { return nil }
 			setupBuildImage = func(string, string) (string, error) { return "sha256:" + strings.Repeat("c", 64), nil }
 			calls := 0
-			// setupRunProfile stands in for the real shipmunk-profile process;
-			// it writes the same sentence RunProfile would, without needing a
-			// real *os.File for the login terminal gate.
-			setupRunProfile = func(args []string, stdout, _ io.Writer) int {
+			// setupExecConnect stands in for exec.Command(root+"/connect").
+			// It writes the same sentence the real subprocess would, without
+			// actually spawning one.
+			var gotRoot string
+			setupExecConnect = func(root string, _ io.Reader, stdout, _ io.Writer) int {
 				calls++
-				if !slices.Contains(args, "--operation=login") {
-					t.Fatalf("guided setup connect step used args %v, want --operation=login", args)
-				}
+				gotRoot = root
 				fmt.Fprintln(stdout, test.sentence)
 				return test.connectCode
 			}
@@ -447,14 +447,19 @@ func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
 				args = append(args, "--skip-connect")
 			}
 			var stdout, stderr bytes.Buffer
-			if code := RunSetup(args, &stdout, &stderr); code != 0 {
-				t.Fatalf("setup code = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+			if code := RunSetup(args, &stdout, &stderr); code != test.wantCode {
+				t.Fatalf("setup code = %d, want %d, stdout %q, stderr %q", code, test.wantCode, stdout.String(), stderr.String())
 			}
 			if test.skipConnect && calls != 0 {
 				t.Fatalf("skipped connect still ran the connect step %d times", calls)
 			}
-			if !test.skipConnect && calls != 1 {
-				t.Fatalf("connect ran %d times, want 1", calls)
+			if !test.skipConnect {
+				if calls != 1 {
+					t.Fatalf("connect ran %d times, want 1", calls)
+				}
+				if !strings.HasSuffix(gotRoot, testRunnerID) {
+					t.Fatalf("connect ran against root %q, want it to end in the runner id", gotRoot)
+				}
 			}
 			for _, want := range test.wantMessages {
 				if !strings.Contains(stdout.String(), want) {
