@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `make lint` and the pre-push hook now fail a pull request that touches `cmd/` or `internal/` without an `Unreleased` line here or a `changelog: none` commit trailer. (#TBD)
+- `make lint` and the pre-push hook now fail a pull request that touches `cmd/` or `internal/` without an `Unreleased` line here or a `changelog: none` commit trailer. ([#67](https://github.com/ianrodrigues/shipmunk-runner/pull/67))
 
 ## v0.1.0-alpha.16 - 2026-09-16
 
