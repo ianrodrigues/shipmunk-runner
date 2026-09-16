@@ -75,11 +75,8 @@ func (g *leaseGuard) renew() error {
 	if err := g.ctx.Err(); err != nil {
 		return err
 	}
-	// No per-call timeout here: the client already enforces its own budget,
-	// and a caller deadline set to the same value would race it and always
-	// lose (created first), surfacing a bare context.DeadlineExceeded
-	// instead of *protocol.HTTPTimeoutError. g.ctx carries the attempt's
-	// own deadline, which is what a caller context should still mean here.
+	// No per-call timeout. A wrapper of the same length expires first and hides the client's budget error.
+	// g.ctx carries the attempt deadline and must keep that meaning.
 	lease, stop, err := g.supervisor.Client.Heartbeat(g.ctx, g.claim)
 	if err != nil {
 		g.supervisor.log("heartbeat_failed", map[string]any{"attempt_id": g.claim.AttemptID, "error": err.Error()})
