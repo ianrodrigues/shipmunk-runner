@@ -14,15 +14,22 @@ while read -r local_ref local_object remote_ref remote_object extra || [[ -n "$l
         echo 'pre-push: push a feature branch and merge a reviewed PR; direct updates or deletion of main are blocked.' >&2
         exit 1
     fi
-    if [[ "$local_object" != "$zero" && "$local_ref" == refs/heads/* ]]; then
-        base=$remote_object
-        if [[ "$base" == "$zero" ]]; then
-            # A brand-new branch has no remote object to diff against; fall
-            # back to where it forked from the trunk, when that is known.
-            base=$(git merge-base origin/main "$local_object" 2> /dev/null) || base=""
+    # Gate on the remote ref, not the local one: "git push origin
+    # HEAD:refs/heads/x" has local_ref "HEAD" but still updates a branch.
+    if [[ "$local_object" != "$zero" && "$remote_ref" == refs/heads/* ]]; then
+        # Judge the whole PR, not just this push's incremental commits: a
+        # branch pushed more than once must still be checked against where
+        # it forked from the trunk, not against its own previous tip.
+        base=$(git merge-base origin/main "$local_object" 2> /dev/null) || base=""
+        if [[ -z "$base" ]] && git rev-parse --verify --quiet "${remote_object}^{commit}" > /dev/null 2>&1; then
+            # origin/main is unavailable (e.g. never fetched); fall back to
+            # the previous remote tip so an incremental push is still checked.
+            base=$remote_object
         fi
         if [[ -n "$base" ]]; then
             bash "$repository/tools/changelog-check.sh" "$base" "$local_object"
+        else
+            echo "pre-push: skipping changelog-check for $local_ref; no resolvable base (origin/main and $remote_ref are both unavailable)." >&2
         fi
     fi
 done
