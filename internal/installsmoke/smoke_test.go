@@ -1,9 +1,10 @@
 // Package installsmoke installs a runner release inside a container with
-// neither PHP nor a Go toolchain, driven through the real shipmunk-runner setup subcommand
-// binary. The docker client is faked, so this does not prove real Docker
-// isolation, a live native login, or control-plane compatibility; see
-// docs/releases.md and docs/runtime/RT-02.md. See smoke_host_test.go for the
-// darwin equivalent, run natively instead of in a container.
+// neither PHP nor a Go toolchain, driven through the real shipmunk-runner
+// binary's setup subcommand. The docker client is faked, so this does not
+// prove real Docker isolation, a live native login, or control-plane
+// compatibility; see docs/releases.md and docs/runtime/RT-02.md. See
+// smoke_host_test.go for the darwin equivalent, run natively instead of in a
+// container.
 package installsmoke
 
 import (
@@ -122,7 +123,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	dockerT(t, ctx, 15*time.Second, "exec", container, "chmod", "0755", fixture+"/bin/docker", fixture+"/upstub")
 	dockerT(t, ctx, 15*time.Second, "exec", container, "chmod", "0600", fixture+"/setup.json")
 
-	// Extract only the setup binary, exactly as the published bootstrap
+	// Extract only shipmunk-runner, exactly as the published bootstrap
 	// script does: the archive itself stays intact for --release-archive.
 	extract := dockerExecAs(t, ctx, 30*time.Second, container, smokeUser,
 		"tar", "-xf", fixture+"/"+platform.Archive.Name, "-C", fixture, "bin/shipmunk-runner")
@@ -140,14 +141,22 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	setupPath := fixture + "/bin/shipmunk-runner"
 	pathEnv := "PATH=" + fixture + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	// No --skip-connect here: guided setup must run its connect step as a
+	// real subprocess of the installed shipmunk-runner, not the transient
+	// bootstrap binary. The fake docker script and stub control plane can't
+	// carry a real login to readiness, so it fails after reaching the
+	// network (asserted below); a bug that broke the exec'd connect step
+	// before that point (e.g. an unresolved adjacent shipmunk-watchdog)
+	// would fail earlier and never reach the control plane at all.
 	output, exitCode := runExpect(t, 90*time.Second,
 		"docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container,
 		setupPath, "setup", fixture+"/setup.json",
 		"--release-manifest", fixture+"/runner-release.json",
-		"--release-archive", fixture+"/"+platform.Archive.Name, "--skip-connect")
-	if exitCode != 0 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") {
-		t.Fatalf("guided setup did not complete cleanly (exit %d): %s", exitCode, output)
+		"--release-archive", fixture+"/"+platform.Archive.Name)
+	if exitCode != 1 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") || !strings.Contains(output, "connecting did not complete") {
+		t.Fatalf("guided setup did not complete its install-then-connect sequence cleanly (exit %d): %s", exitCode, output)
 	}
+	assertUpstubReceived(t, ctx, container, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
 
 	root := home + "/.shipmunk/runners/" + smokeRunnerID
 	assertInstalledConfiguration(t, ctx, container, root, manifest.Version, platformKey)
@@ -335,7 +344,8 @@ func assertInstalledConfiguration(t *testing.T, ctx context.Context, container, 
 	}
 }
 
-// assertLauncher checks the launcher is private, owner-executable, and invokes the shipmunk-runner binary from its content-addressed release store, not the transient bootstrap path.
+// assertLauncher checks the launcher is private and owner-executable.
+// It must invoke the installed shipmunk-runner, not the transient bootstrap path.
 func assertLauncher(t *testing.T, ctx context.Context, container, home, root, name string) {
 	t.Helper()
 	permissions := dockerExecAs(t, ctx, 10*time.Second, container, smokeUser, "sh", "-c", "stat -c '%a' "+root+"/"+name)

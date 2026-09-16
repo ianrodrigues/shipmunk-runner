@@ -77,7 +77,7 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertHostCommandAbsent(t, scrubbedPath, "php")
 	assertHostCommandAbsent(t, scrubbedPath, "go")
 
-	// Matches the published bootstrap script: only the setup binary is extracted.
+	// Matches the published bootstrap script: only shipmunk-runner is extracted.
 	extract := runHostScrubbed(t, "", 30*time.Second, scrubbedPath, "tar", "-xf", filepath.Join(fixture, platform.Archive.Name), "-C", fixture, "bin/shipmunk-runner")
 	if extract.exitCode != 0 {
 		t.Fatalf("extract shipmunk-runner: %s", extract.output)

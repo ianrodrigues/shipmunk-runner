@@ -29,7 +29,7 @@ Run on an operator terminal: stdin, stdout and stderr must all be a TTY. Append 
 
 The four `platform` values above are all packaged, but validated differently: `linux-amd64` is smoke-tested in CI in a PHP-free container on every push; `linux-arm64` smoke passes locally under QEMU emulation or native hardware and is a tested parameter not yet wired to a CI runner; `darwin-arm64` native operation was demonstrated by the server's published-runner check against `v0.1.0-alpha.10` on an Apple Silicon host, though that host was not PHP-free, so it is native-operation evidence rather than a clean-host smoke test; `darwin-amd64` is compile-only and unvalidated and is not a supported executable platform until a smoke run exists on an Intel host. See [release packaging and application pins](docs/releases.md) for details.
 
-Once installed, use the printed launchers directly:
+Once installed, setup already ran connect for you unless it printed otherwise; the launchers live under `~/.shipmunk/runners/RUNNER/` and stay available for later use:
 
 ```sh
 ~/.shipmunk/runners/RUNNER/connect         # native terminal login and readiness probe

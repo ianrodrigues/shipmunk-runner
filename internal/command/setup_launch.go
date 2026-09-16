@@ -129,8 +129,8 @@ func dispatchInstalled(args []string, root string, configuration install.Configu
 		if args[0] == "connect" {
 			operation = "login"
 		}
-		// Login is an interactive device-code flow regardless of --json; a
-		// scripted probe is the one case --json is meant to unblock.
+		// Login is an interactive device-code flow, with or without --json.
+		// A scripted probe is the one case --json is meant to unblock.
 		if (operation == "login" || !jsonOutput) &&
 			(!setupRuntime.isTerminal(setupRuntime.stdin) || !setupRuntime.isTerminal(stdout) || !setupRuntime.isTerminal(stderr)) {
 			fmt.Fprintln(stderr, "Native connection operations require an operator terminal.")
