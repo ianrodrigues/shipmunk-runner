@@ -19,7 +19,7 @@ var fullSHAPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 // Bounds the changed-file list injected into the prompt; a larger list is truncated with a marker pointing at review_diff.
 const maxReviewChangedFileListBytes = 16 * 1024
 
-// Derives the path from the fd, not the original path, so replacing what now lives at that path cannot affect what gets read.
+// Uses a descriptor path on Linux and macOS only; elsewhere it falls back to handle.Name(), which snapshotPinned then checks with os.SameFile.
 func stableFDPath(handle *os.File) string {
 	switch runtime.GOOS {
 	case "linux":

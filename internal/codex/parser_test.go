@@ -285,7 +285,7 @@ func TestParseEnforcesLineAndEventLimits(t *testing.T) {
 
 func TestParseClassifiesOnlyCompletedPreTurnErrorItemAsNativeFailure(t *testing.T) {
 	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n"
-	// Against the pinned CLI a pre-turn error item never carries a code without one; a message-only startup error is ErrMissingResult instead.
+	// A pre-turn item.completed error may omit code; with only a message, progressFailure leaves it unclassified and Parse falls through to ErrMissingResult.
 	startupError := `{"type":"item.completed","item":{"id":"startup","type":"error","code":"approval_required","message":"private provider diagnostic"}}` + "\n"
 	_, err := Parse([]byte(prefix+startupError), nil)
 	var failure *ClassifiedFailure

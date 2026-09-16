@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	// MaxOutputBytes and MaxLineBytes are both sized to one command_execution.aggregated_output or mcp_tool_call.result.content entry, not to the parsed fields.
+	// MaxOutputBytes bounds the combined stdout and stderr length; MaxLineBytes bounds each parsed stream line.
 	MaxOutputBytes = 16 * 1024 * 1024
 	MaxLineBytes   = 1024 * 1024
 	MaxEvents      = 10_000
