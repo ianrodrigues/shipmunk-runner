@@ -46,7 +46,9 @@ func (err *RefusedStoppedError) Error() string {
 	return fmt.Sprintf("control plane refused the stopped acknowledgement (%d of %d)", err.Count, err.Threshold)
 }
 
-// Client operations must honor cancellation.
+// Client operations must honor cancellation. Implementations must bound
+// each call under their own budget and honour the passed context: no call
+// site adds a timeout of its own (see docs/runner/http-budgets.md).
 type Client interface {
 	workspace.Downloader
 	Claim(context.Context, time.Time) (*protocol.Claim, error)
