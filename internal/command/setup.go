@@ -498,7 +498,11 @@ func readPublicSetupFile(path string, limit int) ([]byte, error) {
 	}
 	afterOpen, openErr := file.Stat()
 	afterPath, pathErr := os.Lstat(abs)
-	if openErr != nil || pathErr != nil || !os.SameFile(afterOpen, afterPath) || setupFileNlink(afterOpen) != 1 {
+	if openErr != nil || pathErr != nil ||
+		!os.SameFile(afterOpen, afterPath) ||
+		opened.Size() != afterOpen.Size() ||
+		!opened.ModTime().Equal(afterOpen.ModTime()) ||
+		setupFileNlink(afterOpen) != 1 {
 		return nil, fmt.Errorf("changed after reading%w", errUnsafeSetupFile)
 	}
 	return raw, nil
