@@ -36,6 +36,7 @@ type ProfileOptions struct {
 	Profile     string
 	Operation   string
 	OperationID string
+	JSON        bool
 }
 
 type parsedRunnerOptions struct {
@@ -144,6 +145,7 @@ func parseProfileOptions(args []string, output io.Writer) (parsedProfileOptions,
 	flags.String("profile", "", "profile identifier")
 	flags.String("operation", "", "login, probe or disconnect")
 	flags.String("operation-id", "", "profile operation ULID")
+	flags.Bool("json", false, "print the machine-readable health object instead of a sentence")
 	version := flags.Bool("version", false, "print version")
 	if err := flags.Parse(args); err != nil {
 		return parsedProfileOptions{}, err
@@ -159,6 +161,7 @@ func parseProfileOptions(args []string, output io.Writer) (parsedProfileOptions,
 		Profile:     flags.Lookup("profile").Value.String(),
 		Operation:   flags.Lookup("operation").Value.String(),
 		OperationID: flags.Lookup("operation-id").Value.String(),
+		JSON:        flags.Lookup("json").Value.String() == "true",
 	}
 	return parsedProfileOptions{options: options, version: *version}, nil
 }

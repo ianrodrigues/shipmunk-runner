@@ -24,7 +24,7 @@ func runInstalledSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Run commands as the dedicated non-root runner account.")
 		return 1
 	}
-	if len(args) < 2 || (args[0] != "run" && args[0] != "connect") {
+	if len(args) < 2 || (args[0] != "run" && args[0] != "connect" && args[0] != "probe") {
 		fmt.Fprintln(stderr, "Invalid installed runner command.")
 		return 2
 	}
@@ -114,15 +114,25 @@ func dispatchInstalled(args []string, root string, configuration install.Configu
 		return setupRunRunner(commandArgs, stdout, stderr)
 	}
 	{
-		operation := "login"
+		jsonOutput := false
 		if len(args) == 3 {
-			operation = args[2]
-		}
-		if len(args) > 3 || (operation != "login" && operation != "probe") {
-			fmt.Fprintln(stderr, "The connection command accepts only login or probe.")
+			if args[2] != "--json" {
+				fmt.Fprintf(stderr, "The %s command accepts only --json.\n", args[0])
+				return 2
+			}
+			jsonOutput = true
+		} else if len(args) > 3 {
+			fmt.Fprintf(stderr, "The %s command accepts only --json.\n", args[0])
 			return 2
 		}
-		if !setupRuntime.isTerminal(setupRuntime.stdin) || !setupRuntime.isTerminal(stdout) || !setupRuntime.isTerminal(stderr) {
+		operation := "probe"
+		if args[0] == "connect" {
+			operation = "login"
+		}
+		// Login is an interactive device-code flow regardless of --json; a
+		// scripted probe is the one case --json is meant to unblock.
+		if (operation == "login" || !jsonOutput) &&
+			(!setupRuntime.isTerminal(setupRuntime.stdin) || !setupRuntime.isTerminal(stdout) || !setupRuntime.isTerminal(stderr)) {
 			fmt.Fprintln(stderr, "Native connection operations require an operator terminal.")
 			return 1
 		}
@@ -132,6 +142,9 @@ func dispatchInstalled(args []string, root string, configuration install.Configu
 			return 1
 		}
 		commandArgs := append(base, "--token-file="+filepath.Join(root, "profile.token"), "--profile="+configuration.Identity.ProfileID, "--operation="+operation, "--operation-id="+operationID)
+		if jsonOutput {
+			commandArgs = append(commandArgs, "--json")
+		}
 		return setupRunProfile(commandArgs, stdout, stderr)
 	}
 }
@@ -152,8 +165,8 @@ func newOperationID(now time.Time) (string, error) {
 }
 
 func setupLaunchers(setupBinary, root string) map[string][]byte {
-	launchers := make(map[string][]byte, 2)
-	for _, name := range []string{"run", "connect"} {
+	launchers := make(map[string][]byte, 3)
+	for _, name := range []string{"run", "connect", "probe"} {
 		launchers[name] = []byte("#!/bin/sh\nexec " + shellQuote(setupBinary) + " " + name + " " + shellQuote(root) + " \"$@\"\n")
 	}
 	return launchers

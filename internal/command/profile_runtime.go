@@ -90,7 +90,11 @@ func adjacentWatchdogExecutable() (string, error) {
 	return watchdog, nil
 }
 
-func writeProfileHealth(output io.Writer, health profile.Health) error {
+func writeProfileHealth(output io.Writer, health profile.Health, jsonOutput bool) error {
+	if !jsonOutput {
+		_, err := fmt.Fprintln(output, readinessSentence(health))
+		return err
+	}
 	var reason any
 	if health.Reason != "" {
 		reason = health.Reason
@@ -102,4 +106,16 @@ func writeProfileHealth(output io.Writer, health profile.Health) error {
 	encoded = append(encoded, '\n')
 	_, err = output.Write(encoded)
 	return err
+}
+
+// readinessSentence gives an operator terminal one sentence instead of the raw health object; --json keeps the object for scripts.
+func readinessSentence(health profile.Health) string {
+	if health.Health == profile.HealthReady {
+		return "Runner is ready."
+	}
+	reason := health.Reason
+	if reason == "" {
+		reason = health.Health
+	}
+	return "Runner is not ready: " + reason + "."
 }
