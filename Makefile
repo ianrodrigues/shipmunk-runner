@@ -57,8 +57,6 @@ go-check:
 go-build:
 	@set -eu; build_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/shipmunk-go-build.XXXXXX")"; trap 'rm -rf "$$build_dir"' EXIT; \
 	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-runner" ./cmd/shipmunk-runner; \
-	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-profile" ./cmd/shipmunk-profile; \
-	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-setup" ./cmd/shipmunk-setup; \
 	go build -trimpath -buildvcs=false -ldflags '$(GO_RELEASE_LDFLAGS)' -o "$$build_dir/shipmunk-watchdog" ./cmd/shipmunk-watchdog
 
 lint:

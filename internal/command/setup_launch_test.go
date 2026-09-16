@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,8 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 		{[]string{"run", root, "--discard-attempt"}, "shipmunk-runner", []string{"--discard-attempt", "--token-file=" + filepath.Join(root, "execution.token")}},
 		{[]string{"run", root, "--discard-attempt", "--yes"}, "shipmunk-runner", []string{"--discard-attempt", "--yes"}},
 		{[]string{"connect", root}, "shipmunk-profile", []string{"--operation=login", "--token-file=" + filepath.Join(root, "profile.token"), "--image=sha256:" + strings.Repeat("b", 64)}},
-		{[]string{"connect", root, "probe"}, "shipmunk-profile", []string{"--operation=probe"}},
+		{[]string{"probe", root}, "shipmunk-profile", []string{"--operation=probe"}},
+		{[]string{"probe", root, "--json"}, "shipmunk-profile", []string{"--operation=probe", "--json"}},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := runInstalledSetup(test.args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
@@ -68,7 +70,7 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"run", root, "--other"}, {"connect", root, "disconnect"}, {"connect", root, "probe", "extra"},
+		{"run", root, "--other"}, {"connect", root, "disconnect"}, {"connect", root, "--json", "extra"}, {"probe", root, "extra"},
 		{"run", root, "--once", "--yes"}, {"run", root, "--discard-attempt", "--other"}, {"run", root, "--discard-attempt", "--yes", "extra"},
 	} {
 		if code := runInstalledSetup(args, &bytes.Buffer{}, &bytes.Buffer{}); code != 2 {
@@ -159,8 +161,32 @@ func TestInstalledConnectionRequiresThreeTerminalDescriptors(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	setupRuntime.effectiveUID, setupRuntime.stdin = os.Geteuid, strings.NewReader("")
 	setupRuntime.isTerminal = func(value any) bool { return value != &stdout }
-	if code := runInstalledSetup([]string{"connect", root, "probe"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "operator terminal") {
+	if code := runInstalledSetup([]string{"probe", root}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "operator terminal") {
 		t.Fatalf("terminal gate = %d, %q", code, stderr.String())
+	}
+}
+
+// A scripted probe is the one case --json is meant to unblock without a TTY.
+func TestInstalledProbeJSONSkipsTheTerminalGate(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("installed commands refuse root")
+	}
+	root, _ := installedLauncherFixture(t)
+	originalRuntime, originalProfile, originalVersion := setupRuntime, setupRunProfile, Version
+	t.Cleanup(func() { setupRuntime, setupRunProfile, Version = originalRuntime, originalProfile, originalVersion })
+	Version = "v1.2.3"
+	setupRuntime.effectiveUID, setupRuntime.stdin = os.Geteuid, strings.NewReader("")
+	setupRuntime.now = func() time.Time { return time.UnixMilli(1_700_000_000_000) }
+	setupRuntime.isTerminal = func(any) bool { return false }
+	setupRunProfile = func(args []string, _, _ io.Writer) int {
+		if !slices.Contains(args, "--operation=probe") || !slices.Contains(args, "--json") {
+			t.Fatalf("unexpected args %v", args)
+		}
+		return 0
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runInstalledSetup([]string{"probe", root, "--json"}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("probe --json without a terminal = %d, %q", code, stderr.String())
 	}
 }
 
@@ -214,7 +240,7 @@ func TestInstalledDispatchExcludesConcurrentActivation(t *testing.T) {
 	}
 	guard := install.Guard{Root: root, Identity: configuration.Identity}
 	config := mustConfigurationJSON(t, configuration)
-	launchers := setupLaunchers(filepath.Join(configuration.ReleasePath, "bin", "shipmunk-setup"), root)
+	launchers := setupLaunchers(filepath.Join(configuration.ReleasePath, "bin", "shipmunk-runner"), root)
 	if err := guard.ActivateLaunchers(config, []byte("new-profile"), []byte("new-execution"), launchers); err == nil {
 		t.Fatal("activation entered while installed command owned its generation")
 	}
@@ -274,7 +300,7 @@ func installedLauncherFixture(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	guard := install.Guard{Root: root, Identity: install.Identity{BaseURL: "https://runner.example", RunnerID: testRunnerID, ProfileID: testProfileID}}
-	if err := guard.ActivateLaunchers(config, []byte("profile"), []byte("execution"), setupLaunchers(filepath.Join(release, "bin", "shipmunk-setup"), root)); err != nil {
+	if err := guard.ActivateLaunchers(config, []byte("profile"), []byte("execution"), setupLaunchers(filepath.Join(release, "bin", "shipmunk-runner"), root)); err != nil {
 		t.Fatal(err)
 	}
 	return root, release
@@ -345,6 +371,100 @@ func TestSetupRejectsOldDockerBeforeBuildingImage(t *testing.T) {
 			entries, err := os.ReadDir(root)
 			if err != nil || len(entries) != 0 {
 				t.Fatalf("unsupported Docker reached image preparation: %v %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestGuidedSetupRunsConnectUnlessSkipped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("guided setup refuses root")
+	}
+	for name, test := range map[string]struct {
+		skipConnect  bool
+		connectCode  int
+		sentence     string
+		wantMessages []string
+		wantMissing  []string
+	}{
+		"connects and reports readiness": {
+			connectCode:  0,
+			sentence:     "Runner is ready.",
+			wantMessages: []string{"Setup did not start queued work.", "Runner is ready.", "Run to work through the queue"},
+			wantMissing:  []string{"Commands for this runner"},
+		},
+		"connects and reports what remains": {
+			connectCode:  1,
+			sentence:     "Runner is not ready: native_login_required.",
+			wantMessages: []string{"Setup did not start queued work.", "Runner is not ready: native_login_required.", "Commands for this runner"},
+			wantMissing:  []string{"Run to work through the queue"},
+		},
+		"skips connect entirely": {
+			skipConnect:  true,
+			wantMessages: []string{"Setup did not start queued work.", "Commands for this runner"},
+			wantMissing:  []string{"Runner is ready.", "Runner is not ready"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle := filepath.Join(home, "setup.json")
+			if err := os.WriteFile(bundle, []byte(validSetupBundleJSON), 0600); err != nil {
+				t.Fatal(err)
+			}
+			manifest, archive := setupReleaseFixture(t, home)
+			originalRuntime, originalCheck, originalBuild, originalProfile, originalVersion := setupRuntime, setupCheckServer, setupBuildImage, setupRunProfile, Version
+			t.Cleanup(func() {
+				setupRuntime, setupCheckServer, setupBuildImage, setupRunProfile, Version = originalRuntime, originalCheck, originalBuild, originalProfile, originalVersion
+			})
+			// setupReleaseFixture always builds manifest version v1.2.3; the installed
+			// dispatch refuses to run unless this launcher's Version matches it.
+			Version = "v1.2.3"
+			setupRuntime = setupRuntimeHooks{
+				effectiveUID: os.Geteuid, stdin: strings.NewReader("y\n"), isTerminal: func(any) bool { return true },
+				now:     func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) },
+				homeDir: func() (string, error) { return home, nil }, goos: runtime.GOOS, goarch: runtime.GOARCH,
+			}
+			setupCheckServer = func(string) error { return nil }
+			setupBuildImage = func(string, string) (string, error) { return "sha256:" + strings.Repeat("c", 64), nil }
+			calls := 0
+			// setupRunProfile stands in for the real shipmunk-profile process;
+			// it writes the same sentence RunProfile would, without needing a
+			// real *os.File for the login terminal gate.
+			setupRunProfile = func(args []string, stdout, _ io.Writer) int {
+				calls++
+				if !slices.Contains(args, "--operation=login") {
+					t.Fatalf("guided setup connect step used args %v, want --operation=login", args)
+				}
+				fmt.Fprintln(stdout, test.sentence)
+				return test.connectCode
+			}
+
+			args := setupCommandArgs(bundle, manifest, archive)
+			if test.skipConnect {
+				args = append(args, "--skip-connect")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := RunSetup(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("setup code = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+			}
+			if test.skipConnect && calls != 0 {
+				t.Fatalf("skipped connect still ran the connect step %d times", calls)
+			}
+			if !test.skipConnect && calls != 1 {
+				t.Fatalf("connect ran %d times, want 1", calls)
+			}
+			for _, want := range test.wantMessages {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("stdout %q missing %q", stdout.String(), want)
+				}
+			}
+			for _, unwanted := range test.wantMissing {
+				if strings.Contains(stdout.String(), unwanted) {
+					t.Fatalf("stdout %q unexpectedly contains %q", stdout.String(), unwanted)
+				}
 			}
 		})
 	}

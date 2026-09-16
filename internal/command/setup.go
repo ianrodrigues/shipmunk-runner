@@ -78,6 +78,7 @@ type SetupOptions struct {
 	ServerURL       string
 	ReleaseManifest string
 	ReleaseArchive  string
+	SkipConnect     bool
 	Help            bool
 	Version         bool
 }
@@ -103,6 +104,8 @@ func ParseSetupOptions(args []string) (SetupOptions, error) {
 			options.Help = true
 		case argument == "--version" || argument == "-version":
 			options.Version = true
+		case argument == "--skip-connect" || argument == "-skip-connect":
+			options.SkipConnect = true
 		case argument == "--server-url" || argument == "-server-url":
 			if index+1 >= len(args) {
 				return SetupOptions{}, errors.New("missing --server-url value")
@@ -220,9 +223,6 @@ func ParseSetupBundle(raw []byte, serverURLOverride string, now time.Time) (Setu
 }
 
 func RunSetup(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && (args[0] == "run" || args[0] == "connect") {
-		return runInstalledSetup(args, stdout, stderr)
-	}
 	options, err := ParseSetupOptions(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "Invalid setup options. Run shipmunk-setup --help for usage.")
@@ -328,8 +328,8 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Runner installation failed before configuration activation.")
 		return 1
 	}
-	setupBinary := filepath.Join(releasePath, "bin", "shipmunk-setup")
-	if err := guard.ActivateLaunchers(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken), setupLaunchers(setupBinary, root)); err != nil {
+	operatorBinary := filepath.Join(releasePath, "bin", "shipmunk-runner")
+	if err := guard.ActivateLaunchers(config, []byte(bundle.ProfileToken), []byte(bundle.ExecutionToken), setupLaunchers(operatorBinary, root)); err != nil {
 		var activationErr *install.ActivationError
 		switch {
 		case errors.As(err, &activationErr) && activationErr.Outcome == install.ActivationPreserved:
@@ -341,7 +341,19 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	fmt.Fprintf(stdout, "Installed the verified runner release. Setup did not start queued work.\n\nCommands for this runner:\n  Login/retry: %s\n  Probe:       %s probe\n  Poll once:   %s --once\n  Run:         %s\n", filepath.Join(root, "connect"), filepath.Join(root, "connect"), filepath.Join(root, "run"), filepath.Join(root, "run"))
+	fmt.Fprintln(stdout, "Installed the verified runner release. Setup did not start queued work.")
+	printNextSteps := func() {
+		fmt.Fprintf(stdout, "\nCommands for this runner:\n  Connect: %s\n  Probe:   %s\n  Run:     %s\n", filepath.Join(root, "connect"), filepath.Join(root, "probe"), filepath.Join(root, "run"))
+	}
+	if options.SkipConnect {
+		printNextSteps()
+		return 0
+	}
+	if code := runInstalledSetup([]string{"connect", root}, stdout, stderr); code != 0 {
+		printNextSteps()
+		return 0
+	}
+	fmt.Fprintf(stdout, "\nRun to work through the queue:\n  Run: %s\n", filepath.Join(root, "run"))
 	return 0
 }
 

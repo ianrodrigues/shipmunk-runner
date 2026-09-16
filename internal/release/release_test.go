@@ -127,7 +127,7 @@ func TestVersionLinkerContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"shipmunk-profile", "shipmunk-runner", "shipmunk-setup", "shipmunk-watchdog"} {
+	for _, name := range []string{"shipmunk-runner", "shipmunk-watchdog"} {
 		binary := filepath.Join(t.TempDir(), name)
 		command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-X github.com/ianrodrigues/shipmunk-runner/internal/command.Version=v9.8.7", "-o", binary, "./cmd/"+name)
 		command.Dir = root

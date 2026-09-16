@@ -225,17 +225,23 @@ func TestProfileCommandWritesSanitizedHealthAndExitStatus(t *testing.T) {
 		"--profile", testProfileID, "--operation", "probe", "--operation-id", testOperation,
 	}
 	for _, test := range []struct {
-		health profile.Health
-		code   int
-		output string
+		health     profile.Health
+		code       int
+		sentence   string
+		jsonOutput string
 	}{
-		{health: profile.Health{Health: profile.HealthReady}, code: 0, output: `{"health":"ready","reason":null}` + "\n"},
-		{health: profile.Health{Health: profile.HealthRateLimited, Reason: profile.ReasonRateLimited}, code: 1, output: `{"health":"rate_limited","reason":"rate_limited"}` + "\n"},
+		{health: profile.Health{Health: profile.HealthReady}, code: 0, sentence: "Runner is ready.\n", jsonOutput: `{"health":"ready","reason":null}` + "\n"},
+		{health: profile.Health{Health: profile.HealthRateLimited, Reason: profile.ReasonRateLimited}, code: 1, sentence: "Runner is not ready: rate_limited.\n", jsonOutput: `{"health":"rate_limited","reason":"rate_limited"}` + "\n"},
 	} {
 		runNativeProfile = func(ProfileOptions, io.Writer) (profile.Health, error) { return test.health, nil }
 		var stdout, stderr bytes.Buffer
-		if code := RunProfile(arguments, &stdout, &stderr); code != test.code || stdout.String() != test.output || stderr.Len() != 0 {
+		if code := RunProfile(arguments, &stdout, &stderr); code != test.code || stdout.String() != test.sentence || stderr.Len() != 0 {
 			t.Fatalf("profile result = %d, %q, %q", code, stdout.String(), stderr.String())
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := RunProfile(append(slices.Clone(arguments), "--json"), &stdout, &stderr); code != test.code || stdout.String() != test.jsonOutput || stderr.Len() != 0 {
+			t.Fatalf("profile --json result = %d, %q, %q", code, stdout.String(), stderr.String())
 		}
 	}
 
@@ -470,10 +476,10 @@ func TestCompiledSetupInstallsIntoCleanHomeWithoutStartingWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := filepath.Join(root, "shipmunk-setup")
+	binary := filepath.Join(root, "shipmunk-runner")
 	buildContext, cancelBuild := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancelBuild()
-	build := exec.CommandContext(buildContext, "go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./cmd/shipmunk-setup")
+	build := exec.CommandContext(buildContext, "go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./cmd/shipmunk-runner")
 	build.Dir = repository
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build setup: %v: %s", err, output)
@@ -501,7 +507,7 @@ func TestCompiledSetupInstallsIntoCleanHomeWithoutStartingWork(t *testing.T) {
 	if err := os.WriteFile(docker, []byte(dockerScript), 0700); err != nil {
 		t.Fatal(err)
 	}
-	expectScript := "log_user 1\nset timeout 10\nspawn -noecho $env(SHIPMUNK_SETUP_BINARY) $env(SHIPMUNK_SETUP_BUNDLE) --release-manifest $env(SHIPMUNK_SETUP_MANIFEST) --release-archive $env(SHIPMUNK_SETUP_ARCHIVE)\nexpect \"Continue with this server and runner?\"\nsend \"y\\r\"\nexpect \"Setup did not start queued work.\"\nexit 0\n"
+	expectScript := "log_user 1\nset timeout 10\nspawn -noecho $env(SHIPMUNK_SETUP_BINARY) setup $env(SHIPMUNK_SETUP_BUNDLE) --release-manifest $env(SHIPMUNK_SETUP_MANIFEST) --release-archive $env(SHIPMUNK_SETUP_ARCHIVE) --skip-connect\nexpect \"Continue with this server and runner?\"\nsend \"y\\r\"\nexpect \"Setup did not start queued work.\"\nexit 0\n"
 	process := exec.Command("expect", "-c", expectScript)
 	process.Env = append(os.Environ(), "PATH="+dockerDirectory+":"+os.Getenv("PATH"), "HOME="+root, "SHIPMUNK_SETUP_BINARY="+binary, "SHIPMUNK_SETUP_BUNDLE="+bundle, "SHIPMUNK_SETUP_MANIFEST="+manifest, "SHIPMUNK_SETUP_ARCHIVE="+archive)
 	output, err := process.CombinedOutput()
@@ -629,9 +635,8 @@ func setupReleaseFixture(t *testing.T, root string) (string, string) {
 		raw  []byte
 		mode int64
 	}{
-		"bin/shipmunk-profile":                {[]byte("synthetic profile\n"), 0755},
 		"bin/shipmunk-runner":                 {[]byte("synthetic runner\n"), 0755},
-		"bin/shipmunk-setup":                  {[]byte("synthetic setup\n"), 0755},
+		"bin/shipmunk-watchdog":               {[]byte("synthetic watchdog\n"), 0755},
 		"containers/Dockerfile":               {[]byte("FROM scratch\nCOPY runner/containers/codex-mcp.mjs /tmp/\n"), 0644},
 		"containers/Dockerfile.dockerignore":  {[]byte("**\n!runner/\n"), 0644},
 		"containers/codex-mcp.mjs":            {[]byte("export {};\n"), 0644},

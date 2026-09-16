@@ -187,7 +187,7 @@ type inputFile struct {
 }
 
 func (b Builder) buildPlatform(ctx context.Context, goBin, root, temporary, version string, platform Platform) ([]inputFile, error) {
-	commands := []string{"shipmunk-profile", "shipmunk-runner", "shipmunk-setup", "shipmunk-watchdog"}
+	commands := []string{"shipmunk-runner", "shipmunk-watchdog"}
 	files := make([]inputFile, 0, len(commands)+5)
 	for _, name := range commands {
 		destination := filepath.Join(temporary, platform.OS+"-"+platform.Arch+"-"+name)
