@@ -266,6 +266,7 @@ func failureExecution(claim protocol.Claim, reason FailureReason, exitCode int) 
 			"fence": claim.Fence, "outcome": outcome, "summary": summary, "findings": []any{},
 			"tests": []any{}, "patch_artifact": nil, "usage": nil,
 		},
+		FailureReason: string(reason),
 	}
 }
 

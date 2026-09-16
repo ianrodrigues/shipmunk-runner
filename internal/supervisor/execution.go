@@ -22,6 +22,10 @@ type Execution struct {
 	Events    []json.RawMessage
 	Artifacts []Artifact
 	Result    map[string]any
+	// FailureReason names a runner- or provider-classified failure (see
+	// internal/codex's FailureReason) for the runner log. It is local
+	// diagnostic metadata, never part of the published result.
+	FailureReason string
 }
 
 // DecodeExecution decodes native output; a nonzero exit code discards patch artifacts.

@@ -79,9 +79,11 @@ func (g *leaseGuard) renew() error {
 	defer cancel()
 	lease, stop, err := g.supervisor.Client.Heartbeat(ctx, g.claim)
 	if err != nil {
+		g.supervisor.log("heartbeat_failed", map[string]any{"attempt_id": g.claim.AttemptID, "error": err.Error()})
 		return err
 	}
 	if stop {
+		g.supervisor.log("heartbeat_stop", map[string]any{"attempt_id": g.claim.AttemptID})
 		return ErrStopped
 	}
 	if err := g.ctx.Err(); err != nil {
@@ -114,6 +116,7 @@ func (g *leaseGuard) renew() error {
 	}
 	g.state = next
 	g.timer.Reset(remaining)
+	g.supervisor.log("heartbeat", map[string]any{"attempt_id": g.claim.AttemptID, "lease_expires_at": lease})
 	return nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/codexsession"
 	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
+	"github.com/ianrodrigues/shipmunk-runner/internal/runlog"
 	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
 	"github.com/ianrodrigues/shipmunk-runner/internal/supervisor"
 	"github.com/ianrodrigues/shipmunk-runner/internal/workspace"
@@ -29,21 +30,28 @@ func runCodexRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Run the runner as a dedicated non-root account with Docker access.")
 		return 1
 	}
+	// A log directory that cannot be opened must not block the runner; supervision proceeds without an event log.
+	logger, _ := runlog.Open(options.StateDir)
+	defer logger.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	worker, closeState, err := prepareCodexRunner(ctx, options)
+	worker, closeState, err := prepareCodexRunner(ctx, options, logger)
 	if err != nil {
-		fmt.Fprintln(stderr, "Runner setup failed. Check the private token, profile directory, Docker engine, and pinned images.")
+		fmt.Fprintln(stderr, setupFailure("Check the private token, profile directory, Docker engine, and pinned images.", logger))
 		return 1
 	}
 	defer closeState()
-	return runSupervised(ctx, worker, options.Once, stdout, stderr)
+	return runSupervised(ctx, worker, options.Once, stdout, stderr, logger.Path())
 }
 
-func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor.Supervisor, func() error, error) {
+func prepareCodexRunner(ctx context.Context, options RunnerOptions, logger *runlog.Logger) (*supervisor.Supervisor, func() error, error) {
+	fail := func(err error, step string) (*supervisor.Supervisor, func() error, error) {
+		logger.Event("setup_failed", map[string]any{"step": step, "error": err.Error()})
+		return nil, nil, err
+	}
 	state, err := attemptstate.Open(filepath.Join(options.StateDir, "active-attempt.json"))
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "attempt_state")
 	}
 	ready := false
 	defer func() {
@@ -54,32 +62,32 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 	runnerStartupAfterAttemptLock()
 	token, err := readRunnerToken(options.TokenFile)
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "read_token")
 	}
 	client, err := protocol.NewHTTPClient(options.BaseURL, token, nil)
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "http_client")
 	}
 	dockerExecutable, err := exec.LookPath("docker")
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "docker_lookup")
 	}
 	watchdogExecutable, err := adjacentWatchdogExecutable()
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "watchdog_executable")
 	}
 	if err := codex.RequireDocker(ctx, dockerExecutable); err != nil {
-		return nil, nil, err
+		return fail(err, "docker_requirements")
 	}
 	for _, image := range []string{options.Image, options.RepositoryImage} {
 		id, e := dockerPreflight(ctx, dockerExecutable, "image", "inspect", "--format", "{{.Id}}", "--", image)
 		if e != nil || !regexp.MustCompile(`^sha256:[a-f0-9]{64}$`).MatchString(id) {
-			return nil, nil, errors.New("Codex images must exist locally")
+			return fail(errors.New("Codex images must exist locally"), "docker_image")
 		}
 	}
 	workspaces, err := workspace.New(filepath.Join(options.StateDir, "workspaces"))
 	if err != nil {
-		return nil, nil, err
+		return fail(err, "workspace_init")
 	}
 	mode := codexsession.Fresh
 	if options.SessionMode == "resume" {
@@ -87,7 +95,7 @@ func prepareCodexRunner(ctx context.Context, options RunnerOptions) (*supervisor
 	}
 	router := &codexProfileRouter{profilesDir: options.ProfilesDir, nativeImage: options.Image, repositoryImage: options.RepositoryImage, dockerExecutable: dockerExecutable, watchdogExecutable: watchdogExecutable, active: make(map[string]supervisor.Executor), sessionMode: mode}
 	ready = true
-	return &supervisor.Supervisor{Client: client, State: state, Workspaces: workspaces, Executor: router}, state.Close, nil
+	return &supervisor.Supervisor{Client: client, State: state, Workspaces: workspaces, Executor: router, Log: logger}, state.Close, nil
 }
 
 type codexProfileRouter struct {
