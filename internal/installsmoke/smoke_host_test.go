@@ -78,9 +78,9 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertHostCommandAbsent(t, scrubbedPath, "go")
 
 	// Matches the published bootstrap script: only the setup binary is extracted.
-	extract := runHostScrubbed(t, "", 30*time.Second, scrubbedPath, "tar", "-xf", filepath.Join(fixture, platform.Archive.Name), "-C", fixture, "bin/shipmunk-setup")
+	extract := runHostScrubbed(t, "", 30*time.Second, scrubbedPath, "tar", "-xf", filepath.Join(fixture, platform.Archive.Name), "-C", fixture, "bin/shipmunk-runner")
 	if extract.exitCode != 0 {
-		t.Fatalf("extract shipmunk-setup: %s", extract.output)
+		t.Fatalf("extract shipmunk-runner: %s", extract.output)
 	}
 
 	verify := runHostScrubbed(t, fixture, 30*time.Second, scrubbedPath, "sh", "-c", "shasum -a 256 --ignore-missing -c SHA256SUMS")
@@ -88,20 +88,20 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 		t.Fatalf("archive/manifest checksum verification failed: %s", verify.output)
 	}
 
-	setupPath := filepath.Join(fixture, "bin", "shipmunk-setup")
+	setupPath := filepath.Join(fixture, "bin", "shipmunk-runner")
 	versionResult := runHostScrubbed(t, "", 10*time.Second, scrubbedPath, setupPath, "--version")
-	wantVersion := "shipmunk-setup " + manifest.Version + "\n"
+	wantVersion := "shipmunk-runner " + manifest.Version + "\n"
 	if versionResult.exitCode != 0 || versionResult.output != wantVersion {
-		t.Fatalf("installed setup --version = %q (exit %d), want %q", versionResult.output, versionResult.exitCode, wantVersion)
+		t.Fatalf("installed shipmunk-runner --version = %q (exit %d), want %q", versionResult.output, versionResult.exitCode, wantVersion)
 	}
 
 	startHostUpstub(t, filepath.Join(fixture, "upstub"), upstubAddr)
 
 	output, exitCode := runExpect(t, 90*time.Second,
 		"env", "-i", "HOME="+home, "PATH="+scrubbedPath,
-		setupPath, bundlePath,
+		setupPath, "setup", bundlePath,
 		"--release-manifest", filepath.Join(fixture, "runner-release.json"),
-		"--release-archive", filepath.Join(fixture, platform.Archive.Name))
+		"--release-archive", filepath.Join(fixture, platform.Archive.Name), "--skip-connect")
 	if exitCode != 0 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") {
 		t.Fatalf("guided setup did not complete cleanly (exit %d): %s", exitCode, output)
 	}
@@ -110,6 +110,7 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertHostInstalledConfiguration(t, root, manifest.Version, platformKey)
 	assertHostLauncher(t, home, root, "run")
 	assertHostLauncher(t, home, root, "connect")
+	assertHostLauncher(t, home, root, "probe")
 	assertHostAbsent(t, filepath.Join(root, "state", "active-attempt.json"))
 
 	// Setup must not have made php or go reachable on the scrubbed PATH.
@@ -127,12 +128,12 @@ func TestHostNativeInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertHostUpstubReceived(t, "POST /runner/v1/claims")
 	assertHostAbsent(t, filepath.Join(root, "state", "active-attempt.json"))
 
-	probeOutput, probeExit := runExpect(t, 30*time.Second, "env", "-i", "HOME="+home, "PATH="+scrubbedPath, filepath.Join(root, "connect"), "probe")
+	probeOutput, probeExit := runExpect(t, 30*time.Second, "env", "-i", "HOME="+home, "PATH="+scrubbedPath, filepath.Join(root, "probe"))
 	if probeExit != 1 {
-		t.Fatalf("connect probe against a stub control plane should fail cleanly with exit 1, got %d: %s", probeExit, probeOutput)
+		t.Fatalf("probe against a stub control plane should fail cleanly with exit 1, got %d: %s", probeExit, probeOutput)
 	}
 	if strings.Contains(probeOutput, "no such file or directory") || strings.Contains(strings.ToLower(probeOutput), "exec format error") {
-		t.Fatalf("connect probe failed for an environment reason rather than a control-plane reason: %s", probeOutput)
+		t.Fatalf("probe failed for an environment reason rather than a control-plane reason: %s", probeOutput)
 	}
 	assertHostUpstubReceived(t, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
 	assertHostAbsent(t, filepath.Join(root, "state", "active-attempt.json"))
@@ -248,7 +249,7 @@ func assertHostLauncher(t *testing.T, home, root, name string) {
 	if err != nil {
 		t.Fatalf("read launcher %s: %v", name, err)
 	}
-	installedSetupSuffix := "/bin/shipmunk-setup' " + name + " '" + root + "' \"$@\""
+	installedSetupSuffix := "/bin/shipmunk-runner' " + name + " '" + root + "' \"$@\""
 	if !strings.Contains(string(content), home+"/.shipmunk/releases/") || !strings.Contains(string(content), installedSetupSuffix) {
 		t.Fatalf("launcher %s does not target the installed release by absolute path: %s", name, content)
 	}

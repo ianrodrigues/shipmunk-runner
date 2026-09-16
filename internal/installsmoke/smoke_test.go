@@ -1,5 +1,5 @@
 // Package installsmoke installs a runner release inside a container with
-// neither PHP nor a Go toolchain, driven through the real shipmunk-setup
+// neither PHP nor a Go toolchain, driven through the real shipmunk-runner setup subcommand
 // binary. The docker client is faked, so this does not prove real Docker
 // isolation, a live native login, or control-plane compatibility; see
 // docs/releases.md and docs/runtime/RT-02.md. See smoke_host_test.go for the
@@ -125,9 +125,9 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	// Extract only the setup binary, exactly as the published bootstrap
 	// script does: the archive itself stays intact for --release-archive.
 	extract := dockerExecAs(t, ctx, 30*time.Second, container, smokeUser,
-		"tar", "-xf", fixture+"/"+platform.Archive.Name, "-C", fixture, "bin/shipmunk-setup")
+		"tar", "-xf", fixture+"/"+platform.Archive.Name, "-C", fixture, "bin/shipmunk-runner")
 	if extract.exitCode != 0 {
-		t.Fatalf("extract shipmunk-setup: %s", extract.output)
+		t.Fatalf("extract shipmunk-runner: %s", extract.output)
 	}
 
 	verify := dockerExecAs(t, ctx, 30*time.Second, container, smokeUser,
@@ -138,13 +138,13 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	startUpstub(t, ctx, container, fixture)
 
-	setupPath := fixture + "/bin/shipmunk-setup"
+	setupPath := fixture + "/bin/shipmunk-runner"
 	pathEnv := "PATH=" + fixture + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	output, exitCode := runExpect(t, 90*time.Second,
 		"docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container,
-		setupPath, fixture+"/setup.json",
+		setupPath, "setup", fixture+"/setup.json",
 		"--release-manifest", fixture+"/runner-release.json",
-		"--release-archive", fixture+"/"+platform.Archive.Name)
+		"--release-archive", fixture+"/"+platform.Archive.Name, "--skip-connect")
 	if exitCode != 0 || !strings.Contains(output, "Installed the verified runner release.") || !strings.Contains(output, "Setup did not start queued work.") {
 		t.Fatalf("guided setup did not complete cleanly (exit %d): %s", exitCode, output)
 	}
@@ -153,6 +153,7 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 	assertInstalledConfiguration(t, ctx, container, root, manifest.Version, platformKey)
 	assertLauncher(t, ctx, container, home, root, "run")
 	assertLauncher(t, ctx, container, home, root, "connect")
+	assertLauncher(t, ctx, container, home, root, "probe")
 	assertAbsent(t, ctx, container, root+"/state/active-attempt.json")
 
 	// Setup only installs binaries under its own private release store and
@@ -175,12 +176,12 @@ func TestCleanContainerInstallsReleaseWithoutPHPOrGo(t *testing.T) {
 
 	// exec.LookPath("docker") still runs before probe's network call. Give
 	// probe the fixture's docker script too, so the lookup succeeds.
-	probeOutput, probeExit := runExpect(t, 30*time.Second, "docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container, root+"/connect", "probe")
+	probeOutput, probeExit := runExpect(t, 30*time.Second, "docker", "exec", "-it", "-u", smokeUser, "-e", pathEnv, container, root+"/probe")
 	if probeExit != 1 {
-		t.Fatalf("connect probe against a stub control plane should fail cleanly with exit 1, got %d: %s", probeExit, probeOutput)
+		t.Fatalf("probe against a stub control plane should fail cleanly with exit 1, got %d: %s", probeExit, probeOutput)
 	}
 	if strings.Contains(probeOutput, "no such file or directory") || strings.Contains(strings.ToLower(probeOutput), "exec format error") {
-		t.Fatalf("connect probe failed for an environment reason rather than a control-plane reason: %s", probeOutput)
+		t.Fatalf("probe failed for an environment reason rather than a control-plane reason: %s", probeOutput)
 	}
 	assertUpstubReceived(t, ctx, container, "POST /runner/v1/profiles/"+smokeProfileID+"/operations")
 	assertAbsent(t, ctx, container, root+"/state/active-attempt.json")
@@ -334,7 +335,7 @@ func assertInstalledConfiguration(t *testing.T, ctx context.Context, container, 
 	}
 }
 
-// assertLauncher checks the launcher is private, owner-executable, and invokes the setup binary from its content-addressed release store, not the transient bootstrap path.
+// assertLauncher checks the launcher is private, owner-executable, and invokes the shipmunk-runner binary from its content-addressed release store, not the transient bootstrap path.
 func assertLauncher(t *testing.T, ctx context.Context, container, home, root, name string) {
 	t.Helper()
 	permissions := dockerExecAs(t, ctx, 10*time.Second, container, smokeUser, "sh", "-c", "stat -c '%a' "+root+"/"+name)
@@ -345,7 +346,7 @@ func assertLauncher(t *testing.T, ctx context.Context, container, home, root, na
 	if content.exitCode != 0 {
 		t.Fatalf("read launcher %s: %s", name, content.output)
 	}
-	installedSetupSuffix := "/bin/shipmunk-setup' " + name + " '" + root + "' \"$@\""
+	installedSetupSuffix := "/bin/shipmunk-runner' " + name + " '" + root + "' \"$@\""
 	if !strings.Contains(content.output, home+"/.shipmunk/releases/") || !strings.Contains(content.output, installedSetupSuffix) {
 		t.Fatalf("launcher %s does not target the installed release by absolute path: %s", name, content.output)
 	}
