@@ -197,7 +197,7 @@ func workspaceArchive(workspace string, limit int64) ([]byte, error) {
 	var totalBytes int64
 	err = filepath.WalkDir(workspace, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			return errors.New("sandbox workspace walk failed")
 		}
 		if path == workspace {
 			return nil
@@ -208,10 +208,10 @@ func workspaceArchive(workspace string, limit int64) ([]byte, error) {
 		}
 		fileInfo, err := os.Lstat(path)
 		if err != nil {
-			return err
+			return errors.New("sandbox workspace contains an unreadable file")
 		}
 		if fileInfo.Mode()&os.ModeSymlink != 0 || (!fileInfo.IsDir() && !fileInfo.Mode().IsRegular()) {
-			return fmt.Errorf("sandbox workspace contains unsupported file %q", relative)
+			return errors.New("sandbox workspace contains an unsupported file")
 		}
 		name := filepath.ToSlash(relative)
 		header, err := tar.FileInfoHeader(fileInfo, "")
@@ -235,12 +235,12 @@ func workspaceArchive(workspace string, limit int64) ([]byte, error) {
 		}
 		file, err := os.Open(path)
 		if err != nil {
-			return err
+			return errors.New("sandbox workspace contains an unreadable file")
 		}
 		openedInfo, err := file.Stat()
 		if err != nil || !os.SameFile(fileInfo, openedInfo) {
 			_ = file.Close()
-			return fmt.Errorf("sandbox workspace file changed while archiving %q", relative)
+			return errors.New("sandbox workspace file changed while archiving")
 		}
 		_, copyErr := io.Copy(writer, file)
 		closeErr := file.Close()

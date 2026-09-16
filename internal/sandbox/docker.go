@@ -301,9 +301,9 @@ type commandResult struct {
 
 // commandError reports a failed docker subprocess without embedding its
 // stderr in Error(): stderr can carry container output or workspace paths,
-// and that text must never reach the structured runner log. Stderr() exposes
-// it to callers that act on it directly (containerIsAbsent), never for
-// logging.
+// and that text must never reach the structured runner log. The stderr
+// field is read directly by containerIsAbsent via the caller's own result,
+// never through this type.
 type commandError struct {
 	argument string
 	stderr   string
@@ -315,8 +315,6 @@ func (err *commandError) Error() string {
 }
 
 func (err *commandError) Unwrap() error { return err.cause }
-
-func (err *commandError) Stderr() string { return err.stderr }
 
 func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimit int, arguments ...string) (commandResult, error) {
 	commandContext := ctx
