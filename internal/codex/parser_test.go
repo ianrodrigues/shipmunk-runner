@@ -29,10 +29,6 @@ const (
 	sampleHeadSHA     = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-// finding, coverage and question builders below mirror
-// contracts/v1/result.schema.json exactly (internal/protocol/contracts/v1/result.schema.json),
-// minus the envelope fields normalizeExecution adds.
-
 func findingJSON(path string, lineStart, lineEnd int64) string {
 	return `{"category":"correctness","title":"A finding title.","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` + evidenceJSON(sampleHeadSHA, path, lineStart, lineEnd) + `]}`
 }
@@ -84,7 +80,6 @@ func TestParseValidCompleteStream(t *testing.T) {
 	}
 }
 
-// Codex 0.154 adds cache_write_input_tokens to turn usage; the contract has no field for it, so it is validated and dropped.
 func TestParseAcceptsCacheWriteUsageFromCodex0154(t *testing.T) {
 	stream := strings.Replace(
 		validStream(validResult),
@@ -113,10 +108,6 @@ func TestParseRejectsInvalidKnownUsageFields(t *testing.T) {
 	}
 }
 
-// A future Codex release can add a usage key this parser does not read yet;
-// the CLI source shows the shape can grow, so an unrecognized key is ignored
-// rather than rejected, and a legal cached > input value (codex's own clamp is
-// provider-side, not a stream guarantee) no longer rejects the stream either.
 func TestParseIgnoresUnknownUsageKeysAndClampedCache(t *testing.T) {
 	for name, usage := range map[string]string{
 		"unknown key":       `{"input_tokens":10,"output_tokens":4,"future_tokens":1}`,
@@ -184,9 +175,6 @@ func TestParseRejectsMalformedAndIncompleteStreams(t *testing.T) {
 	}
 }
 
-// Codex 0.154 reports configuration warnings, deprecation notices and model reroutes as completed error items.
-// It also reports a retried transient backend error as a top-level error event.
-// Both precede a normal turn.
 func TestParseAcceptsReportedErrorsBeforeACompletedTurn(t *testing.T) {
 	for name, test := range map[string]struct{ reported, before string }{
 		"startup item":  {`{"type":"item.completed","item":{"id":"startup","type":"error","message":"private configuration warning"}}`, `{"type":"turn.started"}`},
@@ -209,10 +197,6 @@ func TestParseAcceptsReportedErrorsBeforeACompletedTurn(t *testing.T) {
 	}
 }
 
-// An item type this parser does not know yet (collab_tool_call today) is
-// recorded as an event, with its payload otherwise ignored, instead of
-// rejecting the whole stream: the CLI source shows this set can grow ahead of
-// a parser update.
 func TestParseRecordsAnUnknownItemTypeInsteadOfRejectingTheStream(t *testing.T) {
 	reported := `{"type":"item.started","item":{"id":"collab-1","type":"collab_tool_call","tool":"delegate","sender_thread_id":"thread-1","receiver_thread_ids":["thread-2"],"status":"in_progress"}}` + "\n" +
 		`{"type":"item.completed","item":{"id":"collab-1","type":"collab_tool_call","tool":"delegate","sender_thread_id":"thread-1","receiver_thread_ids":["thread-2"],"status":"completed"}}` + "\n"
@@ -232,17 +216,6 @@ func TestParseRecordsAnUnknownItemTypeInsteadOfRejectingTheStream(t *testing.T) 
 	}
 }
 
-// ThreadItemDetails' #[serde(flatten)] can legally emit a web_search item with
-// id repeated at the same level (the item's own id plus the inner action's
-// id); serde resolves that last value wins, and this parser now decodes exec
-// stream lines the same way instead of rejecting the whole line.
-// The last of the two duplicate id values wins, the same as encoding/json's
-// own default decoder and serde: the outer item's real id is the one the CLI
-// writes first, so a web_search event reports the inner action's id
-// ("call-1"), not the item's own id ("item-1"). Event.ItemID is bookkeeping
-// metadata only, not a lookup key into anything outside this stream, and both
-// the item.started and item.completed record of the same conceptual item
-// resolve the same way, so lifecycle tracking inside Parse stays consistent.
 func TestParseAcceptsAStreamEventWithADuplicateKeyLikeWebSearch(t *testing.T) {
 	reported := `{"type":"item.completed","item":{"id":"item-1","type":"web_search","query":"redis eviction policy","id":"call-1","action":"search"}}` + "\n"
 	stream := strings.Replace(validStream(validResult), `{"type":"item.started"`, reported+`{"type":"item.started"`, 1)
@@ -277,17 +250,6 @@ func TestParseClassifiesTheLastReportedErrorWhenNoResultFollows(t *testing.T) {
 	}
 }
 
-// A non-fatal progress error's free-form message can legitimately contain the
-// same words a fatal turn.failed message match looks for ("rate limit",
-// "unauthorized"), so it is never classified from prose. Whether the stream
-// still ends with a result matters too: an unclassified progress error
-// against the pinned CLI (which never sends a code on ErrorItem/TurnError) is
-// the common case, so if the stream is then truncated with no result, that
-// unclassified report must not surface as a bare, unclassified
-// ErrNativeFailure — the executor's errors.Is chain has no branch for it and
-// would fall through to a runner fault instead of a published missing_result
-// outcome, exactly what PR #49 fixed. It must fall through to ErrMissingResult
-// the same as if no error had been reported at all.
 func TestParseDoesNotClassifyAProgressErrorByMessageSubstring(t *testing.T) {
 	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n" + `{"type":"turn.started"}` + "\n"
 	warning := `{"type":"error","message":"a background job approaching the account rate limit was paused"}` + "\n"
@@ -323,10 +285,7 @@ func TestParseEnforcesLineAndEventLimits(t *testing.T) {
 
 func TestParseClassifiesOnlyCompletedPreTurnErrorItemAsNativeFailure(t *testing.T) {
 	prefix := `{"type":"thread.started","thread_id":"thread-1"}` + "\n"
-	// A code is required to observe classification directly here: against the
-	// pinned CLI a pre-turn error item never carries one (see progressFailure),
-	// so a message-only startup error with nothing following it is
-	// ErrMissingResult instead, exercised by TestParseDoesNotClassifyAProgressErrorByMessageSubstring.
+	// Against the pinned CLI a pre-turn error item never carries a code without one; a message-only startup error is ErrMissingResult instead.
 	startupError := `{"type":"item.completed","item":{"id":"startup","type":"error","code":"approval_required","message":"private provider diagnostic"}}` + "\n"
 	_, err := Parse([]byte(prefix+startupError), nil)
 	var failure *ClassifiedFailure
@@ -354,9 +313,7 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 	}{
 		"approval code":     {`{"type":"error","code":"approval_required","message":"private"}` + "\n", FailureApprovalRequired},
 		"nested model code": {`{"type":"error","message":"{\"error\":{\"code\":\"model_not_found\",\"message\":\"private\"}}"}` + "\n", FailureModelUnavailable},
-		// turn.failed is the only path that falls back to a message substring
-		// match (messageFailureReason): a progress-level error or event never
-		// does, see TestParseDoesNotClassifyAProgressErrorByMessageSubstring.
+		// Only turn.failed falls back to a message substring match; a progress-level error or event never does.
 		"rate limit message": {`{"type":"turn.failed","error":{"message":"usage limit reached"}}` + "\n", FailureRateLimited},
 		// The bare provider message the pinned CLI actually writes (protocol/src/error.rs unwraps the envelope first), wrapped in the CLI's own status prefix and matched case-insensitively as a substring, not equality.
 		"bare wrapped message": {`{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Authentication Expired for this account"}}` + "\n", FailureAuthExpired},
@@ -372,10 +329,7 @@ func TestParseReturnsOnlyClosedClassifiedFailureReasons(t *testing.T) {
 		})
 	}
 
-	// A top-level error event is a progress report (see progressFailure), so an
-	// unclassified one leaves the stream with no reported failure at all; ending
-	// without a result then falls through to ErrMissingResult, not a bare,
-	// unclassified ErrNativeFailure the executor's errors.Is chain has no branch for.
+	// An unclassified top-level error event leaves no reported failure, so a stream ending without a result falls through to ErrMissingResult.
 	for name, event := range map[string]string{
 		"unknown code":    `{"type":"error","code":"future_code","message":"private"}` + "\n",
 		"unknown message": `{"type":"error","message":"private provider diagnostic"}` + "\n",
@@ -544,8 +498,7 @@ func TestParseRejectsEveryC0ControlInEvidencePath(t *testing.T) {
 	}
 }
 
-// strictFindingJSON is the wire shape the strict output schema forces: anchor is
-// always present because strict mode cannot omit a property.
+// Strict mode cannot omit a property, so anchor is always present.
 func strictFindingJSON(anchor string) string {
 	return `{"category":"correctness","title":"A finding title.","severity":"high","relation":"introduced","scenario":"A scenario.","consequence":"A consequence.","action":"An action.","explanation":"An explanation.","evidence":[` +
 		evidenceJSON(sampleHeadSHA, findingPath, 1, 2) + `],"anchor":` + anchor + `}`
@@ -577,8 +530,7 @@ func TestParseNormalizesStrictSchemaNullsToAbsentFields(t *testing.T) {
 		t.Fatalf("real anchor dropped with the nulls: %#v err=%v", stream.Result, err)
 	}
 
-	// Strict mode makes the model emit all four charter keys on every outcome, so
-	// each outcome that forbids them depends on the nulls normalizing away.
+	// Each outcome that forbids the four charter keys depends on the nulls normalizing away.
 	for _, outcome := range []string{"changes_proposed", "incomplete", "needs_input"} {
 		findings := "[]"
 		if outcome == "changes_proposed" {
@@ -609,8 +561,6 @@ func TestParseNormalizesStrictSchemaNullsToAbsentFields(t *testing.T) {
 	}
 }
 
-// The strict output schema cannot carry minLength, maxLength or the array counts
-// it once declared, so every bound below is now enforced only here.
 func TestParseEnforcesLimitsTheOutputSchemaCannotDeclare(t *testing.T) {
 	text := func(length int) string { return strings.Repeat("x", length) }
 	repeat := func(entry string, count int) string {
