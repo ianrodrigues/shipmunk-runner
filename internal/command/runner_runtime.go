@@ -31,6 +31,9 @@ func runFixtureRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 		return 1
 	}
 	// A log directory that cannot be opened must not block the runner; supervision proceeds without an event log.
+	// Opened before the attempt-state lock below: a second concurrent process can append to this file before
+	// failing that lock, and a rotation rename racing under its own fd is not detected. Bounded in practice since
+	// the lock failure follows immediately.
 	logger, _ := runlog.Open(options.StateDir)
 	defer logger.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
