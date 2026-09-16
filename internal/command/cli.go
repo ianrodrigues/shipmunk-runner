@@ -43,10 +43,7 @@ func RunRunner(args []string, stdout, stderr io.Writer) int {
 	return runFixtureRunner(parsed.options, stdout, stderr)
 }
 
-// RunProfile executes the protected native profile lifecycle. The connect,
-// probe and disconnect subcommands all reach it, with --operation already
-// set by the caller; this is the raw flag surface, so its own --help/usage
-// text stays operation-agnostic.
+// RunProfile is the raw flag surface shared by connect, probe and disconnect; the caller sets --operation.
 func RunProfile(args []string, stdout, stderr io.Writer) int {
 	parsed, err := parseProfileOptions(args, stdout)
 	if errors.Is(err, flagHelpRequested) {
@@ -76,8 +73,6 @@ func RunProfile(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "Profile operation failed; protected recovery state was retained when needed.")
 		if parsed.options.JSON {
-			// A script watching stdout for --json must always get a health
-			// object, even when the operation failed before producing one.
 			_ = writeProfileHealth(stdout, profile.Health{Health: profile.HealthError, Reason: "operation_failed"}, true)
 		}
 		return 1
@@ -92,12 +87,7 @@ func RunProfile(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
-// RunCLI is the merged operator binary's entrypoint for setup, connect,
-// probe and run.
-// A positional install root after the subcommand dispatches through the
-// installed runner, as launchers do.
-// Otherwise the subcommand's raw flags run directly, for manual and
-// diagnostic use; disconnect is raw-flags only, since it has no launcher.
+// RunCLI dispatches subcommands; a positional root after the subcommand selects the installed launcher path.
 func RunCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "Usage: shipmunk-runner <setup|connect|probe|run|disconnect> ...\nRun shipmunk-runner --help for usage.")
@@ -125,9 +115,6 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runManualCommand runs the raw, uninstalled flag surface for connect,
-// probe, disconnect and run. Every profile operation's name comes from the
-// subcommand itself, never from a caller-supplied --operation.
 func runManualCommand(name string, args []string, stdout, stderr io.Writer) int {
 	if name == "run" {
 		return RunRunner(args, stdout, stderr)
@@ -177,10 +164,6 @@ func RunWatchdog(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// writeUsage prints one subcommand's usage, keyed by its name rather than a
-// binary: connect, probe and disconnect share RunProfile's raw flag surface,
-// so their text differs only in the implied --operation, never in a flag
-// the operator has to set.
 func writeUsage(output io.Writer, command string) {
 	switch command {
 	case "run":

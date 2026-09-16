@@ -10,9 +10,6 @@ import (
 	"github.com/ianrodrigues/shipmunk-runner/internal/profile"
 )
 
-// TestRunCLIDispatchesLauncherAndManualModes proves the split at the heart of
-// RunCLI: a positional install root after the subcommand reaches the
-// installed dispatch, and anything else reaches the raw flag surface.
 func TestRunCLIDispatchesLauncherAndManualModes(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("installed commands refuse root")
@@ -134,11 +131,6 @@ func TestRunCLIDispatchesLauncherAndManualModes(t *testing.T) {
 	}
 }
 
-// TestRunCLIManualModeSetsOperationFromTheSubcommand proves probe and
-// disconnect each imply their own --operation, and that RunProfile actually
-// receives it, not just that a caller-supplied one is rejected. connect
-// (login) is covered separately: it always requires a real operator
-// terminal, which a bytes.Buffer cannot fake.
 func TestRunCLIManualModeSetsOperationFromTheSubcommand(t *testing.T) {
 	original := runNativeProfile
 	t.Cleanup(func() { runNativeProfile = original })

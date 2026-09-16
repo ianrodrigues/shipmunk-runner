@@ -333,7 +333,6 @@ type activationJournal struct {
 
 var activationOrder = []string{"profile.token", "execution.token", "config.json"}
 
-// launcherNames lists the installed thin-wrapper scripts, one per operator subcommand that needs an install root.
 var launcherNames = []string{"run", "connect", "probe"}
 
 func activationNames(withLaunchers bool) []string {
