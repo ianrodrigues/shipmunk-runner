@@ -212,7 +212,7 @@ func validateEvidenceRefs(refs []EvidenceRef, review *reviewEvidence) error {
 	return nil
 }
 
-// A changed path can be cited on whichever snapshot it exists on (workspace or baseline); requiring the workspace snapshot specifically would make an honest "modified by deletion" finding unsatisfiable.
+// A changed path may be cited on whichever snapshot holds it; requiring the workspace snapshot would reject an honest deletion finding.
 func citesChangedFile(refs []EvidenceRef, changed map[string]bool) bool {
 	for _, ref := range refs {
 		if changed[ref.Path] {
@@ -222,6 +222,7 @@ func citesChangedFile(refs []EvidenceRef, changed map[string]bool) bool {
 	return false
 }
 
+// findingToWire, coverageToWire and questionsToWire mirror Result fields into contracts/v1/result.schema.json's finding, coverage and questions shapes.
 func findingToWire(f Finding) map[string]any {
 	wire := map[string]any{
 		"category": f.Category, "title": f.Title, "severity": f.Severity, "relation": f.Relation,
