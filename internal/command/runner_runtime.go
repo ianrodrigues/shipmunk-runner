@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/attemptstate"
+	"github.com/ianrodrigues/shipmunk-runner/internal/codex"
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 	"github.com/ianrodrigues/shipmunk-runner/internal/runlog"
 	"github.com/ianrodrigues/shipmunk-runner/internal/sandbox"
@@ -114,30 +116,42 @@ type attemptRunner interface {
 
 // consecutiveRunnerFailureBound stops the supervised loop from polling
 // forever against a defect in the runner itself (see runnerClassifiedFailure).
+// The count it bounds lives only in this process's memory, never the
+// attempt journal, so any restart (operator relaunch, a supervising
+// wrapper, a reboot) resets it to zero; see docs/runner/failure-breaker.md.
 const consecutiveRunnerFailureBound = 3
+
+// supervisedBackoff is the supervised loop's idle and cleanup-retry pause; a
+// package var so tests can zero it instead of sleeping for real.
+var supervisedBackoff = 2 * time.Second
 
 func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout, stderr io.Writer, logPath string) int {
 	consecutiveRunnerFailures := 0
 	for {
 		outcome, err := worker.RunOnce(ctx)
 		reason, classified := runnerClassifiedFailure(outcome, err)
-		if classified {
+		switch {
+		case classified:
 			consecutiveRunnerFailures++
-		} else {
+		case err == nil && outcome.Worked:
+			// Only a delivered attempt that is not runner-classified proves the
+			// runner itself is healthy again; an idle poll or a non-runner error
+			// (a transient claim/network failure) leaves the count untouched so
+			// it cannot mask a real streak of runner defects between them.
 			consecutiveRunnerFailures = 0
 		}
-		if classified && consecutiveRunnerFailures >= consecutiveRunnerFailureBound {
+		if consecutiveRunnerFailures >= consecutiveRunnerFailureBound {
 			fmt.Fprintln(stderr, consecutiveRunnerFailureMessage(reason, consecutiveRunnerFailures, logPath))
 			return 1
 		}
 		if err != nil {
-			if classified && !once {
-				if !sleepOrDone(ctx, 2*time.Second) {
+			fmt.Fprintln(stderr, supervisionFailure(err, logPath))
+			if retryableCleanupFailure(err) && !once {
+				if !sleepOrDone(ctx, supervisedBackoff) {
 					return 1
 				}
 				continue
 			}
-			fmt.Fprintln(stderr, supervisionFailure(err, logPath))
 			return 1
 		}
 		code := 0
@@ -158,11 +172,25 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 			return code
 		}
 		if !outcome.Worked {
-			if !sleepOrDone(ctx, 2*time.Second) {
+			if !sleepOrDone(ctx, supervisedBackoff) {
 				return 1
 			}
 		}
 	}
+}
+
+// retryableCleanupFailure reports whether err is a cleanup-unconfirmed
+// condition safe to retry in-process on the next poll. A refused stopped
+// acknowledgement must never retry here: each reconcile attempt would itself
+// advance RefusedStoppedCount, so an in-process loop could burn through the
+// three-refusal settle bound in seconds instead of that bound requiring
+// separate operator-launched processes.
+func retryableCleanupFailure(err error) bool {
+	if !errors.Is(err, supervisor.ErrCleanupUnconfirmed) {
+		return false
+	}
+	var refused *supervisor.RefusedStoppedError
+	return !errors.As(err, &refused)
 }
 
 // sleepOrDone waits out the supervised loop's idle backoff, reporting false
@@ -179,23 +207,38 @@ func sleepOrDone(ctx context.Context, backoff time.Duration) bool {
 }
 
 // runnerClassifiedFailure reports whether an attempt ended in one of the
-// four conditions #99 identifies as the runner's own defect rather than the
-// queued work's: three classifications the executor reports as a completed,
-// non-error outcome (malformed_output, missing_result, invalid_result), and
-// one the supervisor reports as an error because cleanup itself could not be
-// confirmed. A successful attempt or a provider-classified failure (for
-// example auth_expired or rate_limited) is not runner-classified and resets
-// the caller's consecutive count.
+// conditions #99 identifies as the runner's own defect rather than the
+// queued work's or the server's: the executor-reported completed, non-error
+// outcomes malformed_output, missing_result, invalid_result, and
+// invalid_output_schema (all mean the runner produced or requested something
+// the contract rejects and need a runner update, not a retry), and a
+// supervisor cleanup failure whose cause is none of a refused stopped
+// acknowledgement, a control-plane HTTP error, or a network error — those
+// three are server-side or transport conditions, not a runner defect, and
+// must not count toward the bound. A successful attempt or a
+// provider-classified failure (for example auth_expired or rate_limited) is
+// not runner-classified either.
+//
+// A caller must not reset its consecutive count on an unclassified result:
+// only a delivered, non-runner-classified attempt proves the runner is
+// healthy again (see runSupervised).
 func runnerClassifiedFailure(outcome supervisor.Outcome, err error) (string, bool) {
 	if err != nil {
-		if errors.Is(err, supervisor.ErrCleanupUnconfirmed) {
-			return "cleanup_unconfirmed", true
+		if !errors.Is(err, supervisor.ErrCleanupUnconfirmed) {
+			return "", false
 		}
-		return "", false
+		var refused *supervisor.RefusedStoppedError
+		var controlPlaneErr *protocol.ControlPlaneError
+		var networkErr net.Error
+		if errors.As(err, &refused) || errors.As(err, &controlPlaneErr) || errors.As(err, &networkErr) {
+			return "", false
+		}
+		return "cleanup_unconfirmed", true
 	}
 	if outcome.Worked {
 		switch outcome.FailureReason {
-		case "malformed_output", "missing_result", "invalid_result":
+		case string(codex.FailureMalformedOutput), string(codex.FailureMissingResult),
+			string(codex.FailureInvalidResult), string(codex.FailureInvalidOutputSchema):
 			return outcome.FailureReason, true
 		}
 	}

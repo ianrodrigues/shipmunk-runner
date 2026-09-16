@@ -5,14 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 	"github.com/ianrodrigues/shipmunk-runner/internal/supervisor"
 )
+
+// The supervised loop's idle/retry backoff would otherwise make these tests
+// sleep for real; zero it for the whole package's test binary.
+func init() {
+	supervisedBackoff = time.Microsecond
+}
 
 type scriptedRunner struct {
 	results []supervisor.Outcome
@@ -78,6 +86,90 @@ func TestSupervisedStopsPollingAfterThreeConsecutiveRunnerClassifiedFailures(t *
 	}
 	if !strings.Contains(stderr.String(), "3 consecutive runner-classified failures") || !strings.Contains(stderr.String(), "malformed_output") || !strings.Contains(stderr.String(), "/state/logs/runner.log") {
 		t.Fatalf("breaker message missing bound, reason, or log path: %q", stderr.String())
+	}
+}
+
+func TestSupervisedIdlePollsDoNotResetTheConsecutiveCount(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{outcome: malformedOutputOutcome()},
+		{}, // idle poll: no work, no error
+		{outcome: malformedOutputOutcome()},
+		{},                                  // idle poll
+		{outcome: malformedOutputOutcome()}, // trips the bound
+		{outcome: malformedOutputOutcome()}, // must not be reached
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 5 {
+		t.Fatalf("expected idle polls between failures not to reset the count: code=%d calls=%d stderr=%q", code, runner.calls, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "3 consecutive runner-classified failures") {
+		t.Fatalf("expected the breaker to trip: %q", stderr.String())
+	}
+}
+
+func TestSupervisedExcludesServerAndTransportCausesFromCleanupCount(t *testing.T) {
+	networkErr := &net.DNSError{Err: "no such host", Name: "runner.example", IsTimeout: true}
+	for name, failure := range map[string]error{
+		"refused stopped ack": fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &supervisor.RefusedStoppedError{Count: 1, Threshold: 3}),
+		"control plane error": fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503}),
+		"network error":       fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, networkErr),
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &sequencedRunner{steps: []sequencedStep{
+				{err: failure}, {err: failure}, {err: failure}, {err: failure},
+			}}
+			var stdout, stderr bytes.Buffer
+			code := runSupervised(context.Background(), runner, true, &stdout, &stderr, "")
+			if code != 1 {
+				t.Fatalf("code=%d", code)
+			}
+			if strings.Contains(stderr.String(), "consecutive runner-classified failures") {
+				t.Fatalf("server/transport cause must never count toward the runner-defect bound: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestSupervisedCountsInvalidOutputSchemaAsRunnerClassified(t *testing.T) {
+	invalidSchema := supervisor.Outcome{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "incomplete", FailureReason: "invalid_output_schema"}
+	runner := &sequencedRunner{steps: []sequencedStep{{outcome: invalidSchema}, {outcome: invalidSchema}, {outcome: invalidSchema}}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || !strings.Contains(stderr.String(), "invalid_output_schema") {
+		t.Fatalf("expected invalid_output_schema to trip the breaker: code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestSupervisedNeverRetriesInProcessOnARefusedStoppedAcknowledgement(t *testing.T) {
+	refused := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &supervisor.RefusedStoppedError{Count: 1, Threshold: 3})
+	runner := &sequencedRunner{steps: []sequencedStep{{err: refused}, {err: refused}}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 1 {
+		t.Fatalf("expected a refused stopped acknowledgement to end supervision without an in-process retry: code=%d calls=%d", code, runner.calls)
+	}
+	if !strings.Contains(stderr.String(), "refused the stopped acknowledgement (1 of 3)") {
+		t.Fatalf("expected the refused-stopped message to survive: %q", stderr.String())
+	}
+}
+
+func TestSupervisedRetriesOtherCleanupUnconfirmedCausesInProcess(t *testing.T) {
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{err: supervisor.ErrCleanupUnconfirmed},
+		{outcome: supervisor.Outcome{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "no_findings"}},
+		{err: supervisor.ErrLeaseExpired},
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 3 {
+		t.Fatalf("expected the retry to continue past the plain cleanup-unconfirmed failure to the delivered success: code=%d calls=%d stderr=%q", code, runner.calls, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "could not confirm sandbox cleanup") {
+		t.Fatalf("expected supervisionFailure to be printed before the retry: %q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no_findings") {
+		t.Fatalf("expected the retried attempt's delivered outcome on stdout: %q", stdout.String())
 	}
 }
 
