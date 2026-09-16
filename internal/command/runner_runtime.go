@@ -114,11 +114,9 @@ type attemptRunner interface {
 	RunOnce(context.Context) (supervisor.Outcome, error)
 }
 
-// consecutiveRunnerFailureBound stops the supervised loop from polling
-// forever against a defect in the runner itself (see runnerClassifiedFailure).
-// The count it bounds lives only in this process's memory, never the
-// attempt journal, so any restart (operator relaunch, a supervising
-// wrapper, a reboot) resets it to zero; see docs/runner/failure-breaker.md.
+// consecutiveRunnerFailureBound stops polling after this many consecutive
+// runner-classified failures (see runnerClassifiedFailure). The count is
+// in-memory only and resets on any restart; see docs/runner/failure-breaker.md.
 const consecutiveRunnerFailureBound = 3
 
 // supervisedBackoff is the supervised loop's idle and cleanup-retry pause; a
@@ -134,10 +132,9 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 		case classified:
 			consecutiveRunnerFailures++
 		case err == nil && outcome.Worked:
-			// Only a delivered attempt that is not runner-classified proves the
-			// runner itself is healthy again; an idle poll or a non-runner error
-			// (a transient claim/network failure) leaves the count untouched so
-			// it cannot mask a real streak of runner defects between them.
+			// Reset only here: a delivered, non-runner-classified attempt is the
+			// only proof the runner is healthy again — an idle poll or a
+			// transient claim/network error must not mask a real streak.
 			consecutiveRunnerFailures = 0
 		}
 		if consecutiveRunnerFailures >= consecutiveRunnerFailureBound {
@@ -179,18 +176,23 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 	}
 }
 
-// retryableCleanupFailure reports whether err is a cleanup-unconfirmed
-// condition safe to retry in-process on the next poll. A refused stopped
-// acknowledgement must never retry here: each reconcile attempt would itself
-// advance RefusedStoppedCount, so an in-process loop could burn through the
-// three-refusal settle bound in seconds instead of that bound requiring
-// separate operator-launched processes.
+// retryableCleanupFailure reports whether a cleanup-unconfirmed error is
+// safe to retry on the next poll. A refused stopped acknowledgement never
+// retries here: each reconcile attempt would advance the server's
+// three-refusal settle count, so an in-process loop could exhaust it in
+// seconds instead of requiring separate operator relaunches. An uncertain
+// sandbox create on a reserved name never retries either: it recurs
+// identically on every poll until an operator or the original watchdog
+// resolves it, so retrying in-process would only spin.
 func retryableCleanupFailure(err error) bool {
 	if !errors.Is(err, supervisor.ErrCleanupUnconfirmed) {
 		return false
 	}
 	var refused *supervisor.RefusedStoppedError
-	return !errors.As(err, &refused)
+	if errors.As(err, &refused) {
+		return false
+	}
+	return !errors.Is(err, sandbox.ErrCreateUncertain)
 }
 
 // sleepOrDone waits out the supervised loop's idle backoff, reporting false
@@ -206,22 +208,12 @@ func sleepOrDone(ctx context.Context, backoff time.Duration) bool {
 	}
 }
 
-// runnerClassifiedFailure reports whether an attempt ended in one of the
-// conditions #99 identifies as the runner's own defect rather than the
-// queued work's or the server's: the executor-reported completed, non-error
-// outcomes malformed_output, missing_result, invalid_result, and
-// invalid_output_schema (all mean the runner produced or requested something
-// the contract rejects and need a runner update, not a retry), and a
-// supervisor cleanup failure whose cause is none of a refused stopped
-// acknowledgement, a control-plane HTTP error, or a network error — those
-// three are server-side or transport conditions, not a runner defect, and
-// must not count toward the bound. A successful attempt or a
-// provider-classified failure (for example auth_expired or rate_limited) is
-// not runner-classified either.
-//
-// A caller must not reset its consecutive count on an unclassified result:
-// only a delivered, non-runner-classified attempt proves the runner is
-// healthy again (see runSupervised).
+// runnerClassifiedFailure reports whether an attempt failure points at the
+// runner itself, not the queued work, server, or network (see
+// docs/runner/failure-breaker.md for the full definition and rationale).
+// Callers must reset their consecutive count only on a delivered,
+// non-runner-classified result — never on an idle poll or an unclassified
+// error (see runSupervised).
 func runnerClassifiedFailure(outcome supervisor.Outcome, err error) (string, bool) {
 	if err != nil {
 		if !errors.Is(err, supervisor.ErrCleanupUnconfirmed) {
