@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -133,6 +134,34 @@ func TestResultContractRejectsStaleCharterVersionFixture(t *testing.T) {
 	}
 	if err := Validate("result", []byte(mustJSON(document))); err == nil {
 		t.Fatal("embedded result contract accepted a stale charter version")
+	}
+}
+
+// The title pattern is the only one the embedded engine compiles with a
+// negated Perl class, so a whitespace-only title is what proves it applies.
+func TestResultContractRejectsAWhitespaceOnlyFindingTitle(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(contractFixtures, "invalid", "finding-title-whitespace-only.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(raw, ResultMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := object(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := []byte(mustJSON(wrapper["document"]))
+	if err := Validate("result", document); err == nil {
+		t.Fatal("embedded result contract accepted a whitespace-only finding title")
+	}
+	titled := bytes.Replace(document, []byte(`"title":"     "`), []byte(`"title":"A finding title."`), 1)
+	if bytes.Equal(titled, document) {
+		t.Fatal("fixture no longer carries the whitespace-only title this test rewrites")
+	}
+	if err := Validate("result", titled); err != nil {
+		t.Fatalf("only the title made the fixture invalid: %v", err)
 	}
 }
 

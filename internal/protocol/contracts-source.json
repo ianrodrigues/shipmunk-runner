@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ianrodrigues/shipmunk-server",
-  "commit": "6ee1d50432a78092bc28c5fc77bff88e58ad436b",
+  "commit": "1e19466b7b212fe58989641a6e72fb487447d1fa",
   "files": {
     "contracts/v1/event-batch.schema.json": {
       "source": "contracts/v1/event-batch.schema.json",
@@ -16,7 +16,7 @@
     },
     "contracts/v1/result.schema.json": {
       "source": "contracts/v1/result.schema.json",
-      "sha256": "c98adc6e223fe4228af39dbc5c187fdcdac2e4a7b751fd0d634312c900763779"
+      "sha256": "416191a2153e8c52f68bb5acf0ef8e943b88e846becd36473ea94a18f667b3ac"
     },
     "contracts/v1/run-input.schema.json": {
       "source": "contracts/v1/run-input.schema.json",
@@ -53,6 +53,10 @@
     "testdata/contracts/v1/fixtures/invalid/finding-title-too-short.json": {
       "source": "contracts/v1/fixtures/invalid/finding-title-too-short.json",
       "sha256": "7645d4c19349b91a7ed01b17f8d4bd2c292b4884653c91342e4bb946ce8c2414"
+    },
+    "testdata/contracts/v1/fixtures/invalid/finding-title-whitespace-only.json": {
+      "source": "contracts/v1/fixtures/invalid/finding-title-whitespace-only.json",
+      "sha256": "8acf80e717676e5bfd183cf8b5c6dd95d0257b3e6e67947168610b449dd97260"
     },
     "testdata/contracts/v1/fixtures/invalid/finding-without-title.json": {
       "source": "contracts/v1/fixtures/invalid/finding-without-title.json",
