@@ -58,7 +58,7 @@ func TestRunOnceLogsSandboxLifecycleAndResultDelivery(t *testing.T) {
 }
 
 func TestRunOnceLogsClassifiedFailureFromExecution(t *testing.T) {
-	s, c, _, _, w, _ := fixtureSupervisor(t)
+	s, c, _, _, _, _ := fixtureSupervisor(t)
 	execution, err := DecodeExecution(*c.claim, 0, normalizedOutput(t, *c.claim, "incomplete"))
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,6 @@ func TestRunOnceLogsClassifiedFailureFromExecution(t *testing.T) {
 	if err != nil || !out.Worked {
 		t.Fatalf("RunOnce failed: %+v %v", out, err)
 	}
-	_ = w
 	if !logger.has("classified_failure") {
 		t.Fatalf("expected classified_failure event, got %v", logger.events)
 	}
