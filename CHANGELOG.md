@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Every review finding now carries a short reviewer-written `title`, a one-line headline naming the defect, so a published review leads with what is wrong instead of the first line of its explanation.
 - `make lint` and the pre-push hook now fail a pushed range that touches `cmd/`, `internal/`, `containers/` or `runner/containers/` without also touching this file, unless a commit in the range carries a `changelog: none` trailer. ([#67](https://github.com/ianrodrigues/shipmunk-runner/pull/67), [#69](https://github.com/ianrodrigues/shipmunk-runner/pull/69))
 
 ## v0.1.0-alpha.16 - 2026-09-16

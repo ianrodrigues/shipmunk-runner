@@ -44,6 +44,10 @@
               "other"
             ]
           },
+          "title": {
+            "type": "string",
+            "description": "Between 5 and 80 characters, on one line, never empty."
+          },
           "severity": {
             "type": "string",
             "enum": [
@@ -122,6 +126,7 @@
         },
         "required": [
           "category",
+          "title",
           "severity",
           "relation",
           "scenario",

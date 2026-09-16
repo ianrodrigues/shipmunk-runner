@@ -9,6 +9,7 @@
   "findings": [
     {
       "category": "security",
+      "title": "Tenant ownership check missing on the run action",
       "severity": "critical",
       "relation": "introduced",
       "scenario": "A request that supplies another tenant's run identifier reaches this action without the ownership check the sibling actions apply, and the handler reads and returns that run.",

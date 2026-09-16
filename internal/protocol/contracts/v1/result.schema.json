@@ -62,6 +62,12 @@
               "other"
             ]
           },
+          "title": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 80,
+            "pattern": "^[^\\r\\n]+$"
+          },
           "severity": {
             "enum": [
               "info",
@@ -134,6 +140,7 @@
         },
         "required": [
           "category",
+          "title",
           "severity",
           "relation",
           "scenario",

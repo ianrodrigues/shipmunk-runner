@@ -246,7 +246,7 @@ func citesChangedFile(refs []EvidenceRef, changed map[string]bool) bool {
 // fields into contracts/v1/result.schema.json's finding/coverage/questions shape.
 func findingToWire(f Finding) map[string]any {
 	wire := map[string]any{
-		"category": f.Category, "severity": f.Severity, "relation": f.Relation,
+		"category": f.Category, "title": f.Title, "severity": f.Severity, "relation": f.Relation,
 		"scenario": f.Scenario, "consequence": f.Consequence, "action": f.Action,
 		"explanation": f.Explanation, "evidence": evidenceToWire(f.Evidence),
 	}

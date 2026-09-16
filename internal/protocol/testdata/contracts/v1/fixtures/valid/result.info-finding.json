@@ -9,6 +9,7 @@
   "findings": [
     {
       "category": "maintenance",
+      "title": "Rationale comment dropped from an unchanged guard",
       "severity": "info",
       "relation": "preexisting",
       "scenario": "The matcher still refuses every path when its rule set is empty, but the comment that used to state this invariant was dropped when the method was extracted.",

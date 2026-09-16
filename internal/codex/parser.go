@@ -8,6 +8,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ianrodrigues/shipmunk-runner/internal/protocol"
 )
@@ -34,6 +35,8 @@ const (
 	MaxCoverageFiles        = 300
 	MaxCoverageContextGaps  = 20
 	MaxMaterialTextBytes    = 2000
+	MinFindingTitleChars    = 5
+	MaxFindingTitleChars    = 80
 	MaxCoverageReasonBytes  = 500
 	MaxQuestionTopicBytes   = 200
 	MaxCharterVersionBytes  = 8
@@ -96,6 +99,7 @@ type Anchor struct {
 
 type Finding struct {
 	Category    string
+	Title       string
 	Severity    string
 	Relation    string
 	Scenario    string
@@ -658,7 +662,7 @@ func parseFinding(value any) (Finding, bool) {
 		return Finding{}, false
 	}
 	_, hasAnchor := object["anchor"]
-	required := []string{"category", "severity", "relation", "scenario", "consequence", "action", "explanation", "evidence"}
+	required := []string{"category", "title", "severity", "relation", "scenario", "consequence", "action", "explanation", "evidence"}
 	expected := len(required)
 	if hasAnchor {
 		expected++
@@ -672,12 +676,14 @@ func parseFinding(value any) (Finding, bool) {
 		}
 	}
 	category, categoryOK := boundedString(object["category"], 32)
+	title, titleOK := object["title"].(string)
 	severity, severityOK := boundedString(object["severity"], 16)
 	relation, relationOK := boundedString(object["relation"], 16)
 	scenario, scenarioOK := boundedString(object["scenario"], MaxMaterialTextBytes)
 	consequence, consequenceOK := boundedString(object["consequence"], MaxMaterialTextBytes)
 	action, actionOK := boundedString(object["action"], MaxMaterialTextBytes)
 	explanation, explanationOK := boundedString(object["explanation"], 8192)
+	validTitle := titleOK && singleLineTitle(title)
 	validCategory := categoryOK && oneOf(category, "correctness", "security", "contract", "maintenance", "test_adequacy", "performance", "other")
 	validSeverity := severityOK && oneOf(severity, "info", "low", "medium", "high", "critical")
 	validRelation := relationOK && oneOf(relation, "introduced", "modified", "preexisting")
@@ -704,8 +710,14 @@ func parseFinding(value any) (Finding, bool) {
 		anchor = &parsed
 	}
 
-	valid := validCategory && validSeverity && validRelation && scenarioOK && consequenceOK && actionOK && explanationOK
-	return Finding{Category: category, Severity: severity, Relation: relation, Scenario: scenario, Consequence: consequence, Action: action, Explanation: explanation, Evidence: evidence, Anchor: anchor}, valid
+	valid := validCategory && validTitle && validSeverity && validRelation && scenarioOK && consequenceOK && actionOK && explanationOK
+	return Finding{Category: category, Title: title, Severity: severity, Relation: relation, Scenario: scenario, Consequence: consequence, Action: action, Explanation: explanation, Evidence: evidence, Anchor: anchor}, valid
+}
+
+// singleLineTitle counts characters, not bytes, so it agrees with the contract's minLength/maxLength.
+func singleLineTitle(title string) bool {
+	count := utf8.RuneCountInString(title)
+	return count >= MinFindingTitleChars && count <= MaxFindingTitleChars && !strings.ContainsAny(title, "\r\n")
 }
 
 func parseEvidenceRef(value any) (EvidenceRef, bool) {

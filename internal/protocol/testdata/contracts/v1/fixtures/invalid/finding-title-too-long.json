@@ -1,0 +1,50 @@
+{
+  "contract": "result",
+  "document": {
+    "protocol_version": "1.0",
+    "run_id": "01k4w000000000000000000001",
+    "attempt_id": "01k4w000000000000000000002",
+    "fence": 1,
+    "summary": "The new endpoint skips the authorization check the rest of the controller relies on, so a signed-in user can reach another tenant's data.",
+    "outcome": "findings",
+    "charter_version": "1",
+    "findings": [
+      {
+        "category": "security",
+        "title": "The tenant ownership check the sibling actions apply is missing from the new run action",
+        "severity": "critical",
+        "relation": "introduced",
+        "scenario": "A request that supplies another tenant's run identifier reaches this action without the ownership check the sibling actions apply, and the handler reads and returns that run.",
+        "consequence": "Any authenticated user can read another tenant's review results by guessing or enumerating identifiers.",
+        "action": "Apply the same tenant-ownership check the sibling actions use before the run is loaded.",
+        "explanation": "The new action loads the run by identifier alone, with no policy or scope check tying it to the requesting user's tenant.",
+        "evidence": [
+          {
+            "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "path": "app/Http/Controllers/RunController.php",
+            "line_start": 40,
+            "line_end": 46
+          }
+        ],
+        "anchor": {
+          "path": "app/Http/Controllers/RunController.php",
+          "line": 42,
+          "side": "RIGHT"
+        }
+      }
+    ],
+    "coverage": {
+      "files": [
+        {
+          "path": "app/Http/Controllers/RunController.php",
+          "status": "reviewed"
+        }
+      ],
+      "context_gaps": []
+    },
+    "verification_state": "none",
+    "patch_artifact": null,
+    "tests": [],
+    "usage": null
+  }
+}

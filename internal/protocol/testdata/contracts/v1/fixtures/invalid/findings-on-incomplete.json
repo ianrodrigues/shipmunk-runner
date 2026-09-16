@@ -10,6 +10,7 @@
     "findings": [
       {
         "category": "correctness",
+        "title": "Empty rule set now allows every path",
         "severity": "high",
         "relation": "introduced",
         "scenario": "An empty rule set reaches the matcher and is treated as allowing every path.",
