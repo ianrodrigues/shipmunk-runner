@@ -144,9 +144,10 @@ func (l *Logger) Event(event string, fields map[string]any) {
 		return
 	}
 	if n, err := l.file.Write(line); err != nil {
-		// A write error leaves the fd in an unknown state; drop it so the
-		// next Event reopens (and can emit the give-up notice) instead of
-		// silently discarding every subsequent event through a dead file.
+		// A write error leaves the fd in an unknown state; close and drop it
+		// so the next Event reopens (and can emit the give-up notice) instead
+		// of silently discarding every subsequent event through a dead file.
+		_ = l.file.Close()
 		l.file = nil
 	} else {
 		l.size += int64(n)
