@@ -166,6 +166,38 @@ func TestEventRotatesPastSizeCap(t *testing.T) {
 	}
 }
 
+func TestEventDropsARecordLargerThanTheGenerationCap(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer logger.Close()
+
+	logger.Event("progress", map[string]any{"filler": strings.Repeat("x", maxFileBytes+1)})
+
+	lines := readLines(t, logger.Path())
+	if len(lines) != 0 {
+		t.Fatalf("expected the oversized record to be dropped, got %d lines", len(lines))
+	}
+	info, err := os.Stat(logger.Path())
+	if err != nil {
+		t.Fatalf("stat current log: %v", err)
+	}
+	if info.Size() > maxFileBytes {
+		t.Fatalf("current log exceeded its size cap: %d bytes", info.Size())
+	}
+	if _, err := os.Stat(logger.path + ".1"); err == nil {
+		t.Fatalf("expected no rotation to be triggered by a record that can never fit")
+	}
+
+	logger.Event("claim", map[string]any{"run_id": "run1"})
+	lines = readLines(t, logger.Path())
+	if len(lines) != 1 {
+		t.Fatalf("expected the logger to keep working after dropping an oversized record, got %d lines", len(lines))
+	}
+}
+
 func TestEventReopensAfterFileLost(t *testing.T) {
 	dir := t.TempDir()
 	logger, err := Open(dir)
@@ -184,6 +216,61 @@ func TestEventReopensAfterFileLost(t *testing.T) {
 	lines := readLines(t, logger.Path())
 	if len(lines) != 1 {
 		t.Fatalf("expected the logger to reopen and write the event, got %d lines", len(lines))
+	}
+}
+
+func TestEventReopensAfterAWriteError(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer logger.Close()
+
+	logger.mu.Lock()
+	_ = logger.file.Close() // closed out from under l.file, so the next Write fails.
+	logger.mu.Unlock()
+
+	logger.Event("claim", map[string]any{"run_id": "dropped"})
+	logger.mu.Lock()
+	stillSet := logger.file != nil
+	logger.mu.Unlock()
+	if stillSet {
+		t.Fatalf("expected a write error to clear the file so the next Event reopens it")
+	}
+
+	logger.Event("claim", map[string]any{"run_id": "recovered"})
+	lines := readLines(t, logger.Path())
+	if len(lines) != 1 {
+		t.Fatalf("expected the logger to recover and write the second event, got %d lines", len(lines))
+	}
+}
+
+func TestRotateClearsTheFileEvenWhenCloseFails(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer logger.Close()
+
+	logger.mu.Lock()
+	logger.size = maxFileBytes
+	_ = logger.file.Close() // rotateIfNeeded's own Close then fails on the already-closed fd.
+	rotateErr := logger.rotateIfNeeded(1)
+	stillSet := logger.file != nil
+	logger.mu.Unlock()
+	if rotateErr == nil {
+		t.Fatalf("expected rotateIfNeeded to surface the close error")
+	}
+	if stillSet {
+		t.Fatalf("expected rotateIfNeeded to clear l.file even when Close fails, leaving no dangling closed fd")
+	}
+
+	logger.Event("claim", map[string]any{"run_id": "run1"})
+	lines := readLines(t, logger.Path())
+	if len(lines) != 1 {
+		t.Fatalf("expected the logger to reopen after a failed rotation, got %d lines", len(lines))
 	}
 }
 
