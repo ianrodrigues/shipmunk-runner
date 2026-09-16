@@ -362,12 +362,13 @@ func RunSetup(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// Exec the installed launcher: the bootstrap binary has no adjacent watchdog and a different Version.
 func execConnectLauncher(root string, stdin io.Reader, stdout, stderr io.Writer) int {
 	command := exec.Command(filepath.Join(root, "connect"))
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
 	signal.Ignore(os.Interrupt)
+	defer signal.Reset(os.Interrupt)
 	err := command.Run()
-	signal.Reset(os.Interrupt)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
