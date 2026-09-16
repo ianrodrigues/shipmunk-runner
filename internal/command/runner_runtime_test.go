@@ -209,38 +209,82 @@ func TestTransportBackoffEscalatesAndCaps(t *testing.T) {
 	supervisedBackoffCap = 10 * time.Second
 
 	backoff := transportBackoff{}
-	// First occurrence of a condition always sleeps the base pause.
-	backoff.report("control plane unavailable", "")
-	if pause := backoff.pause(); pause != time.Second {
-		t.Fatalf("first occurrence pause = %s, want %s", pause, time.Second)
+	backoff.report("control plane unavailable", "control_plane", "")
+	if wait := backoff.wait(); wait != time.Second {
+		t.Fatalf("first occurrence pause = %s, want %s", wait, time.Second)
 	}
 	expected := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second}
 	for index, want := range expected {
-		backoff.report("control plane unavailable", "")
-		if pause := backoff.pause(); pause != want {
-			t.Fatalf("repeat %d pause = %s, want %s", index+1, pause, want)
+		backoff.report("control plane unavailable", "control_plane", "")
+		if wait := backoff.wait(); wait != want {
+			t.Fatalf("repeat %d pause = %s, want %s", index+1, wait, want)
 		}
 	}
 }
 
-func TestTransportBackoffResetsAndReprintsFullMessageForADifferentCondition(t *testing.T) {
+// TestTransportBackoffKeysOnCauseNotMessage guards against pacing keyed on
+// the rendered message: a control-plane error's message carries its status
+// code, so a flapping 503-then-504 outage must still read as one repeated
+// cause instead of resetting the streak (and the pause) on every attempt.
+func TestTransportBackoffKeysOnCauseNotMessage(t *testing.T) {
 	backoff := transportBackoff{}
-	first := backoff.report("network unreachable", "/log")
+	first := backoff.report("control plane rejected the request (503)", failureCause(&protocol.ControlPlaneError{StatusCode: 503}), "/log")
+	if first != "control plane rejected the request (503)" {
+		t.Fatalf("expected the raw message on first occurrence: %q", first)
+	}
+	second := backoff.report("control plane rejected the request (504)", failureCause(&protocol.ControlPlaneError{StatusCode: 504}), "/log")
+	if !strings.Contains(second, "still failing, 2 attempts") {
+		t.Fatalf("expected a differing message with the same cause to still read as a repeat: %q", second)
+	}
+	if wait := backoff.wait(); wait != 2*supervisedBackoff {
+		t.Fatalf("expected the pause to have doubled despite the differing message: %s", wait)
+	}
+}
+
+// TestFailureCauseGroupsControlPlaneAndNetworkAsTransport proves a
+// 503-caused and a network-caused retryable cleanup failure share the same
+// streak key: an outage can flap between the two without an operator seeing
+// it as a different condition, or the streak (and the growing pause)
+// resetting on every attempt.
+func TestFailureCauseGroupsControlPlaneAndNetworkAsTransport(t *testing.T) {
+	controlPlane := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503})
+	network := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &net.DNSError{Err: "no such host", Name: "runner.example", IsTimeout: true})
+	if cause := failureCause(controlPlane); cause != "transport" {
+		t.Fatalf("control-plane cause = %q, want transport", cause)
+	}
+	if cause := failureCause(network); cause != "transport" {
+		t.Fatalf("network cause = %q, want transport", cause)
+	}
+
+	backoff := transportBackoff{}
+	backoff.report(supervisionFailure(controlPlane, ""), failureCause(controlPlane), "")
+	second := backoff.report(supervisionFailure(network, ""), failureCause(network), "")
+	if !strings.Contains(second, "still failing, 2 attempts") {
+		t.Fatalf("expected the network-caused repeat to continue the control-plane-caused streak: %q", second)
+	}
+	if wait := backoff.wait(); wait != 2*supervisedBackoff {
+		t.Fatalf("expected the pause to have doubled across the two causes: %s", wait)
+	}
+}
+
+func TestTransportBackoffResetsAndReprintsFullMessageForADifferentCause(t *testing.T) {
+	backoff := transportBackoff{}
+	first := backoff.report("network unreachable", "transport", "/log")
 	if first != "network unreachable" {
 		t.Fatalf("expected the raw message on first occurrence: %q", first)
 	}
-	second := backoff.report("network unreachable", "/log")
+	second := backoff.report("network unreachable", "transport", "/log")
 	if !strings.Contains(second, "still failing, 2 attempts") {
 		t.Fatalf("expected a still-failing line on the repeat: %q", second)
 	}
 	backoff.reset()
-	third := backoff.report("network unreachable", "/log")
+	third := backoff.report("network unreachable", "transport", "/log")
 	if third != "network unreachable" {
 		t.Fatalf("expected reset to reprint the full message: %q", third)
 	}
-	different := backoff.report("control plane rejected the request", "/log")
-	if different != "control plane rejected the request" {
-		t.Fatalf("expected a differing message to print in full rather than as still-failing: %q", different)
+	different := backoff.report("runner-classified cleanup failure", "other", "/log")
+	if different != "runner-classified cleanup failure" {
+		t.Fatalf("expected a differing cause to print in full rather than as still-failing: %q", different)
 	}
 }
 
@@ -249,10 +293,6 @@ func TestTransportBackoffResetsAndReprintsFullMessageForADifferentCondition(t *t
 // prints the full condition once, then "still failing" lines, and never
 // trips the runner-classified breaker (see runnerClassifiedFailure).
 func TestSupervisedBacksOffOnRepeatedNonRunnerCleanupFailures(t *testing.T) {
-	originalCap := supervisedBackoffCap
-	t.Cleanup(func() { supervisedBackoffCap = originalCap })
-	supervisedBackoffCap = time.Millisecond // keep the test's real sleeps negligible
-
 	failure := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503})
 	runner := &sequencedRunner{steps: []sequencedStep{
 		{err: failure}, {err: failure}, {err: failure},
@@ -297,10 +337,6 @@ func TestSupervisedBacksOffOnRepeatedNonRunnerCleanupFailures(t *testing.T) {
 // TestSupervisedIdlePollResetsTheTransportBackoff proves a successful idle
 // poll — not just a delivered attempt — clears an in-progress streak.
 func TestSupervisedIdlePollResetsTheTransportBackoff(t *testing.T) {
-	originalCap := supervisedBackoffCap
-	t.Cleanup(func() { supervisedBackoffCap = originalCap })
-	supervisedBackoffCap = time.Millisecond
-
 	failure := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503})
 	runner := &sequencedRunner{steps: []sequencedStep{
 		{err: failure}, {err: failure},

@@ -33,7 +33,7 @@ func runFixtureRunner(options RunnerOptions, stdout, stderr io.Writer) int {
 		return 1
 	}
 	// Opened before the attempt-state lock, so a losing concurrent process can
-	// still log here; the resulting race is bounded since the lock failure
+	// still log here. The resulting race is bounded because the lock failure
 	// follows immediately.
 	logger, _ := runlog.Open(options.StateDir)
 	defer logger.Close()
@@ -116,63 +116,60 @@ type attemptRunner interface {
 
 // consecutiveRunnerFailureBound stops polling after this many consecutive
 // runner-classified failures (see runnerClassifiedFailure). The count is
-// in-memory only and resets on any restart; see docs/runner/failure-breaker.md.
+// in-memory only and resets on any restart. See docs/runner/failure-breaker.md
+// for the full rationale.
 const consecutiveRunnerFailureBound = 3
 
 // supervisedBackoff is the supervised loop's base pause: an idle poll's
-// fixed cadence, and the starting point a repeated non-runner failure backs
-// off from (see transportBackoff). A package var so tests can zero it
-// instead of sleeping for real.
+// fixed cadence, and the starting point transportBackoff grows from. It is
+// a package var, so tests can zero it instead of sleeping for real.
 var supervisedBackoff = 2 * time.Second
 
 // supervisedBackoffCap bounds transportBackoff's exponential growth, so a
-// long control-plane or network outage settles at a fixed retry cadence
-// instead of spacing attempts out indefinitely. A package var for the same
-// reason as supervisedBackoff.
+// long outage settles at a fixed retry cadence instead of growing forever.
+// It is a package var, so tests can zero it instead of sleeping for real.
 var supervisedBackoffCap = 2 * time.Minute
 
-// transportBackoff paces the cleanup-retry path's stderr and sleep for a
-// repeated non-runner failure — a control-plane or network cause, which
-// docs/runner/failure-breaker.md's consecutive-failure breaker never counts
-// and so would otherwise retry forever at the fixed base cadence. The first
-// occurrence of a given condition prints in full at the base pause; each
-// identical repeat prints a short "still failing" line and doubles the pause
-// up to supervisedBackoffCap. A delivered attempt or a successful idle poll
-// resets it, since either is proof the transport recovered.
+// transportBackoff paces the cleanup-retry path's stderr line and sleep for
+// a repeated failure with the same cause. The first occurrence prints in
+// full at the base pause. Each repeat with the same cause prints a short
+// "still failing" line and doubles the pause up to supervisedBackoffCap. A
+// delivered attempt or a successful idle poll resets it.
 type transportBackoff struct {
-	message string
-	streak  int
+	cause  string
+	streak int
+	pause  time.Duration
 }
 
 func (backoff *transportBackoff) reset() {
-	backoff.message = ""
+	backoff.cause = ""
 	backoff.streak = 0
+	backoff.pause = 0
 }
 
-// report returns the stderr line for this occurrence of message: the
-// message itself the first time it's seen, or a periodic "still failing"
-// line while the identical condition repeats.
-func (backoff *transportBackoff) report(message, logPath string) string {
-	if message != backoff.message {
-		backoff.message = message
+// report returns the stderr line for this occurrence. It returns message
+// the first time this cause is seen, or a periodic "still failing" line
+// while the same cause repeats.
+func (backoff *transportBackoff) report(message, cause, logPath string) string {
+	if cause != backoff.cause {
+		backoff.cause = cause
 		backoff.streak = 1
+		backoff.pause = supervisedBackoff
 		return message
 	}
 	backoff.streak++
+	if backoff.pause < supervisedBackoffCap {
+		backoff.pause *= 2
+		if backoff.pause > supervisedBackoffCap {
+			backoff.pause = supervisedBackoffCap
+		}
+	}
 	return stillFailingMessage(backoff.streak, logPath)
 }
 
-// pause returns the sleep for the current streak: supervisedBackoff on the
-// first occurrence, doubling on each repeat up to supervisedBackoffCap.
-func (backoff *transportBackoff) pause() time.Duration {
-	pause := supervisedBackoff
-	for repeat := 1; repeat < backoff.streak && pause < supervisedBackoffCap; repeat++ {
-		pause *= 2
-	}
-	if pause > supervisedBackoffCap {
-		return supervisedBackoffCap
-	}
-	return pause
+// wait returns the sleep for the current streak, as last set by report.
+func (backoff *transportBackoff) wait() time.Duration {
+	return backoff.pause
 }
 
 func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout, stderr io.Writer, logPath string) int {
@@ -196,8 +193,8 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 		}
 		if err != nil {
 			if retryableCleanupFailure(err) && !once {
-				fmt.Fprintln(stderr, backoff.report(supervisionFailure(err, logPath), logPath))
-				if !sleepOrDone(ctx, backoff.pause()) {
+				fmt.Fprintln(stderr, backoff.report(supervisionFailure(err, logPath), failureCause(err), logPath))
+				if !sleepOrDone(ctx, backoff.wait()) {
 					return 1
 				}
 				continue
@@ -299,6 +296,26 @@ func runnerClassifiedFailure(outcome supervisor.Outcome, err error) (string, boo
 	return "", false
 }
 
+// failureCause buckets a retryable cleanup-unconfirmed error by its
+// underlying cause, using the same discriminators as runnerClassifiedFailure.
+// transportBackoff keys its streak on this instead of the rendered message,
+// since a control-plane error's message varies with its status code and a
+// flapping outage can alternate between a control-plane and a network cause
+// without that being a different condition to an operator.
+func failureCause(err error) string {
+	var refused *supervisor.RefusedStoppedError
+	var controlPlaneErr *protocol.ControlPlaneError
+	var networkErr net.Error
+	switch {
+	case errors.As(err, &refused):
+		return "refused"
+	case errors.As(err, &controlPlaneErr), errors.As(err, &networkErr):
+		return "transport"
+	default:
+		return "other"
+	}
+}
+
 // consecutiveRunnerFailureMessage names the bound and the last reason that
 // tripped it, and points at the runner log the same way supervisionFailure does.
 func consecutiveRunnerFailureMessage(reason string, count int, logPath string) string {
@@ -307,7 +324,7 @@ func consecutiveRunnerFailureMessage(reason string, count int, logPath string) s
 }
 
 // stillFailingMessage is the periodic line transportBackoff prints for a
-// repeated identical non-runner failure, in place of re-printing the full
+// repeated failure with the same cause. It replaces re-printing the full
 // condition on every retry.
 func stillFailingMessage(streak int, logPath string) string {
 	return withLogPointer(fmt.Sprintf("Runner is still failing, %d attempts.", streak), logPath)
