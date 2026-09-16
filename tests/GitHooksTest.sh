@@ -174,8 +174,6 @@ printf 'fix: missing blank line\nBody\n' > "$message"
 expect_failure 'linked real commit message' git commit --quiet --allow-empty -F "$message"
 pass 'linked worktrees share installation and optional local extensions'
 
-# changelog-check: a cmd/ or internal/ change needs an Unreleased line or an
-# explicit changelog: none trailer.
 changelog_base=$(git rev-parse HEAD)
 mkdir -p cmd
 printf 'package main\n' > cmd/example.go
@@ -207,8 +205,6 @@ expect_ok 'docs-only commit' git commit --quiet -m 'docs: add notes'
 expect_ok 'docs-only change' bash tools/changelog-check.sh "$changelog_base" HEAD
 pass 'changelog-check enforces an Unreleased line or a changelog: none trailer'
 
-# pre-push wiring: a brand-new branch (no remote object) resolves its base
-# through origin/main, matching the first push of a feature branch.
 git remote add origin "$fixture"
 git fetch --quiet origin main
 push_record_changelog="$temporary/push-changelog"
@@ -217,5 +213,61 @@ expect_failure 'pre-push blocks code without changelog' .githooks/pre-push < "$p
 with_changelog_head=$(git rev-parse with-changelog)
 printf 'refs/heads/feature %s refs/heads/feature %s\n' "$with_changelog_head" "$zero" > "$push_record_changelog"
 expect_ok 'pre-push allows code with changelog' .githooks/pre-push < "$push_record_changelog"
-git checkout --quiet linked
 pass 'pre-push wires changelog-check for a new branch push'
+
+# A branch judged against the merge base, not main's current tree: each
+# scenario below advances main past every branch's fork point in isolation,
+# so a coincidental second changed file in main's tip cannot mask the bug.
+git -C "$fixture" checkout --quiet main
+main_fork=$(git -C "$fixture" rev-parse HEAD)
+printf '# Changelog\n\n## Unreleased\n\n### Added\n\n- Note an unrelated change.\n' > "$fixture/CHANGELOG.md"
+git -C "$fixture" add CHANGELOG.md
+git -C "$fixture" commit --quiet -m 'docs: note an unrelated change'
+git fetch --quiet origin main
+expect_failure 'branch behind main is not exempted by main touching CHANGELOG.md' bash tools/changelog-check.sh origin/main "$touched_head"
+
+git -C "$fixture" reset --quiet --hard "$main_fork"
+mkdir -p "$fixture/cmd"
+printf 'package main\n' > "$fixture/cmd/unrelated.go"
+git -C "$fixture" add cmd/unrelated.go
+git -C "$fixture" commit --quiet -m 'feat: add an unrelated command'
+git fetch --quiet origin main
+docs_only_head=$(git rev-parse docs-only)
+expect_ok 'branch behind main is not falsely failed by main touching cmd' bash tools/changelog-check.sh origin/main "$docs_only_head"
+
+git -C "$fixture" reset --quiet --hard "$main_fork"
+git fetch --quiet origin main
+pass 'changelog-check diffs against the merge base, not the raw endpoints'
+
+git checkout --quiet -b incremental "$changelog_base"
+mkdir -p cmd
+printf 'package main\n' > cmd/first.go
+printf '# Changelog\n\n## Unreleased\n\n### Added\n\n- Add the first command.\n' > CHANGELOG.md
+git add cmd/first.go CHANGELOG.md
+expect_ok 'incremental first commit' git commit --quiet -m 'feat: add first command'
+incremental_first=$(git rev-parse HEAD)
+push_record_incremental="$temporary/push-incremental"
+printf 'refs/heads/incremental %s refs/heads/incremental %s\n' "$incremental_first" "$zero" > "$push_record_incremental"
+expect_ok 'pre-push allows the first incremental push with a changelog line' .githooks/pre-push < "$push_record_incremental"
+mkdir -p cmd
+printf 'package main\n' > cmd/second.go
+git add cmd/second.go
+expect_ok 'incremental second commit' git commit --quiet -m 'feat: add second command'
+incremental_second=$(git rev-parse HEAD)
+printf 'refs/heads/incremental %s refs/heads/incremental %s\n' "$incremental_second" "$incremental_first" > "$push_record_incremental"
+expect_ok 'pre-push judges an incremental push against the whole PR' .githooks/pre-push < "$push_record_incremental"
+push_record_head_target="$temporary/push-head-target"
+printf 'HEAD %s refs/heads/incremental %s\n' "$incremental_second" "$incremental_first" > "$push_record_head_target"
+expect_ok 'pre-push gates on the remote ref for HEAD:refs/heads/x pushes' .githooks/pre-push < "$push_record_head_target"
+pass 'pre-push judges an incremental push against the whole PR and gates on the remote ref'
+
+git remote remove origin
+push_record_unresolved="$temporary/push-unresolved"
+printf 'refs/heads/unresolved %s refs/heads/unresolved %s\n' "$touched_head" "$zero" > "$push_record_unresolved"
+skip_output=$(.githooks/pre-push < "$push_record_unresolved" 2>&1 > /dev/null)
+[[ "$skip_output" == *'skipping changelog-check'* ]] || fail 'pre-push did not print a skip line for an unresolvable base'
+git remote add origin "$fixture"
+git fetch --quiet origin main
+pass 'pre-push prints a skip line instead of a silent bypass when the base cannot be resolved'
+
+git checkout --quiet linked
