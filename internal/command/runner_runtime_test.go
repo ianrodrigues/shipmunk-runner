@@ -202,6 +202,126 @@ func TestSupervisedRetriesOtherCleanupUnconfirmedCausesInProcess(t *testing.T) {
 	}
 }
 
+func TestTransportBackoffEscalatesAndCaps(t *testing.T) {
+	originalBase, originalCap := supervisedBackoff, supervisedBackoffCap
+	t.Cleanup(func() { supervisedBackoff, supervisedBackoffCap = originalBase, originalCap })
+	supervisedBackoff = time.Second
+	supervisedBackoffCap = 10 * time.Second
+
+	backoff := transportBackoff{}
+	// First occurrence of a condition always sleeps the base pause.
+	backoff.report("control plane unavailable", "")
+	if pause := backoff.pause(); pause != time.Second {
+		t.Fatalf("first occurrence pause = %s, want %s", pause, time.Second)
+	}
+	expected := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second}
+	for index, want := range expected {
+		backoff.report("control plane unavailable", "")
+		if pause := backoff.pause(); pause != want {
+			t.Fatalf("repeat %d pause = %s, want %s", index+1, pause, want)
+		}
+	}
+}
+
+func TestTransportBackoffResetsAndReprintsFullMessageForADifferentCondition(t *testing.T) {
+	backoff := transportBackoff{}
+	first := backoff.report("network unreachable", "/log")
+	if first != "network unreachable" {
+		t.Fatalf("expected the raw message on first occurrence: %q", first)
+	}
+	second := backoff.report("network unreachable", "/log")
+	if !strings.Contains(second, "still failing, 2 attempts") {
+		t.Fatalf("expected a still-failing line on the repeat: %q", second)
+	}
+	backoff.reset()
+	third := backoff.report("network unreachable", "/log")
+	if third != "network unreachable" {
+		t.Fatalf("expected reset to reprint the full message: %q", third)
+	}
+	different := backoff.report("control plane rejected the request", "/log")
+	if different != "control plane rejected the request" {
+		t.Fatalf("expected a differing message to print in full rather than as still-failing: %q", different)
+	}
+}
+
+// TestSupervisedBacksOffOnRepeatedNonRunnerCleanupFailures proves the
+// escalation end to end: a repeated control-plane-caused cleanup failure
+// prints the full condition once, then "still failing" lines, and never
+// trips the runner-classified breaker (see runnerClassifiedFailure).
+func TestSupervisedBacksOffOnRepeatedNonRunnerCleanupFailures(t *testing.T) {
+	originalCap := supervisedBackoffCap
+	t.Cleanup(func() { supervisedBackoffCap = originalCap })
+	supervisedBackoffCap = time.Millisecond // keep the test's real sleeps negligible
+
+	failure := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503})
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{err: failure}, {err: failure}, {err: failure},
+		{outcome: supervisor.Outcome{Worked: true, RunID: testRunnerID, AttemptID: testOperation, Result: "no_findings"}},
+		{err: failure}, {err: failure},
+		{err: supervisor.ErrLeaseExpired}, // non-retryable: ends the loop deterministically
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 7 {
+		t.Fatalf("code=%d calls=%d stderr=%q", code, runner.calls, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "consecutive runner-classified failures") {
+		t.Fatalf("a control-plane cause must never trip the runner breaker: %q", stderr.String())
+	}
+	lines := strings.Split(strings.TrimRight(stderr.String(), "\n"), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("expected one line per failing call, got %d: %q", len(lines), stderr.String())
+	}
+	if !strings.Contains(lines[0], "could not confirm sandbox cleanup") || strings.Contains(lines[0], "still failing") {
+		t.Fatalf("expected the first occurrence in full: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "still failing, 2 attempts") {
+		t.Fatalf("expected the second identical occurrence to be a still-failing line: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "still failing, 3 attempts") {
+		t.Fatalf("expected the third identical occurrence to be a still-failing line: %q", lines[2])
+	}
+	// The delivered attempt between calls 3 and 5 reset the streak, so the
+	// next failure prints the full message again, not "still failing, 4".
+	if !strings.Contains(lines[3], "could not confirm sandbox cleanup") || strings.Contains(lines[3], "still failing") {
+		t.Fatalf("expected the delivered attempt to reset the streak: %q", lines[3])
+	}
+	if !strings.Contains(lines[4], "still failing, 2 attempts") {
+		t.Fatalf("expected the streak to resume counting after the reset: %q", lines[4])
+	}
+	if !strings.Contains(lines[5], "lease expired") {
+		t.Fatalf("expected the terminal non-retryable error to end the loop: %q", lines[5])
+	}
+}
+
+// TestSupervisedIdlePollResetsTheTransportBackoff proves a successful idle
+// poll — not just a delivered attempt — clears an in-progress streak.
+func TestSupervisedIdlePollResetsTheTransportBackoff(t *testing.T) {
+	originalCap := supervisedBackoffCap
+	t.Cleanup(func() { supervisedBackoffCap = originalCap })
+	supervisedBackoffCap = time.Millisecond
+
+	failure := fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503})
+	runner := &sequencedRunner{steps: []sequencedStep{
+		{err: failure}, {err: failure},
+		{}, // idle poll: resets the streak
+		{err: failure}, {err: failure},
+		{err: supervisor.ErrLeaseExpired}, // non-retryable: ends the loop deterministically
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runSupervised(context.Background(), runner, false, &stdout, &stderr, "")
+	if code != 1 || runner.calls != 6 {
+		t.Fatalf("code=%d calls=%d stderr=%q", code, runner.calls, stderr.String())
+	}
+	lines := strings.Split(strings.TrimRight(stderr.String(), "\n"), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected one line per failing call, got %d: %q", len(lines), stderr.String())
+	}
+	if !strings.Contains(lines[2], "could not confirm sandbox cleanup") || strings.Contains(lines[2], "still failing") {
+		t.Fatalf("expected the idle poll to reset the streak so the next failure prints in full: %q", lines[2])
+	}
+}
+
 func TestSupervisedResetsConsecutiveCountOnSuccess(t *testing.T) {
 	runner := &sequencedRunner{steps: []sequencedStep{
 		{outcome: malformedOutputOutcome()},

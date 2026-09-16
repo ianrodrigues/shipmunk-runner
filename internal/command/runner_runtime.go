@@ -119,12 +119,65 @@ type attemptRunner interface {
 // in-memory only and resets on any restart; see docs/runner/failure-breaker.md.
 const consecutiveRunnerFailureBound = 3
 
-// supervisedBackoff is the supervised loop's idle and cleanup-retry pause; a
-// package var so tests can zero it instead of sleeping for real.
+// supervisedBackoff is the supervised loop's base pause: an idle poll's
+// fixed cadence, and the starting point a repeated non-runner failure backs
+// off from (see transportBackoff). A package var so tests can zero it
+// instead of sleeping for real.
 var supervisedBackoff = 2 * time.Second
+
+// supervisedBackoffCap bounds transportBackoff's exponential growth, so a
+// long control-plane or network outage settles at a fixed retry cadence
+// instead of spacing attempts out indefinitely. A package var for the same
+// reason as supervisedBackoff.
+var supervisedBackoffCap = 2 * time.Minute
+
+// transportBackoff paces the cleanup-retry path's stderr and sleep for a
+// repeated non-runner failure — a control-plane or network cause, which
+// docs/runner/failure-breaker.md's consecutive-failure breaker never counts
+// and so would otherwise retry forever at the fixed base cadence. The first
+// occurrence of a given condition prints in full at the base pause; each
+// identical repeat prints a short "still failing" line and doubles the pause
+// up to supervisedBackoffCap. A delivered attempt or a successful idle poll
+// resets it, since either is proof the transport recovered.
+type transportBackoff struct {
+	message string
+	streak  int
+}
+
+func (backoff *transportBackoff) reset() {
+	backoff.message = ""
+	backoff.streak = 0
+}
+
+// report returns the stderr line for this occurrence of message: the
+// message itself the first time it's seen, or a periodic "still failing"
+// line while the identical condition repeats.
+func (backoff *transportBackoff) report(message, logPath string) string {
+	if message != backoff.message {
+		backoff.message = message
+		backoff.streak = 1
+		return message
+	}
+	backoff.streak++
+	return stillFailingMessage(backoff.streak, logPath)
+}
+
+// pause returns the sleep for the current streak: supervisedBackoff on the
+// first occurrence, doubling on each repeat up to supervisedBackoffCap.
+func (backoff *transportBackoff) pause() time.Duration {
+	pause := supervisedBackoff
+	for repeat := 1; repeat < backoff.streak && pause < supervisedBackoffCap; repeat++ {
+		pause *= 2
+	}
+	if pause > supervisedBackoffCap {
+		return supervisedBackoffCap
+	}
+	return pause
+}
 
 func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout, stderr io.Writer, logPath string) int {
 	consecutiveRunnerFailures := 0
+	backoff := transportBackoff{}
 	for {
 		outcome, err := worker.RunOnce(ctx)
 		reason, classified := runnerClassifiedFailure(outcome, err)
@@ -142,15 +195,19 @@ func runSupervised(ctx context.Context, worker attemptRunner, once bool, stdout,
 			return 1
 		}
 		if err != nil {
-			fmt.Fprintln(stderr, supervisionFailure(err, logPath))
 			if retryableCleanupFailure(err) && !once {
-				if !sleepOrDone(ctx, supervisedBackoff) {
+				fmt.Fprintln(stderr, backoff.report(supervisionFailure(err, logPath), logPath))
+				if !sleepOrDone(ctx, backoff.pause()) {
 					return 1
 				}
 				continue
 			}
+			fmt.Fprintln(stderr, supervisionFailure(err, logPath))
 			return 1
 		}
+		// A successful claim — delivered or idle — is proof the transport
+		// recovered, so it always clears any streak from an earlier retry.
+		backoff.reset()
 		code := 0
 		if outcome.Worked {
 			switch outcome.Result {
@@ -247,6 +304,13 @@ func runnerClassifiedFailure(outcome supervisor.Outcome, err error) (string, boo
 func consecutiveRunnerFailureMessage(reason string, count int, logPath string) string {
 	message := fmt.Sprintf("Runner stopped polling after %d consecutive runner-classified failures (last reason: %s); this looks like a defect in the runner itself, not the queued work.", count, reason)
 	return withLogPointer(message, logPath)
+}
+
+// stillFailingMessage is the periodic line transportBackoff prints for a
+// repeated identical non-runner failure, in place of re-printing the full
+// condition on every retry.
+func stillFailingMessage(streak int, logPath string) string {
+	return withLogPointer(fmt.Sprintf("Runner is still failing, %d attempts.", streak), logPath)
 }
 
 // supervisionFailure names the condition that ended supervision, without
