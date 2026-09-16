@@ -201,9 +201,11 @@ func (s *Supervisor) RunOnce(ctx context.Context) (Outcome, error) {
 	if err := s.State.Save(state); err != nil {
 		s.blocked = true
 		s.log("claim_persist_failed", map[string]any{"run_id": claim.RunID, "attempt_id": claim.AttemptID, "error": err.Error()})
-		ackCtx, cancel := context.WithTimeout(context.Background(), protocol.HTTPTimeoutSeconds*time.Second)
-		ackErr := s.Client.AcknowledgeStopped(ackCtx, *claim)
-		cancel()
+		// No per-call timeout here: the client already enforces
+		// protocol.HTTPTimeoutSeconds, and a caller deadline set to the
+		// same budget would race it and always lose, surfacing a bare
+		// context.DeadlineExceeded instead of *protocol.HTTPTimeoutError.
+		ackErr := s.Client.AcknowledgeStopped(context.Background(), *claim)
 		persistErr := fmt.Errorf("unable to persist claim; restart required: %w", err)
 		if ackErr != nil {
 			return Outcome{}, errors.Join(persistErr, fmt.Errorf("stopped acknowledgement failed: %w", ackErr))

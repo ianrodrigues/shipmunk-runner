@@ -379,15 +379,12 @@ func (client *HTTPClient) artifactRequest(ctx context.Context, path, kind, hash 
 	return response{StatusCode: res.StatusCode, Header: res.Header.Clone(), Body: data}, nil
 }
 
-// httpCallError reports an HTTP call's own timeout as a named HTTPTimeoutError
-// instead of leaving it as a bare context.DeadlineExceeded, so a caller can
-// never confuse "this request's budget elapsed" with "the attempt's deadline
-// elapsed" merely by checking errors.Is(err, context.DeadlineExceeded). It
-// only does so when the caller's own context is still live: if ctx has
-// already expired, the client's Do returned context.DeadlineExceeded because
-// the caller's deadline (for example the attempt's lease-bound context) fired
-// first, not because this call's own fixed budget elapsed, and that must
-// still read as the attempt passing its deadline.
+// httpCallError reports an HTTP call's own timeout as HTTPTimeoutError
+// instead of a bare context.DeadlineExceeded, but only when the caller's own
+// context is still live. If ctx already expired, Do's DeadlineExceeded came
+// from the caller's own deadline (e.g. the attempt's lease-bound context)
+// firing first, not this call's budget, so it must still read as the
+// attempt passing its deadline.
 func httpCallError(ctx context.Context, endpoint string, budget time.Duration, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		return &HTTPTimeoutError{Endpoint: endpoint, Budget: budget}

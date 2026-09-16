@@ -959,7 +959,7 @@ func TestClaimPersistenceFailurePoisonsSupervisor(t *testing.T) {
 	}
 }
 
-func TestClaimPersistenceFailureAcknowledgesWithIndependentBoundedContext(t *testing.T) {
+func TestClaimPersistenceFailureAcknowledgesWithIndependentContext(t *testing.T) {
 	s, c, state, b, w, _ := fixtureSupervisor(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	state.failSave = true
@@ -969,7 +969,10 @@ func TestClaimPersistenceFailureAcknowledgesWithIndependentBoundedContext(t *tes
 	if err == nil {
 		t.Fatal("accepted failed journal")
 	}
-	if c.acks != 1 || c.ackCancelled || !c.ackHasDeadline || b.creates != 0 || w.removes != 0 {
+	// No per-call context deadline here: the client already enforces
+	// protocol.HTTPTimeoutSeconds internally, and a caller deadline set to
+	// the same budget would race it and always lose (see issue #104).
+	if c.acks != 1 || c.ackCancelled || c.ackHasDeadline || b.creates != 0 || w.removes != 0 {
 		t.Fatalf("failed claim was not independently acknowledged before side effects: acks=%d cancelled=%t deadline=%t creates=%d removes=%d", c.acks, c.ackCancelled, c.ackHasDeadline, b.creates, w.removes)
 	}
 }
