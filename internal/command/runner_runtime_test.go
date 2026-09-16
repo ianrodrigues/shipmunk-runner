@@ -336,6 +336,9 @@ func TestRunSupervisedPointsAtLogPathOnFailure(t *testing.T) {
 }
 
 func TestRunnerSetupFailureNamesLogPathAndRecordsStep(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the runner refuses to start as root, so setup never opens the runner log")
+	}
 	stateDir := t.TempDir()
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		t.Fatal(err)
