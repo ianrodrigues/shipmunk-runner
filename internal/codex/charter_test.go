@@ -32,6 +32,7 @@ func TestReviewCharterDefinesSeverityGroupingAndProportionality(t *testing.T) {
 				"a text field validated with no upper bound",
 				"a name that breaks the conventions of its neighbours",
 				"When you anchor a candidate, use the first statement line",
+				"Each candidate still has to survive the self-refutation pass below.",
 			},
 		},
 		{

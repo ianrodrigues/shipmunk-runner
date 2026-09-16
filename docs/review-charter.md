@@ -10,7 +10,7 @@ Compare declared intent against observed behaviour: what the change, its commit 
 
 ## Enumeration
 
-Before you write any finding, walk the planned changed files in the order the list below gives them, and record for each one either a candidate defect with the citation that would support it or an explicit none. Check each file against the traps its own stack repeats, not only its own logic: a query issued once per row of a result set, a string truncated by bytes where the data is UTF-8, an index that duplicates one the schema already declares, a text field validated with no upper bound, and a name that breaks the conventions of its neighbours. When you anchor a candidate, use the first statement line of the construct it is about, not a brace, a blank line or a continued signature.
+Before you write any finding, walk the planned changed files in the order the list below gives them, and record for each one either a candidate defect with the citation that would support it or an explicit none. Check each file against the traps its own stack repeats, not only its own logic: a query issued once per row of a result set, a string truncated by bytes where the data is UTF-8, an index that duplicates one the schema already declares, a text field validated with no upper bound, and a name that breaks the conventions of its neighbours. When you anchor a candidate, use the first statement line of the construct it is about, not a brace, a blank line or a continued signature. Each candidate still has to survive the self-refutation pass below.
 
 ## Self-refutation
 
