@@ -61,6 +61,7 @@ go-build:
 
 lint: changelog-check
 	@bash -n tools/publish-release.sh
+	@bash -n tools/changelog-check.sh
 
 changelog-check:
 	bash tools/changelog-check.sh origin/main HEAD

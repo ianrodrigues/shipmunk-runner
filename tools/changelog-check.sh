@@ -14,8 +14,10 @@ if ! git rev-parse --verify --quiet "${base}^{commit}" > /dev/null \
     exit 1
 fi
 
-changed=$(git diff --name-only "$base" "$head" --)
-if ! grep -qE '^(cmd|internal)/' <<< "$changed"; then
+# Diff against the merge base, not the raw endpoints: a branch behind main
+# must be judged on its own changes, not on what main did since it forked.
+changed=$(git diff --name-only "$base...$head" --)
+if ! grep -qE '^(cmd|internal|containers|runner/containers)/' <<< "$changed"; then
     exit 0
 fi
 if grep -qxF 'CHANGELOG.md' <<< "$changed"; then
@@ -31,5 +33,5 @@ while IFS= read -r commit; do
     fi
 done < <(git rev-list "$base".."$head")
 
-echo 'changelog-check: this range touches cmd/ or internal/ without CHANGELOG.md; add an Unreleased line or a "changelog: none" commit trailer.' >&2
+echo 'changelog-check: this range touches cmd/, internal/, containers/ or runner/containers/ without CHANGELOG.md; add an Unreleased line or a "changelog: none" commit trailer.' >&2
 exit 1
