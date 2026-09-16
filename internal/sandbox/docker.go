@@ -299,6 +299,25 @@ type commandResult struct {
 	stderr string
 }
 
+// commandError reports a failed docker subprocess without embedding its
+// stderr in Error(): stderr can carry container output or workspace paths,
+// and that text must never reach the structured runner log. Stderr() exposes
+// it to callers that act on it directly (containerIsAbsent), never for
+// logging.
+type commandError struct {
+	argument string
+	stderr   string
+	cause    error
+}
+
+func (err *commandError) Error() string {
+	return fmt.Sprintf("docker %s failed: %v", err.argument, err.cause)
+}
+
+func (err *commandError) Unwrap() error { return err.cause }
+
+func (err *commandError) Stderr() string { return err.stderr }
+
 func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimit int, arguments ...string) (commandResult, error) {
 	commandContext := ctx
 	if timeout > 0 {
@@ -320,7 +339,7 @@ func (docker *Docker) run(ctx context.Context, timeout time.Duration, outputLimi
 		if errors.Is(commandContext.Err(), context.DeadlineExceeded) && timeout > 0 {
 			return result, fmt.Errorf("docker command exceeded %s", timeout)
 		}
-		return result, fmt.Errorf("docker %s failed: %s: %w", arguments[0], strings.TrimSpace(result.stderr), err)
+		return result, &commandError{argument: arguments[0], stderr: strings.TrimSpace(result.stderr), cause: err}
 	}
 	return result, nil
 }
