@@ -18,13 +18,10 @@ const (
 	// batches, artifact uploads, downloads, and completion, all of which do
 	// small, bounded work server-side.
 	HTTPTimeoutSeconds = 5
-	// ClaimHTTPTimeoutSeconds is the claim endpoint's own, larger budget: a
-	// claim request builds the run manifest server-side (selecting queued
-	// work, allocating the attempt and fence, and assembling the charter and
-	// workspace references), which is slower than the fixed-shape requests
-	// the 5-second budget above covers. 30 seconds is six times that budget,
-	// generous enough to absorb a slow manifest build without masking a
-	// genuinely hung connection for the length of a full heartbeat interval.
+	// ClaimHTTPTimeoutSeconds is the claim endpoint's larger budget: manifest
+	// building is slower than the fixed-shape requests HTTPTimeoutSeconds
+	// covers. 30s (6x) absorbs a slow build without masking a hung connection
+	// for a full heartbeat interval; see docs/runner/http-budgets.md.
 	ClaimHTTPTimeoutSeconds = 30
 	InputArtifactMaxBytes   = 100 * 1024 * 1024
 	ManifestMaxBytes        = 128 * 1024

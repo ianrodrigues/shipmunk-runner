@@ -65,13 +65,9 @@ func TestAcknowledgeStoppedTimeoutUsesTheStandardBudget(t *testing.T) {
 	}
 }
 
-// TestAlreadyExpiredContextIsNeverReportedAsAnHTTPTimeout guards the case the
-// issue was filed against in the other direction: when the caller's own
-// context (for example leaseGuard's attempt-deadline context) has already
-// expired before the HTTP round trip even starts, net/http.Client.Do still
-// returns a context.DeadlineExceeded-satisfying error, but it must not be
-// renamed to HTTPTimeoutError, since the request's own fixed budget never
-// elapsed — the attempt's deadline did.
+// net/http.Client.Do still returns a DeadlineExceeded-satisfying error when
+// ctx expired first; that must not be renamed to HTTPTimeoutError since the
+// request's own budget never actually elapsed.
 func TestAlreadyExpiredContextIsNeverReportedAsAnHTTPTimeout(t *testing.T) {
 	client, err := NewHTTPClient("https://control.example", "synthetic-token", testRoundTripper(deadlineExceededTransport))
 	if err != nil {

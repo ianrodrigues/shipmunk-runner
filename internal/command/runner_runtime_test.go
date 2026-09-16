@@ -125,6 +125,11 @@ func TestSupervisedExcludesServerAndTransportCausesFromCleanupCount(t *testing.T
 		"refused stopped ack": {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &supervisor.RefusedStoppedError{Count: 1, Threshold: 3}), 1},
 		"control plane error": {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.ControlPlaneError{StatusCode: 503}), 5},
 		"network error":       {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, networkErr), 5},
+		// HTTPTimeoutError.Unwrap returns context.DeadlineExceeded, which
+		// itself satisfies net.Error; pin that so a future change to Unwrap
+		// (e.g. returning the underlying *url.Error instead) does not
+		// silently start counting a server timeout as a runner defect.
+		"http timeout error": {fmt.Errorf("%w: %w", supervisor.ErrCleanupUnconfirmed, &protocol.HTTPTimeoutError{Endpoint: "/runner/v1/attempts/x/completion", Budget: protocol.HTTPTimeoutSeconds * time.Second}), 5},
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner := &sequencedRunner{steps: []sequencedStep{

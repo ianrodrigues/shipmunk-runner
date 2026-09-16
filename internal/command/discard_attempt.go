@@ -148,7 +148,9 @@ func attemptAcknowledgeStopped(options RunnerOptions, state attemptstate.State) 
 	if state.ProfileID != nil {
 		claim.Manifest = map[string]any{"profile_id": *state.ProfileID}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), protocol.HTTPTimeoutSeconds*time.Second)
-	defer cancel()
-	return client.AcknowledgeStopped(ctx, claim) == nil
+	// No per-call timeout here: the client already enforces
+	// protocol.HTTPTimeoutSeconds, and a caller deadline set to the same
+	// budget would race it and always lose, surfacing a bare
+	// context.DeadlineExceeded instead of *protocol.HTTPTimeoutError.
+	return client.AcknowledgeStopped(context.Background(), claim) == nil
 }
