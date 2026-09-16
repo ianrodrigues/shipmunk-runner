@@ -32,10 +32,14 @@ func (c *contextCapturingClient) Complete(ctx context.Context, _ protocol.Claim,
 // Reports HTTPTimeoutError only if the caller's context was still live when the budget elapsed.
 type budgetRaceClient struct {
 	*fixtureClient
-	budget time.Duration
+	budget  time.Duration
+	entered chan struct{}
 }
 
 func (c *budgetRaceClient) raceBudget(ctx context.Context, endpoint string) error {
+	if c.entered != nil {
+		close(c.entered)
+	}
 	budgetCtx, cancel := context.WithTimeout(ctx, c.budget)
 	defer cancel()
 	<-budgetCtx.Done()
@@ -114,12 +118,14 @@ func TestLeaseHeartbeatWithExpiredAttemptContextReadsAsAttemptDeadline(t *testin
 	claim := fixtureClaim(t)
 	// The attempt deadline is still live when renew starts but expires while
 	// Heartbeat is blocked in it, well before the client's own budget would.
-	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond}
+	entered := make(chan struct{})
+	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond, entered: entered}
 	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(80*time.Millisecond))
 	defer cancel()
 
 	err := g.renew()
 
+	assertClientWasEntered(t, entered)
 	var timeout *protocol.HTTPTimeoutError
 	if errors.As(err, &timeout) {
 		t.Fatalf("an already-expired attempt context must not be reported as the request's own timeout: %+v", timeout)
@@ -150,17 +156,30 @@ func TestLeaseCompleteWithExpiredAttemptContextReadsAsAttemptDeadline(t *testing
 	claim := fixtureClaim(t)
 	// The attempt deadline is still live when complete starts but expires
 	// while Complete is blocked in it, well before the client's own budget would.
-	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond}
+	entered := make(chan struct{})
+	client := &budgetRaceClient{fixtureClient: &fixtureClient{claim: &claim}, budget: 400 * time.Millisecond, entered: entered}
 	g, cancel := newTestLeaseGuard(claim, client, time.Now().Add(80*time.Millisecond))
 	defer cancel()
 
 	err := g.complete([]byte("{}"))
 
+	assertClientWasEntered(t, entered)
 	var timeout *protocol.HTTPTimeoutError
 	if errors.As(err, &timeout) {
 		t.Fatalf("an already-expired attempt context must not be reported as the request's own timeout: %+v", timeout)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected the attempt to still read as passing its deadline, got %v", err)
+	}
+}
+
+// Fails the test outright rather than let the race silently degrade to
+// the guard's own pre-check when the call is never reached.
+func assertClientWasEntered(t *testing.T, entered chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	default:
+		t.Fatal("client call was never entered; the guard's pre-check short-circuited before the race could happen")
 	}
 }
