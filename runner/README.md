@@ -1,11 +1,11 @@
 # Runner operation and isolation
 
-This documents how the installed runner actually operates: the `shipmunk-runner`/`shipmunk-profile` flag surface the [top-level README](../README.md)'s `run`/`connect` launchers invoke from a protected installation, and the isolation guarantees behind it. See the [top-level README](../README.md) for installing and connecting a runner; this assumes an installed runner, or a local checkout for the offline checks below.
+This documents how the installed runner actually operates: the `shipmunk-runner` binary's `run`/`connect`/`probe` subcommand flag surface the [top-level README](../README.md)'s `run`/`connect`/`probe` launchers invoke from a protected installation, and the isolation guarantees behind it. See the [top-level README](../README.md) for installing and connecting a runner; this assumes an installed runner, or a local checkout for the offline checks below.
 
 The runner does not load Laravel, Composer's application autoloader, `.env`, `APP_KEY`, database credentials, GitHub credentials, or application configuration. Configure it only with explicit command options and a mode-0600 runner-token file:
 
 ```sh
-./bin/shipmunk-runner \
+./bin/shipmunk-runner run \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/runner.token \
   --state-dir=/var/lib/shipmunk-runner \
@@ -41,19 +41,18 @@ Native clients can explicitly create metadata with broader permissions than the 
 Create the profile through the application API with the assigned runner and exact runtime version, then use its lowercase ULID and a fresh lowercase ULID for the operation. From a terminal on the assigned runner:
 
 ```sh
-./bin/shipmunk-profile \
+./bin/shipmunk-runner connect \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/profile-runner.token \
   --profiles-dir=/var/lib/shipmunk-profiles \
   --image=shipmunk-profile-native:local \
   --profile=<profile-ulid> \
-  --operation=login \
   --operation-id=<fresh-operation-ulid>
 ```
 
-The token needs `runner:profiles` and belongs to the assigned runner. The root and token must belong to the dedicated, non-root runner account; directory permissions are 0700 and token permissions 0600. Do not use a desktop credential directory. Login requires an interactive terminal: native URLs/codes go directly there, never through application events. Codex uses `login --device-auth`; Claude uses `auth login --claudeai`. No personal credentials are discovered or copied.
+The token needs `runner:profiles` and belongs to the assigned runner. The root and token must belong to the dedicated, non-root runner account; directory permissions are 0700 and token permissions 0600. Do not use a desktop credential directory. Login requires an interactive terminal: native URLs/codes go directly there, never through application events. Codex uses `login --device-auth`; Claude uses `auth login --claudeai`. No personal credentials are discovered or copied. `connect` prints a sentence such as "Runner is ready." or "Runner is not ready: <reason>."; pass `--json` for the machine-readable health object.
 
-`--operation=probe` rechecks the existing profile; `--operation=disconnect` removes local access after the application requests disconnection. Each operation has a 45-second renewable control-plane lease, a 15-minute overall bound and independent process-tree watchdog. Restart by repeating the command with the original operation ID to reconcile interrupted cleanup/acknowledgement; after reconciliation, use a fresh ID for new work. Definitive rejected begins do not leave a local journal. Ambiguous responses retain recovery state and block replacement operations.
+`shipmunk-runner probe` (same flags, without `--operation`) rechecks the existing profile without logging in again, and accepts `--json` without a terminal for scripts; `connect --operation=disconnect` removes local access after the application requests disconnection. Each operation has a 45-second renewable control-plane lease, a 15-minute overall bound and independent process-tree watchdog. Restart by repeating the command with the original operation ID to reconcile interrupted cleanup/acknowledgement; after reconciliation, use a fresh ID for new work. Definitive rejected begins do not leave a local journal. Ambiguous responses retain recovery state and block replacement operations.
 
 The application reserves the profile against both execution and lifecycle work. A host `flock` also excludes native refresh, login and disconnect. A pending home is unavailable until native mode/version checks, a bounded authenticated request, a post-request mode check and the server's completion acknowledgement all succeed. A lost successful acknowledgement is retried with the original durable outcome; it never repeats login or destroys confirmed credentials merely because a response was lost. Old completed operation replays cannot overwrite a newer home.
 
@@ -66,7 +65,7 @@ Each native command receives a clean allowlist environment inside a dedicated Li
 After connecting a designated Codex profile, select the native driver explicitly on its assigned dedicated Linux runner:
 
 ```sh
-./bin/shipmunk-runner \
+./bin/shipmunk-runner run \
   --base-url=https://shipmunk.example \
   --token-file=/etc/shipmunk/runner.token \
   --state-dir=/var/lib/shipmunk-runner \
