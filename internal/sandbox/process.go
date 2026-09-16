@@ -182,7 +182,7 @@ func (docker *Docker) runInput(ctx context.Context, timeout time.Duration, outpu
 		if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 			return result, fmt.Errorf("docker command exceeded %s", timeout)
 		}
-		return result, fmt.Errorf("docker %s failed: %s: %w", arguments[0], strings.TrimSpace(result.stderr), err)
+		return result, &commandError{argument: arguments[0], stderr: strings.TrimSpace(result.stderr), cause: err}
 	}
 	return result, nil
 }
