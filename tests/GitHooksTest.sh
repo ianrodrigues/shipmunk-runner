@@ -222,7 +222,7 @@ git -C "$fixture" checkout --quiet main
 main_fork=$(git -C "$fixture" rev-parse HEAD)
 printf '# Changelog\n\n## Unreleased\n\n### Added\n\n- Note an unrelated change.\n' > "$fixture/CHANGELOG.md"
 git -C "$fixture" add CHANGELOG.md
-git -C "$fixture" commit --quiet -m 'docs: note an unrelated change'
+git -C "$fixture" commit --quiet -m 'docs: note an unrelated change' 2> /dev/null
 git fetch --quiet origin main
 expect_failure 'branch behind main is not exempted by main touching CHANGELOG.md' bash tools/changelog-check.sh origin/main "$touched_head"
 
@@ -230,7 +230,7 @@ git -C "$fixture" reset --quiet --hard "$main_fork"
 mkdir -p "$fixture/cmd"
 printf 'package main\n' > "$fixture/cmd/unrelated.go"
 git -C "$fixture" add cmd/unrelated.go
-git -C "$fixture" commit --quiet -m 'feat: add an unrelated command'
+git -C "$fixture" commit --quiet -m 'feat: add an unrelated command' 2> /dev/null
 git fetch --quiet origin main
 docs_only_head=$(git rev-parse docs-only)
 expect_ok 'branch behind main is not falsely failed by main touching cmd' bash tools/changelog-check.sh origin/main "$docs_only_head"
@@ -257,8 +257,8 @@ incremental_second=$(git rev-parse HEAD)
 printf 'refs/heads/incremental %s refs/heads/incremental %s\n' "$incremental_second" "$incremental_first" > "$push_record_incremental"
 expect_ok 'pre-push judges an incremental push against the whole PR' .githooks/pre-push < "$push_record_incremental"
 push_record_head_target="$temporary/push-head-target"
-printf 'HEAD %s refs/heads/incremental %s\n' "$incremental_second" "$incremental_first" > "$push_record_head_target"
-expect_ok 'pre-push gates on the remote ref for HEAD:refs/heads/x pushes' .githooks/pre-push < "$push_record_head_target"
+printf 'HEAD %s refs/heads/headtarget %s\n' "$touched_head" "$zero" > "$push_record_head_target"
+expect_failure 'pre-push gates on the remote ref for HEAD:refs/heads/x pushes' .githooks/pre-push < "$push_record_head_target"
 pass 'pre-push judges an incremental push against the whole PR and gates on the remote ref'
 
 git remote remove origin
