@@ -514,13 +514,14 @@ func TestActivateRollsBackEveryPriorFileAfterInjectedFailure(t *testing.T) {
 
 func TestActivateLaunchersPreservesModesAndRollsBackEveryRename(t *testing.T) {
 	identity := Identity{BaseURL: "https://shipmunk.example", RunnerID: runnerID, ProfileID: profileID}
-	for failure := 1; failure <= 6; failure++ {
+	for failure := 1; failure <= 7; failure++ {
 		t.Run(fmt.Sprintf("rename-%d", failure), func(t *testing.T) {
 			root := installation(t)
 			previous := map[string][]byte{
 				"config.json": configuration(root, identity, "v1.2.3-old"), "profile.token": []byte("old-profile"),
 				"execution.token": []byte("old-execution"), "run": []byte("#!/bin/sh\nold-run\n"),
 				"connect": []byte("#!/bin/sh\nold-connect\n"), "probe": []byte("#!/bin/sh\nold-probe\n"),
+				"disconnect": []byte("#!/bin/sh\nold-disconnect\n"),
 			}
 			for name, raw := range previous {
 				if slices.Contains(launcherNames, name) {
@@ -541,6 +542,7 @@ func TestActivateLaunchersPreservesModesAndRollsBackEveryRename(t *testing.T) {
 			}}
 			err := guard.ActivateLaunchers(configuration(root, identity, "v1.2.3-new"), []byte("new-profile"), []byte("new-execution"), map[string][]byte{
 				"run": []byte("#!/bin/sh\nnew-run\n"), "connect": []byte("#!/bin/sh\nnew-connect\n"), "probe": []byte("#!/bin/sh\nnew-probe\n"),
+				"disconnect": []byte("#!/bin/sh\nnew-disconnect\n"),
 			})
 			if err == nil {
 				t.Fatal("injected failure was ignored")

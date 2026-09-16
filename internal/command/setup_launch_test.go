@@ -48,6 +48,7 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 		{[]string{"connect", root}, "shipmunk-profile", []string{"--operation=login", "--token-file=" + filepath.Join(root, "profile.token"), "--image=sha256:" + strings.Repeat("b", 64)}},
 		{[]string{"probe", root}, "shipmunk-profile", []string{"--operation=probe"}},
 		{[]string{"probe", root, "--json"}, "shipmunk-profile", []string{"--operation=probe", "--json"}},
+		{[]string{"disconnect", root}, "shipmunk-profile", []string{"--operation=disconnect", "--token-file=" + filepath.Join(root, "profile.token")}},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := runInstalledSetup(test.args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
@@ -70,7 +71,7 @@ func TestInstalledLaunchersDispatchOnlyBoundArguments(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"run", root, "--other"}, {"connect", root, "disconnect"}, {"connect", root, "--json", "extra"}, {"probe", root, "extra"},
+		{"run", root, "--other"}, {"connect", root, "disconnect"}, {"connect", root, "--json", "extra"}, {"probe", root, "extra"}, {"disconnect", root, "extra"},
 		{"run", root, "--once", "--yes"}, {"run", root, "--discard-attempt", "--other"}, {"run", root, "--discard-attempt", "--yes", "extra"},
 	} {
 		if code := runInstalledSetup(args, &bytes.Buffer{}, &bytes.Buffer{}); code != 2 {

@@ -65,6 +65,11 @@ func TestRunCLIDispatchesLauncherAndManualModes(t *testing.T) {
 			wantCode:   1,
 			wantStderr: []string{"Installed runner configuration is unsafe or incomplete."},
 		},
+		"disconnect with a positional root reaches the installed dispatch": {
+			args:       []string{"disconnect", "/does/not/exist/as/an/installation"},
+			wantCode:   1,
+			wantStderr: []string{"Installed runner configuration is unsafe or incomplete."},
+		},
 		"connect with raw flags uses the manual flag surface": {
 			args:       []string{"connect"},
 			wantCode:   2,
