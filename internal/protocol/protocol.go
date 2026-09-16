@@ -12,15 +12,27 @@ import (
 )
 
 const (
-	Version               = "1.0"
-	HTTPTimeoutSeconds    = 5
-	InputArtifactMaxBytes = 100 * 1024 * 1024
-	ManifestMaxBytes      = 128 * 1024
-	ResultMaxBytes        = 2 * 1024 * 1024
-	WorkerEventMaxBytes   = 64 * 1024
-	EventBatchMaxBytes    = 6_553_600
-	MaxSafeInteger        = int64(9_007_199_254_740_991)
-	MaxJSONDepth          = 64
+	Version = "1.0"
+	// HTTPTimeoutSeconds is the PHP-compatible budget for every runner HTTP
+	// call except the claim endpoint: heartbeats, acknowledgements, event
+	// batches, artifact uploads, downloads, and completion, all of which do
+	// small, bounded work server-side.
+	HTTPTimeoutSeconds = 5
+	// ClaimHTTPTimeoutSeconds is the claim endpoint's own, larger budget: a
+	// claim request builds the run manifest server-side (selecting queued
+	// work, allocating the attempt and fence, and assembling the charter and
+	// workspace references), which is slower than the fixed-shape requests
+	// the 5-second budget above covers. 30 seconds is six times that budget,
+	// generous enough to absorb a slow manifest build without masking a
+	// genuinely hung connection for the length of a full heartbeat interval.
+	ClaimHTTPTimeoutSeconds = 30
+	InputArtifactMaxBytes   = 100 * 1024 * 1024
+	ManifestMaxBytes        = 128 * 1024
+	ResultMaxBytes          = 2 * 1024 * 1024
+	WorkerEventMaxBytes     = 64 * 1024
+	EventBatchMaxBytes      = 6_553_600
+	MaxSafeInteger          = int64(9_007_199_254_740_991)
+	MaxJSONDepth            = 64
 )
 
 // Decode strictly decodes one JSON value, rejecting invalid UTF-8, duplicate keys, and trailing bytes.
