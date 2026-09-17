@@ -34,7 +34,7 @@ func findingJSON(path string, lineStart, lineEnd int64) string {
 }
 
 func evidenceJSON(snapshot, path string, lineStart, lineEnd int64) string {
-	raw, err := json.Marshal(map[string]any{"snapshot": snapshot, "path": path, "line_start": lineStart, "line_end": lineEnd})
+	raw, err := json.Marshal(map[string]any{"snapshot": snapshot, "path": path, "line_start": lineStart, "line_end": lineEnd, "reason": "This range supports the claim."})
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +42,14 @@ func evidenceJSON(snapshot, path string, lineStart, lineEnd int64) string {
 }
 
 func coverageJSON(path string) string {
-	raw, err := json.Marshal(map[string]any{"files": []any{map[string]any{"path": path, "status": "reviewed"}}, "context_gaps": []any{}})
+	raw, err := json.Marshal(map[string]any{
+		"files": []any{map[string]any{
+			"path":     path,
+			"status":   "reviewed",
+			"evidence": []any{},
+		}},
+		"context_gaps": []any{},
+	})
 	if err != nil {
 		panic(err)
 	}

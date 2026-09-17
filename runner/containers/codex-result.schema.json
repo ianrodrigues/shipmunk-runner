@@ -219,12 +219,21 @@
                       "null"
                     ],
                     "description": "Why the file is unreviewed, at most 500 characters. Null when status is reviewed."
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "maxItems": 5,
+                    "items": {
+                      "$ref": "#/$defs/evidence"
+                    },
+                    "description": "Citations inspected while enumerating this file. Empty only when no citable text was available."
                   }
                 },
                 "required": [
                   "path",
                   "status",
-                  "reason"
+                  "reason",
+                  "evidence"
                 ],
                 "additionalProperties": false
               },
@@ -330,13 +339,18 @@
           "type": "integer",
           "minimum": 1,
           "description": "Last cited line, at or after line_start."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One short sentence explaining what this reference shows, at most 500 characters."
         }
       },
       "required": [
         "snapshot",
         "path",
         "line_start",
-        "line_end"
+        "line_end",
+        "reason"
       ],
       "additionalProperties": false
     }

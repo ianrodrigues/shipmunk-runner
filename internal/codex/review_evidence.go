@@ -160,6 +160,11 @@ func validateReviewResult(result Result, review *reviewEvidence) error {
 			}
 		}
 	}
+	for _, file := range result.Coverage.Files {
+		if err := validateEvidenceRefs(file.Evidence, review); err != nil {
+			return err
+		}
+	}
 	changed := review.changedFileSet()
 	for _, finding := range result.Findings {
 		if err := validateEvidenceRefs(finding.Evidence, review); err != nil {
@@ -238,7 +243,7 @@ func findingToWire(f Finding) map[string]any {
 func evidenceToWire(refs []EvidenceRef) []any {
 	wire := make([]any, len(refs))
 	for i, ref := range refs {
-		wire[i] = map[string]any{"snapshot": ref.Snapshot, "path": ref.Path, "line_start": ref.LineStart, "line_end": ref.LineEnd}
+		wire[i] = map[string]any{"snapshot": ref.Snapshot, "path": ref.Path, "line_start": ref.LineStart, "line_end": ref.LineEnd, "reason": ref.Reason}
 	}
 	return wire
 }
@@ -249,7 +254,7 @@ func coverageToWire(coverage *Coverage) map[string]any {
 	}
 	files := make([]any, len(coverage.Files))
 	for i, file := range coverage.Files {
-		entry := map[string]any{"path": file.Path, "status": file.Status}
+		entry := map[string]any{"path": file.Path, "status": file.Status, "evidence": evidenceToWire(file.Evidence)}
 		if file.Status == "unreviewed" {
 			entry["reason"] = file.Reason
 		}

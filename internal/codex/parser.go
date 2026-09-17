@@ -33,6 +33,7 @@ const (
 	MinFindingTitleChars    = 5
 	MaxFindingTitleChars    = 80
 	MaxCoverageReasonBytes  = 500
+	MaxEvidenceReasonBytes  = 500
 	MaxQuestionTopicBytes   = 200
 	MaxCharterVersionBytes  = 8
 	MaxVerificationStateLen = 16
@@ -83,6 +84,7 @@ type EvidenceRef struct {
 	Path      string
 	LineStart int64
 	LineEnd   int64
+	Reason    string
 }
 
 // Anchor is an optional, presentation-only pointer to one line; it is never used in place of Evidence for the checks that matter.
@@ -113,9 +115,10 @@ type Question struct {
 }
 
 type CoverageFile struct {
-	Path   string
-	Status string
-	Reason string
+	Path     string
+	Status   string
+	Reason   string
+	Evidence []EvidenceRef
 }
 
 type Coverage struct {
@@ -666,7 +669,7 @@ func singleLineTitle(title string) bool {
 }
 
 func parseEvidenceRef(value any) (EvidenceRef, bool) {
-	object, ok := exactObject(value, "snapshot", "path", "line_start", "line_end")
+	object, ok := exactObject(value, "snapshot", "path", "line_start", "line_end", "reason")
 	if !ok {
 		return EvidenceRef{}, false
 	}
@@ -674,10 +677,11 @@ func parseEvidenceRef(value any) (EvidenceRef, bool) {
 	name, nameOK := boundedString(object["path"], 1024)
 	lineStart, startOK := positiveInteger(object["line_start"])
 	lineEnd, endOK := positiveInteger(object["line_end"])
+	reason, reasonOK := boundedString(object["reason"], MaxEvidenceReasonBytes)
 	validSnapshot := snapshotOK && evidenceSnapshotPattern.MatchString(snapshot)
 	validPath := nameOK && validRelativePath(name)
 	validRange := startOK && endOK && lineEnd >= lineStart
-	return EvidenceRef{Snapshot: snapshot, Path: name, LineStart: lineStart, LineEnd: lineEnd}, validSnapshot && validPath && validRange
+	return EvidenceRef{Snapshot: snapshot, Path: name, LineStart: lineStart, LineEnd: lineEnd, Reason: reason}, validSnapshot && validPath && validRange && reasonOK
 }
 
 func parseAnchor(value any) (Anchor, bool) {
@@ -761,7 +765,7 @@ func parseCoverage(value any) (Coverage, bool) {
 	return coverage, true
 }
 
-// reason is required when status is unreviewed, forbidden otherwise.
+// reason is required when status is unreviewed, forbidden otherwise. Evidence records the enumeration citations for reviewed files.
 func parseCoverageFile(value any) (CoverageFile, bool) {
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -771,12 +775,24 @@ func parseCoverageFile(value any) (CoverageFile, bool) {
 	status, statusOK := boundedString(object["status"], 16)
 	validStatus := statusOK && (status == "reviewed" || status == "unreviewed")
 	_, hasReason := object["reason"]
+	rawEvidence, hasEvidence := object["evidence"].([]any)
 	expected := 2
-	if hasReason {
-		expected = 3
+	if hasEvidence {
+		expected++
 	}
-	if len(object) != expected || hasReason != (status == "unreviewed") {
+	if hasReason {
+		expected++
+	}
+	if len(object) != expected || hasReason != (status == "unreviewed") || len(rawEvidence) > MaxFindingEvidence {
 		return CoverageFile{}, false
+	}
+	evidence := make([]EvidenceRef, 0, len(rawEvidence))
+	for _, raw := range rawEvidence {
+		ref, ok := parseEvidenceRef(raw)
+		if !ok {
+			return CoverageFile{}, false
+		}
+		evidence = append(evidence, ref)
 	}
 	var reason string
 	if hasReason {
@@ -787,7 +803,7 @@ func parseCoverageFile(value any) (CoverageFile, bool) {
 		reason = text
 	}
 	validPath := nameOK && validRelativePath(name)
-	return CoverageFile{Path: name, Status: status, Reason: reason}, validPath && validStatus
+	return CoverageFile{Path: name, Status: status, Reason: reason, Evidence: evidence}, validPath && validStatus
 }
 
 func oneOf(value string, options ...string) bool {

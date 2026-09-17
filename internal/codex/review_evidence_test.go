@@ -46,6 +46,22 @@ func TestValidateReviewResultAcceptsACleanNoFindingsResult(t *testing.T) {
 	}
 }
 
+func TestValidateReviewResultChecksCoverageEvidenceAgainstTheFrozenSnapshots(t *testing.T) {
+	coverage := cleanCoverage()
+	coverage.Files[0].Evidence = []EvidenceRef{{
+		Snapshot:  sampleHeadSHA,
+		Path:      "missing.go",
+		LineStart: 1,
+		LineEnd:   1,
+		Reason:    "This line was inspected during enumeration.",
+	}}
+	result := Result{Outcome: "no_findings", CharterVersion: ReviewCharterVersion, VerificationState: "none", Coverage: &coverage}
+
+	if err := validateReviewResult(result, testReviewEvidence()); err == nil {
+		t.Fatal("coverage evidence outside the frozen snapshots was accepted")
+	}
+}
+
 func TestValidateReviewResultAcceptsACleanFindingsResult(t *testing.T) {
 	result := Result{Outcome: "findings", CharterVersion: ReviewCharterVersion, VerificationState: "none", Coverage: &Coverage{Files: cleanCoverage().Files, ContextGaps: []string{}}, Findings: []Finding{cleanFinding()}}
 	if err := validateReviewResult(result, testReviewEvidence()); err != nil {

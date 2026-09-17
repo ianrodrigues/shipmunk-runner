@@ -11,11 +11,13 @@
     "files": [
       {
         "path": "app/Support/ReviewPathRules.php",
-        "status": "reviewed"
+        "status": "reviewed",
+        "evidence": []
       },
       {
         "path": "app/Services/GitHub/ReviewFindings.php",
-        "status": "reviewed"
+        "status": "reviewed",
+        "evidence": []
       }
     ],
     "context_gaps": []

@@ -21,7 +21,8 @@
           "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "path": "app/Services/GitHub/ReviewFindings.php",
           "line_start": 60,
-          "line_end": 64
+          "line_end": 64,
+          "reason": "This range supports the reported conclusion."
         }
       ],
       "anchor": {
@@ -35,12 +36,14 @@
     "files": [
       {
         "path": "app/Services/GitHub/ReviewFindings.php",
-        "status": "reviewed"
+        "status": "reviewed",
+        "evidence": []
       },
       {
         "path": "app/Support/ReviewPathRules.php",
         "status": "unreviewed",
-        "reason": "The snapshot for this path could not be read before the review budget ran out."
+        "reason": "The snapshot for this path could not be read before the review budget ran out.",
+        "evidence": []
       }
     ],
     "context_gaps": [
