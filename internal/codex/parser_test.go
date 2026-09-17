@@ -512,7 +512,7 @@ func strictFindingJSON(anchor string) string {
 }
 
 func strictCoverageJSON(reason string) string {
-	return `{"files":[{"path":"` + findingPath + `","status":"reviewed","reason":` + reason + `}],"context_gaps":[]}`
+	return `{"files":[{"path":"` + findingPath + `","status":"reviewed","reason":` + reason + `,"evidence":[]}],"context_gaps":[]}`
 }
 
 func TestParseNormalizesStrictSchemaNullsToAbsentFields(t *testing.T) {
@@ -554,11 +554,13 @@ func TestParseNormalizesStrictSchemaNullsToAbsentFields(t *testing.T) {
 	}
 
 	for name, result := range map[string]string{
-		"null summary":  strings.Replace(clean, `"summary":"Done."`, `"summary":null`, 1),
-		"null findings": strings.Replace(clean, `"findings":[]`, `"findings":null`, 1),
-		"null tests":    strings.Replace(clean, `"tests":[]`, `"tests":null`, 1),
-		"null evidence": strings.Replace(withNullAnchor, `"evidence":[`+evidenceJSON(sampleHeadSHA, findingPath, 1, 2)+`]`, `"evidence":null`, 1),
-		"null in array": strings.Replace(clean, `"findings":[]`, `"findings":[null]`, 1),
+		"null summary":              strings.Replace(clean, `"summary":"Done."`, `"summary":null`, 1),
+		"null findings":             strings.Replace(clean, `"findings":[]`, `"findings":null`, 1),
+		"null tests":                strings.Replace(clean, `"tests":[]`, `"tests":null`, 1),
+		"null evidence":             strings.Replace(withNullAnchor, `"evidence":[`+evidenceJSON(sampleHeadSHA, findingPath, 1, 2)+`]`, `"evidence":null`, 1),
+		"missing coverage evidence": strings.Replace(clean, `,"evidence":[]`, ``, 1),
+		"null coverage evidence":    strings.Replace(clean, `"evidence":[]`, `"evidence":null`, 1),
+		"null in array":             strings.Replace(clean, `"findings":[]`, `"findings":[null]`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse([]byte(validStream(result)), nil); !errors.Is(err, ErrInvalidResult) {

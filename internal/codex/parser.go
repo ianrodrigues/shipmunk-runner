@@ -775,15 +775,12 @@ func parseCoverageFile(value any) (CoverageFile, bool) {
 	status, statusOK := boundedString(object["status"], 16)
 	validStatus := statusOK && (status == "reviewed" || status == "unreviewed")
 	_, hasReason := object["reason"]
-	rawEvidence, hasEvidence := object["evidence"].([]any)
-	expected := 2
-	if hasEvidence {
-		expected++
-	}
+	rawEvidence, evidenceOK := object["evidence"].([]any)
+	expected := 3
 	if hasReason {
 		expected++
 	}
-	if len(object) != expected || hasReason != (status == "unreviewed") || len(rawEvidence) > MaxFindingEvidence {
+	if !evidenceOK || len(object) != expected || hasReason != (status == "unreviewed") || len(rawEvidence) > MaxFindingEvidence {
 		return CoverageFile{}, false
 	}
 	evidence := make([]EvidenceRef, 0, len(rawEvidence))

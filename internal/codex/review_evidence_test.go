@@ -417,6 +417,25 @@ func TestValidateReviewResultValidatesCoverageForIncompleteViaNormalizeExecution
 	}
 }
 
+func TestValidateReviewResultValidatesCoverageEvidenceForIncompleteViaNormalizeExecution(t *testing.T) {
+	claim := protocol.Claim{
+		RunID: "01k4w000000000000000000001", AttemptID: "01k4w000000000000000000002", Fence: 1,
+		Manifest: map[string]any{"kind": "review"},
+	}
+	review := testReviewEvidence()
+	result := Result{
+		Summary: "Interrupted.", Outcome: "incomplete", Findings: []Finding{}, Tests: []Test{},
+		Coverage: &Coverage{Files: []CoverageFile{{
+			Path: "a.go", Status: "reviewed",
+			Evidence: []EvidenceRef{{Snapshot: sampleHeadSHA, Path: "missing.go", LineStart: 1, LineEnd: 1}},
+		}, {Path: "b.go", Status: "reviewed"}}},
+	}
+	stream := Stream{Result: result}
+	if _, err := normalizeExecution(context.Background(), claim, stream, nil, review); err == nil {
+		t.Fatal("incomplete coverage evidence outside the frozen snapshots was accepted")
+	}
+}
+
 func TestReviewEvidencePreambleBoundsTheChangedFileListAndNamesReviewDiff(t *testing.T) {
 	longPath := strings.Repeat("a", 1024)
 	var many []string
