@@ -23,7 +23,8 @@
             "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "path": "app/Support/ReviewPathRules.php",
             "line_start": 41,
-            "line_end": 30
+            "line_end": 30,
+            "reason": "This range supports the reported conclusion."
           }
         ]
       }
@@ -32,7 +33,8 @@
       "files": [
         {
           "path": "app/Support/ReviewPathRules.php",
-          "status": "reviewed"
+          "status": "reviewed",
+          "evidence": []
         }
       ],
       "context_gaps": []

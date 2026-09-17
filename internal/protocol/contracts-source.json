@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ianrodrigues/shipmunk-server",
-  "commit": "1e19466b7b212fe58989641a6e72fb487447d1fa",
+  "commit": "433ffcda6e0a14e0b6874b14b6273697d7da57bb",
   "files": {
     "contracts/v1/event-batch.schema.json": {
       "source": "contracts/v1/event-batch.schema.json",
@@ -16,7 +16,7 @@
     },
     "contracts/v1/result.schema.json": {
       "source": "contracts/v1/result.schema.json",
-      "sha256": "416191a2153e8c52f68bb5acf0ef8e943b88e846becd36473ea94a18f667b3ac"
+      "sha256": "e1d68bad9aa12d73c9fc777e1f8ef0469692f8896a4ef25a16d88e42ba98d7b9"
     },
     "contracts/v1/run-input.schema.json": {
       "source": "contracts/v1/run-input.schema.json",
@@ -28,15 +28,15 @@
     },
     "testdata/contracts/v1/fixtures/invalid/coverage-on-needs-input.json": {
       "source": "contracts/v1/fixtures/invalid/coverage-on-needs-input.json",
-      "sha256": "471ca1b80ff72e94f672c20ec82065937ef8c1da30e711592951034f4baf6386"
+      "sha256": "5df61d625ab619201186d06a5e7a535060a24bb74a04f11fc37d7a06c5e4a5a9"
     },
     "testdata/contracts/v1/fixtures/invalid/credential-in-config.json": {
       "source": "contracts/v1/fixtures/invalid/credential-in-config.json",
-      "sha256": "445aef46ff85093fb8204224cf8f5e6f1effaac151282ba641e8f9856e0b3684"
+      "sha256": "b9e76084db810b5932a8f4f336d7a09c2bd2555c41cc76112d1088a8fabefd6f"
     },
     "testdata/contracts/v1/fixtures/invalid/evidence-inverted-range.json": {
       "source": "contracts/v1/fixtures/invalid/evidence-inverted-range.json",
-      "sha256": "a4bc445a3380b4df380973de65f49c2d9d043d4061346fcd0d5f2961f2307ddc"
+      "sha256": "aa45217a826669c9c468257021a5dbad408d59755e38b1b931baafb77d9b75ae"
     },
     "testdata/contracts/v1/fixtures/invalid/fetch-url.json": {
       "source": "contracts/v1/fixtures/invalid/fetch-url.json",
@@ -44,27 +44,27 @@
     },
     "testdata/contracts/v1/fixtures/invalid/finding-title-multiline.json": {
       "source": "contracts/v1/fixtures/invalid/finding-title-multiline.json",
-      "sha256": "cee4f30da33b4b4221aed667c170a1f16f8dc3df1b3568224867d75c34978e52"
+      "sha256": "712a8c06eb5e3605c08c8903c5c1d10f5cf6be105dcbe3a3412fff5f2117721d"
     },
     "testdata/contracts/v1/fixtures/invalid/finding-title-too-long.json": {
       "source": "contracts/v1/fixtures/invalid/finding-title-too-long.json",
-      "sha256": "aff9872c5e530818cc1cee2d0d2bb200835adff5c036c922e32580300fd33c14"
+      "sha256": "735bb5dd953bb8424b455ae9bdfc38fd4b89e1d5cb6edac3eb4d8a8974c80111"
     },
     "testdata/contracts/v1/fixtures/invalid/finding-title-too-short.json": {
       "source": "contracts/v1/fixtures/invalid/finding-title-too-short.json",
-      "sha256": "7645d4c19349b91a7ed01b17f8d4bd2c292b4884653c91342e4bb946ce8c2414"
+      "sha256": "b1b8b8abf539cb630fb2a1e762e3c57f303faa0d53faea64567023d308d3f184"
     },
     "testdata/contracts/v1/fixtures/invalid/finding-title-whitespace-only.json": {
       "source": "contracts/v1/fixtures/invalid/finding-title-whitespace-only.json",
-      "sha256": "8acf80e717676e5bfd183cf8b5c6dd95d0257b3e6e67947168610b449dd97260"
+      "sha256": "0b5fc351a885b176437864b4abe614cdf169eddf4bfb9e804ab505117ad2117e"
     },
     "testdata/contracts/v1/fixtures/invalid/finding-without-title.json": {
       "source": "contracts/v1/fixtures/invalid/finding-without-title.json",
-      "sha256": "fdfb1eef084e0357eaa501de80af4bcb2864ec6ff4514295294863aa6b460150"
+      "sha256": "8bf35cdab791212db26bf0ccb5fe7f54a36da4769aff1d230f6883caa64fc9d9"
     },
     "testdata/contracts/v1/fixtures/invalid/findings-on-incomplete.json": {
       "source": "contracts/v1/fixtures/invalid/findings-on-incomplete.json",
-      "sha256": "5121c567ca2d1d468113086c88d1654f14c7fddfa751b535ca8f60f50a4a4e54"
+      "sha256": "ab29f6c62204fd024eaae726b4dda3cd13f5ec16534255cc92be1b56886db665"
     },
     "testdata/contracts/v1/fixtures/invalid/invalid-outcome.json": {
       "source": "contracts/v1/fixtures/invalid/invalid-outcome.json",
@@ -72,19 +72,19 @@
     },
     "testdata/contracts/v1/fixtures/invalid/invented-cost.json": {
       "source": "contracts/v1/fixtures/invalid/invented-cost.json",
-      "sha256": "942b11b7876cf8e5670afffca6c869856e33023fbb75df97bca71e594b41a211"
+      "sha256": "df169453c3204c1c3400825dd7242a5e83bd5a18e173928431c77a63523360a5"
     },
     "testdata/contracts/v1/fixtures/invalid/legacy-finding.json": {
       "source": "contracts/v1/fixtures/invalid/legacy-finding.json",
-      "sha256": "ce9c8c753626f4787c08d111b5d36f380befc04a55afbcff226eadbe9e548fa2"
+      "sha256": "61215fd4da0afbeaf20d416abf151dbb9b399555b5e61d06abc4569fa953e5cb"
     },
     "testdata/contracts/v1/fixtures/invalid/major-version.json": {
       "source": "contracts/v1/fixtures/invalid/major-version.json",
-      "sha256": "027e3f43a66a8926d7740adc4ee3a8067cb792c0c50e8734aa4a87077d8f8c18"
+      "sha256": "7a01ea78a727f43a398bde2767b7431bed4c2175dbaf55389c56f836ffb9afa3"
     },
     "testdata/contracts/v1/fixtures/invalid/missing-findings.json": {
       "source": "contracts/v1/fixtures/invalid/missing-findings.json",
-      "sha256": "574421c7db08586c9a5946c304c0eaca0c63691d30991db7cf361d3575aedb8f"
+      "sha256": "bd11876e2810e645cafd1812a76a672553fe331c85e7450070d5455d1b7e1a46"
     },
     "testdata/contracts/v1/fixtures/invalid/oversize-event.json": {
       "source": "contracts/v1/fixtures/invalid/oversize-event.json",
@@ -96,7 +96,7 @@
     },
     "testdata/contracts/v1/fixtures/invalid/question-severity.json": {
       "source": "contracts/v1/fixtures/invalid/question-severity.json",
-      "sha256": "289e4a4d9cbf429c43e16cd9b18fd75107526373df01e6783eab3d9aa0d9fc0d"
+      "sha256": "9ead3ffbb334b9fadac57ea2c0e31902c80968ef5ee5815401ad7343fb3b232e"
     },
     "testdata/contracts/v1/fixtures/invalid/retired-base-sha.json": {
       "source": "contracts/v1/fixtures/invalid/retired-base-sha.json",
@@ -104,19 +104,19 @@
     },
     "testdata/contracts/v1/fixtures/invalid/review-missing-charter.json": {
       "source": "contracts/v1/fixtures/invalid/review-missing-charter.json",
-      "sha256": "f2adce5e59d7a8c3d821dc4d5d26b322a1f317a34375fc56b9f584fb22cd2b94"
+      "sha256": "79be80d4fd9699020ad7abc01cc204ef37c96ec038f1edd4430f5d82a14e50ec"
     },
     "testdata/contracts/v1/fixtures/invalid/reviewed-file-with-reason.json": {
       "source": "contracts/v1/fixtures/invalid/reviewed-file-with-reason.json",
-      "sha256": "482751a43df4cddaa9a524f023334c935c728a59c4f25f4b0df640c9dec21f81"
+      "sha256": "f6628603f1b5d1c9938d8517d65bd251b8c4a15c40bebaac3528956b3244bf5e"
     },
     "testdata/contracts/v1/fixtures/invalid/secret-in-run-config.json": {
       "source": "contracts/v1/fixtures/invalid/secret-in-run-config.json",
-      "sha256": "e179c42a21f78a13e566722d8fd1aed24a2c66222a7691f7774b74e4513f5d3f"
+      "sha256": "5882151055c24e53d12d5e0d42f3a222ebe6056f853a4a9b97a22e90afac4325"
     },
     "testdata/contracts/v1/fixtures/invalid/stale-charter-version.json": {
       "source": "contracts/v1/fixtures/invalid/stale-charter-version.json",
-      "sha256": "02ce9c95d17960814e78e18b056e0768c4a18addd0a2c047a3617063e77bf0c1"
+      "sha256": "e52aa66a2676189d31fb1ca282d66091013f0ce312ba2ecfb44a3be1bfbbf003"
     },
     "testdata/contracts/v1/fixtures/invalid/too-many-events.json": {
       "source": "contracts/v1/fixtures/invalid/too-many-events.json",
@@ -124,11 +124,11 @@
     },
     "testdata/contracts/v1/fixtures/invalid/unknown-field.json": {
       "source": "contracts/v1/fixtures/invalid/unknown-field.json",
-      "sha256": "73681e9e17907c2efa2183af9d9c3f1fb11eb6004da3ebeba2e5be340d7ba00b"
+      "sha256": "6b04a9c530c8d429dd55197956c0ed24acf5525acaf254371e33d2a2f5a51438"
     },
     "testdata/contracts/v1/fixtures/invalid/unreviewed-file-without-reason.json": {
       "source": "contracts/v1/fixtures/invalid/unreviewed-file-without-reason.json",
-      "sha256": "cfd375ee093ce7c0a46595dd572f6ac87987d73e5e932819230ad27e544fc6f5"
+      "sha256": "e40750f05c1df67b8bc390defba3195c81e82243d5d5edb1137a21fd7b5e6efb"
     },
     "testdata/contracts/v1/fixtures/invalid/zero-sequence.json": {
       "source": "contracts/v1/fixtures/invalid/zero-sequence.json",
@@ -148,31 +148,31 @@
     },
     "testdata/contracts/v1/fixtures/valid/result.critical-finding.json": {
       "source": "contracts/v1/fixtures/valid/result.critical-finding.json",
-      "sha256": "02b25262342a4e16e3b43ed0f3a45c6017ace6197aaf9f3d401635b04af1cfac"
+      "sha256": "0b17cc9d73574c2f24c037b9c06f6a159721ba147b407a147a468ff84b3b81a1"
     },
     "testdata/contracts/v1/fixtures/valid/result.info-finding.json": {
       "source": "contracts/v1/fixtures/valid/result.info-finding.json",
-      "sha256": "f83b2e365cb016e322b47c60103f50837bca6111f9d9e55be7bc858eb5cea659"
+      "sha256": "ca8da068773eca7c1ebb0df444be73f48d9884550e04434563e3b07ab4add001"
     },
     "testdata/contracts/v1/fixtures/valid/result.json": {
       "source": "contracts/v1/fixtures/valid/result.json",
-      "sha256": "99b29dae54d3fd952393b92cc9aaa567ef1cc2a4f07f9f831a34b67cca23eba6"
+      "sha256": "df7b9fa56dbce5958f8c043b0b2dac0177ed4a64656f6fe2ee96cec4c3544bf4"
     },
     "testdata/contracts/v1/fixtures/valid/result.maintainability-finding.json": {
       "source": "contracts/v1/fixtures/valid/result.maintainability-finding.json",
-      "sha256": "de7d7394859d8b45bd7e68a42ce2d2f67edfebb02709e3a0b861fa82af298e39"
+      "sha256": "976f0c050cfc73f0c5749fadd88b245f80e9d60789d4c2d618d12b6c117f63cf"
     },
     "testdata/contracts/v1/fixtures/valid/result.mixed-anchoring.json": {
       "source": "contracts/v1/fixtures/valid/result.mixed-anchoring.json",
-      "sha256": "57cc21a6151a7741730cc20a8b2d9cf82eb55384d2c853bebf79977489f0de19"
+      "sha256": "79baf1753de395ebfbd4e4db1e13da271550a797b6ae106b59b013ecaba626d8"
     },
     "testdata/contracts/v1/fixtures/valid/result.partial-coverage.json": {
       "source": "contracts/v1/fixtures/valid/result.partial-coverage.json",
-      "sha256": "e11ea0680d7ebd68ae3f14f7b0922900f07530ab4221af70263f2fbce55b3a06"
+      "sha256": "d8d98547ce469e9c69b6b42b4e60ae223478ff9b8444262960ff0f1dd6dbdfb3"
     },
     "testdata/contracts/v1/fixtures/valid/result.unanswered-question.json": {
       "source": "contracts/v1/fixtures/valid/result.unanswered-question.json",
-      "sha256": "bf92b511e5a0bca611fd9627bae67b50e7e0e2b4fb8b35e6145162a41c71fa4c"
+      "sha256": "8edbc063c504cbcd18e5edc2378f30a8d7c7f466b9f196dbb7c21164fd3f42e9"
     },
     "testdata/contracts/v1/fixtures/valid/run-input.json": {
       "source": "contracts/v1/fixtures/valid/run-input.json",

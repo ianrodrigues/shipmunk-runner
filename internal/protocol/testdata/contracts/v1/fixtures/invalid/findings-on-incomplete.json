@@ -22,7 +22,8 @@
             "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "path": "app/Support/ReviewPathRules.php",
             "line_start": 30,
-            "line_end": 41
+            "line_end": 41,
+            "reason": "This range supports the reported conclusion."
           }
         ]
       }
@@ -32,7 +33,8 @@
         {
           "path": "app/Support/ReviewPathRules.php",
           "status": "unreviewed",
-          "reason": "The review stopped before this file was read."
+          "reason": "The review stopped before this file was read.",
+          "evidence": []
         }
       ],
       "context_gaps": []

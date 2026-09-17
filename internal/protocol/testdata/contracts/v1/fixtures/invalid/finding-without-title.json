@@ -22,7 +22,8 @@
             "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "path": "app/Http/Controllers/RunController.php",
             "line_start": 40,
-            "line_end": 46
+            "line_end": 46,
+            "reason": "This range supports the reported conclusion."
           }
         ],
         "anchor": {
@@ -36,7 +37,8 @@
       "files": [
         {
           "path": "app/Http/Controllers/RunController.php",
-          "status": "reviewed"
+          "status": "reviewed",
+          "evidence": []
         }
       ],
       "context_gaps": []

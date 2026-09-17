@@ -12,7 +12,8 @@
       "files": [
         {
           "path": "app/Support/ReviewPathRules.php",
-          "status": "reviewed"
+          "status": "reviewed",
+          "evidence": []
         }
       ],
       "context_gaps": []

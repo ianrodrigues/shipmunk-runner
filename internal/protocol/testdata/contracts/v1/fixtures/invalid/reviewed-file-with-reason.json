@@ -14,7 +14,8 @@
         {
           "path": "app/Support/ReviewPathRules.php",
           "status": "reviewed",
-          "reason": "Reviewed in full."
+          "reason": "Reviewed in full.",
+          "evidence": []
         }
       ],
       "context_gaps": []

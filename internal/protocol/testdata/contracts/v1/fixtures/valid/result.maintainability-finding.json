@@ -21,13 +21,15 @@
           "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "path": "app/Services/GitHub/ReviewFindings.php",
           "line_start": 180,
-          "line_end": 184
+          "line_end": 184,
+          "reason": "This range supports the reported conclusion."
         },
         {
           "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "path": "app/Support/ReviewPathRules.php",
           "line_start": 22,
-          "line_end": 26
+          "line_end": 26,
+          "reason": "This range supports the reported conclusion."
         }
       ],
       "anchor": {
@@ -41,11 +43,13 @@
     "files": [
       {
         "path": "app/Support/ReviewPathRules.php",
-        "status": "reviewed"
+        "status": "reviewed",
+        "evidence": []
       },
       {
         "path": "app/Services/GitHub/ReviewFindings.php",
-        "status": "reviewed"
+        "status": "reviewed",
+        "evidence": []
       }
     ],
     "context_gaps": []

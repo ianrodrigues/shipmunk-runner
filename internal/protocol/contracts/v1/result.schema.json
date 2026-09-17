@@ -212,11 +212,19 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 500
+              },
+              "evidence": {
+                "type": "array",
+                "maxItems": 5,
+                "items": {
+                  "$ref": "#/$defs/evidence"
+                }
               }
             },
             "required": [
               "path",
-              "status"
+              "status",
+              "evidence"
             ],
             "additionalProperties": false,
             "allOf": [
@@ -497,13 +505,19 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
         }
       },
       "required": [
         "snapshot",
         "path",
         "line_start",
-        "line_end"
+        "line_end",
+        "reason"
       ],
       "additionalProperties": false
     },
