@@ -410,6 +410,11 @@ func normalizeExecution(ctx context.Context, claim protocol.Claim, stream Stream
 		if err := validateCoverageFileSet(stream.Result.Coverage.Files, review.changedFileSet()); err != nil {
 			return supervisor.Execution{}, err
 		}
+		for _, file := range stream.Result.Coverage.Files {
+			if err := validateEvidenceRefs(file.Evidence, review); err != nil {
+				return supervisor.Execution{}, err
+			}
+		}
 	}
 	events := make([]json.RawMessage, 0, len(stream.Events))
 	for i, event := range stream.Events {
